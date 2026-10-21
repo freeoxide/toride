@@ -41,8 +41,8 @@ impl WireguardClient<toride_runner::DuctRunner> {
     /// Create a new client using the default command runner.
     ///
     /// Construction is intentionally **lazy**: it does *not* probe for the
-    /// `wg` binary. Binary availability is surfaced separately — by the
-    /// caller's own `which::which("wg")` probe and by the doctor suite — so
+    /// `wg` binary. Binary availability is surfaced separately: by the
+    /// caller's own `which::which("wg")` probe and by the doctor suite, so
     /// that a handle can be built on any host (e.g. to inspect config/paths)
     /// and operations fail with a clear [`Error::Runner`](crate::error::Error::Runner) only if `wg` is
     /// actually invoked while absent. Probing here would short-circuit the

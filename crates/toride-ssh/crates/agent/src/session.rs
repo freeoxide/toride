@@ -34,8 +34,11 @@ pub struct ControlSession {
 ///
 /// This function scans `ssh_dir` and `/tmp` for files that look like control
 /// sockets.
+// Boxing keeps one concrete `Send` future type for the fan-out
+// (rust-lang/rust#110338).
+type BoxedVerifyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Option<bool>> + Send>>;
+
 pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
-    let mut sessions = Vec::new();
     let mut candidates = Vec::new();
 
     if ssh_dir.exists() {
@@ -62,10 +65,20 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         }
     }
 
-    for socket_path in candidates {
-        let host = extract_host_from_socket_path(&socket_path);
+    let checks: Vec<BoxedVerifyFuture> = candidates
+        .iter()
+        .map(|socket_path| {
+            let socket_path = socket_path.clone();
+            let fut: BoxedVerifyFuture = Box::pin(verify_control_session(socket_path));
+            fut
+        })
+        .collect();
+    let alive_flags =
+        toride_ssh_core::fanout::join_all_bounded(MAX_CONCURRENT_CHECKS, checks).await;
 
-        match verify_control_session(&socket_path).await {
+    let mut sessions = Vec::new();
+    for (socket_path, alive) in candidates.into_iter().zip(alive_flags) {
+        match alive {
             Some(true) => {
                 // The socket may have disappeared between the check above and now
                 // (race with another process cleaning it up). Treat a missing file
@@ -76,13 +89,13 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
                 let established = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
                 sessions.push(ControlSession {
+                    host: extract_host_from_socket_path(&socket_path),
                     control_path: socket_path,
-                    host,
                     established,
                 });
             }
             Some(false) => {
-                // Dead socket — clean it up.
+                // Dead socket, clean it up.
                 if let Err(e) = tokio::fs::remove_file(&socket_path).await {
                     tracing::debug!(
                         "failed to remove dead socket {}: {e}",
@@ -91,7 +104,7 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
                 }
             }
             None => {
-                // ssh binary not found — cannot determine status, skip cleanup
+                // ssh binary not found, cannot determine status, skip cleanup
                 // to avoid destroying active sessions.
                 tracing::debug!(
                     "skipping socket {}: ssh binary not available",
@@ -105,6 +118,8 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
 
     Ok(sessions)
 }
+
+const MAX_CONCURRENT_CHECKS: usize = 8;
 
 /// Check if a file looks like an SSH control socket.
 ///
@@ -190,7 +205,7 @@ pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
 /// Returns `true` if `ssh -O check` exits with code 0 (master running).
 /// Returns `None` if the `ssh` binary itself cannot be executed (not in PATH),
 /// which is different from "master not running".
-async fn verify_control_session(socket_path: &Path) -> Option<bool> {
+async fn verify_control_session(socket_path: std::path::PathBuf) -> Option<bool> {
     let path_str = match socket_path.to_str() {
         Some(s) => s.to_owned(),
         None => return Some(false),
@@ -213,7 +228,7 @@ async fn verify_control_session(socket_path: &Path) -> Option<bool> {
             // Distinguish between "ssh not found" and "master not running".
             // duct returns io::Error; when the binary is not found, kind is NotFound.
             if e.kind() == std::io::ErrorKind::NotFound {
-                // ssh binary not in PATH — cannot determine status
+                // ssh binary not in PATH, cannot determine status
                 tracing::warn!("ssh binary not found, cannot check control socket");
                 return None;
             }

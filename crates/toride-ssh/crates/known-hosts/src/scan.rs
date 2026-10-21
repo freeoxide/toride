@@ -118,17 +118,19 @@ pub async fn add_to_known_hosts(known_hosts_path: &Path, keys: &[ScannedHostKey]
             std::fs::create_dir_all(parent)?;
         }
 
+        let newly_created = !path.exists();
+
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)?;
-        // Set 0644 permissions on newly created files (world-readable).
-        // SSH expects known_hosts to be readable by all users.
+
+        // New files get the world-readable 0644 ssh expects; a pre-existing
+        // file keeps its mode, so appending never relaxes a 0600 known_hosts.
         #[cfg(unix)]
-        {
+        if newly_created {
             use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o644))
-                .ok(); // Ignore error if file already existed with different perms.
+            file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
         }
         file.write_all(buf.as_bytes())?;
         Ok(())

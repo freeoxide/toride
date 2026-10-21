@@ -37,7 +37,8 @@ const SSHD_T_OUTPUT: &str = concat!(
 
 const STORED_HOST_KEY_LINE: &str = "localhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB8Qm0kQx9pN2rBench7vJw4uZ1yT0hKqM5sEdRfGh6L toride-bench";
 
-const KEYSCAN_HOST_KEY_LINE: &str = "localhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB8Qm0kQx9pN2rBench7vJw4uZ1yT0hKqM5sEdRfGh6L";
+const KEYSCAN_HOST_KEY_LINE: &str =
+    "localhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB8Qm0kQx9pN2rBench7vJw4uZ1yT0hKqM5sEdRfGh6L";
 
 const REMOTE_AUTHORIZED_KEYS: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB8Qm0kQx9pN2rBench7vJw4uZ1yT0hKqM5sEdRfGh6L deploy@toride-bench\n";
 
@@ -104,7 +105,12 @@ impl CliRunner for CountingFakeRunner {
         Ok(response_for(cmd, &args))
     }
 
-    async fn run_with_env(&self, cmd: &str, args: Vec<String>, _env: Vec<(String, String)>) -> Result<String> {
+    async fn run_with_env(
+        &self,
+        cmd: &str,
+        args: Vec<String>,
+        _env: Vec<(String, String)>,
+    ) -> Result<String> {
         self.record(cmd, &args);
         Ok(response_for(cmd, &args))
     }
@@ -116,18 +122,18 @@ impl CliRunner for CountingFakeRunner {
 
 fn fixture_ssh_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("fixture ssh tempdir");
-    std::fs::write(dir.path().join("config"), "Host localhost\n  HostName 127.0.0.1\n")
-        .expect("write fixture ssh config");
+    std::fs::write(
+        dir.path().join("config"),
+        "Host localhost\n  HostName 127.0.0.1\n",
+    )
+    .expect("write fixture ssh config");
     std::fs::write(
         dir.path().join("known_hosts"),
         format!("{STORED_HOST_KEY_LINE}\n"),
     )
     .expect("write fixture known_hosts");
-    std::fs::write(
-        dir.path().join("authorized_keys"),
-        REMOTE_AUTHORIZED_KEYS,
-    )
-    .expect("write fixture authorized_keys");
+    std::fs::write(dir.path().join("authorized_keys"), REMOTE_AUTHORIZED_KEYS)
+        .expect("write fixture authorized_keys");
     dir
 }
 

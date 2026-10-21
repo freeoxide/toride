@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let report = ufw.ensure_rule(rule)?;
         let label = rule.comment.as_deref().unwrap_or("(no comment)");
         if report.success {
-            println!("OK: {label} — {}", report.action);
+            println!("OK: {label}: {}", report.action);
         }
     }
 

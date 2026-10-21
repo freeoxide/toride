@@ -349,7 +349,7 @@ pub fn scrub_stderr(spec: &CommandSpec, stderr: &str) -> String {
 
 /// Return a copy of `output` with secret values scrubbed from both stdout and
 /// stderr when `spec.redact()` is `true`, honoring the redact flag on the
-/// *returned* captured output (not just error variants).
+/// *returned* captured output (not only error variants).
 ///
 /// Uses [`redact_output`] (value replacement only, no length cap), so a
 /// successful captured stdout/stderr stream never carries a token or passphrase

@@ -3,7 +3,6 @@
 
 pub mod control;
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use toride_ssh_core::SshPaths;
@@ -24,31 +23,6 @@ impl<'a> ForwardService<'a> {
         Self { paths }
     }
 
-    /// List `(session, forwards)` pairs in session order; a session whose
-    /// listing fails is included with an empty list (logged, not propagated).
-    ///
-    /// # Errors
-    /// As [`Self::list_sessions`].
-    pub async fn list(&self) -> Result<Vec<(ControlSession, Vec<PortForward>)>> {
-        let sessions = self.list_sessions().await?;
-        let listings =
-            control::list_forwards_bounded(sessions.iter().map(|s| s.control_path.clone())).await;
-        Ok(sessions
-            .into_iter()
-            .zip(listings)
-            .map(|(session, result)| match result {
-                Ok(forwards) => (session, forwards),
-                Err(e) => {
-                    tracing::warn!(
-                        "failed to list forwards for {}: {e}",
-                        session.control_path.display()
-                    );
-                    (session, Vec::new())
-                }
-            })
-            .collect())
-    }
-
     /// Discover active `ControlMaster` sessions, verified via `ssh -O check`.
     ///
     /// # Errors
@@ -57,25 +31,11 @@ impl<'a> ForwardService<'a> {
         control::list_sessions(self.paths.ssh_dir()).await
     }
 
-    /// Cancel the forward on `local_port`.
+    /// Cancel a known forward on the session at `control_path`.
     ///
-    /// # Errors
-    /// [`Error::ForwardNotFound`], [`Error::ForwardFailed`] (non-UTF-8
-    /// path), [`Error::CommandFailed`], or [`Error::TaskFailed`].
-    pub async fn cancel(&self, control_path: &Path, local_port: u16) -> Result<()> {
-        control::cancel_forward(control_path, local_port).await
-    }
-
-    /// List forwards for the session at `control_path`.
-    ///
-    /// # Errors
-    /// [`Error::ForwardFailed`] (non-UTF-8 path), [`Error::CommandFailed`],
-    /// or [`Error::TaskFailed`].
-    pub async fn list_forwards(&self, control_path: &Path) -> Result<Vec<PortForward>> {
-        control::list_forwards(control_path).await
-    }
-
-    /// Cancel a known forward, skipping the list round-trip.
+    /// The mux protocol cannot enumerate a master's forwards, so the
+    /// caller supplies the [`PortForward`] spec as it was passed at
+    /// creation time.
     ///
     /// # Errors
     /// [`Error::ForwardFailed`] (non-UTF-8 path), [`Error::CommandFailed`],
@@ -93,44 +53,10 @@ impl<'a> ForwardService<'a> {
         control::exit_session(control_path).await
     }
 
-    /// Map each local port claimed by more than one session to the control
-    /// socket paths claiming it.
-    ///
-    /// # Errors
-    /// As [`Self::list_sessions`].
-    pub async fn conflicting_local_ports(&self) -> Result<HashMap<u16, Vec<std::path::PathBuf>>> {
-        let sessions = self.list_sessions().await?;
-        let listings =
-            control::list_forwards_bounded(sessions.iter().map(|s| s.control_path.clone())).await;
-        let mut port_owners: HashMap<u16, Vec<std::path::PathBuf>> = HashMap::new();
-
-        for (session, result) in sessions.iter().zip(listings) {
-            match result {
-                Ok(forwards) => {
-                    for fwd in forwards {
-                        port_owners
-                            .entry(fwd.local_port)
-                            .or_default()
-                            .push(session.control_path.clone());
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "failed to list forwards for {}: {e}",
-                        session.control_path.display()
-                    );
-                }
-            }
-        }
-
-        port_owners.retain(|_, owners| owners.len() > 1);
-        Ok(port_owners)
-    }
-
     const TEST_CONNECTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
     /// Connect to `127.0.0.1:<local_port>` within `timeout`; proves only that
-    /// the local socket accepts — not end-to-end forwarding to the remote side.
+    /// the local socket accepts, not end-to-end forwarding to the remote side.
     ///
     /// # Errors
     /// [`Error::ForwardFailed`] on timeout or connect failure.

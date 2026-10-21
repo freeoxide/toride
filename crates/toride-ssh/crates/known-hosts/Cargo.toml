@@ -24,6 +24,11 @@ hmac = "0.12"
 sha1 = "0.10"
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "std"] }
 
+[lib]
+# Keeps `cargo bench -- --baseline ...` out of the libtest harness; only the
+# criterion [[bench]] target should receive bench args.
+bench = false
+
 [dev-dependencies]
 tempfile = "3"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }

@@ -32,14 +32,14 @@
 //!
 //! - **Optional `service-manager` feature:** A portable service management
 //!   abstraction that works across init systems (OpenRC, runit, s6, etc.), not
-//!   just systemd.  **Not yet implemented.**
+//!   only systemd.  **Not yet implemented.**
 //!
 //! # Non-systemd environments
 //!
 //! In v1 the service manager targets `systemctl` exclusively.  For non-systemd
 //! hosts the caller can supply a [`FakeRunner`](crate::command::FakeRunner) that translates calls to the
-//! local service manager, or simply avoid using this module altogether -- many
-//! applications should just manage config and let the deploy system handle
+//! local service manager, or avoid using this module altogether -- many
+//! applications should manage config and let the deploy system handle
 //! restarts.
 
 /// Placeholder module that marks the `systemd-zbus` feature as unimplemented.
@@ -74,10 +74,6 @@ pub struct ServiceManager<'a> {
 }
 
 impl<'a> ServiceManager<'a> {
-    // -----------------------------------------------------------------------
-    // Constructors
-    // -----------------------------------------------------------------------
-
     /// Create a manager targeting the default `"fail2ban"` service unit.
     pub fn new(runner: &'a dyn Runner) -> Self {
         Self {
@@ -97,10 +93,6 @@ impl<'a> ServiceManager<'a> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Query operations
-    // -----------------------------------------------------------------------
-
     /// Check whether the service unit is currently active (running).
     ///
     /// Returns `Ok(true)` when `systemctl is-active <unit>` exits with code 0,
@@ -119,10 +111,6 @@ impl<'a> ServiceManager<'a> {
         let output = self.run_systemctl(&["is-enabled", &self.service_name])?;
         Ok(output.success)
     }
-
-    // -----------------------------------------------------------------------
-    // Lifecycle operations
-    // -----------------------------------------------------------------------
 
     /// Start the service unit.
     ///
@@ -205,10 +193,6 @@ impl<'a> ServiceManager<'a> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Journal access
-    // -----------------------------------------------------------------------
-
     /// Tail recent journal entries for the service unit.
     ///
     /// Returns the last `lines` lines from `journalctl -u <unit> -n <lines>
@@ -241,10 +225,6 @@ impl<'a> ServiceManager<'a> {
             ))
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
 
     /// Execute a `systemctl` subcommand through the runner.
     ///

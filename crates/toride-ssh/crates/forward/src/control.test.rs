@@ -5,113 +5,6 @@ use super::*;
 use serial_test::serial;
 
 #[test]
-fn parse_local_forward_line() {
-    let line = "127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_addr, "127.0.0.1");
-    assert_eq!(fwd.local_port, 8080);
-    assert_eq!(fwd.remote_addr, "10.0.0.1");
-    assert_eq!(fwd.remote_port, 80);
-    assert_eq!(fwd.forward_type, ForwardType::Local);
-}
-
-#[test]
-fn parse_local_forward_truncated_addr() {
-    let line = "127.0.0. port 8080, forwarding to 10.0.0.1 port 80";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_addr, "127.0.0");
-    assert_eq!(fwd.local_port, 8080);
-    assert_eq!(fwd.remote_addr, "10.0.0.1");
-    assert_eq!(fwd.remote_port, 80);
-}
-
-#[test]
-fn parse_gateway_ports_forward() {
-    let line = "* port 9090, forwarding to 192.168.1.1 port 443";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_addr, "*");
-    assert_eq!(fwd.local_port, 9090);
-    assert_eq!(fwd.remote_addr, "192.168.1.1");
-    assert_eq!(fwd.remote_port, 443);
-}
-
-#[test]
-fn parse_dynamic_forward_line() {
-    let line = "127.0.0.1 port 1080";
-    let fwd = parse_forward_line(line, ForwardType::Dynamic).unwrap();
-    assert_eq!(fwd.local_addr, "127.0.0.1");
-    assert_eq!(fwd.local_port, 1080);
-    assert_eq!(fwd.forward_type, ForwardType::Dynamic);
-}
-
-#[test]
-fn parse_dynamic_forward_gateway() {
-    let line = "* port 1080";
-    let fwd = parse_forward_line(line, ForwardType::Dynamic).unwrap();
-    assert_eq!(fwd.local_addr, "*");
-    assert_eq!(fwd.local_port, 1080);
-}
-
-#[test]
-fn parse_full_output() {
-    let output = "\
-Local connections:
-  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80
-  0.0.0.0 port 9090, forwarding to 192.168.1.1 port 443
-Remote connections:
-  127.0.0.1 port 2222, forwarding to 127.0.0.1 port 22
-Dynamic connections:
-  127.0.0.1 port 1080
-";
-    let fwds = parse_forward_output(output);
-    assert_eq!(fwds.len(), 4);
-    assert_eq!(fwds[0].forward_type, ForwardType::Local);
-    assert_eq!(fwds[0].local_port, 8080);
-    assert_eq!(fwds[1].forward_type, ForwardType::Local);
-    assert_eq!(fwds[1].local_port, 9090);
-    assert_eq!(fwds[2].forward_type, ForwardType::Remote);
-    assert_eq!(fwds[2].remote_port, 22);
-    assert_eq!(fwds[3].forward_type, ForwardType::Dynamic);
-    assert_eq!(fwds[3].local_port, 1080);
-}
-
-#[test]
-fn parse_empty_sections() {
-    let output = "\
-Local connections:
-Remote connections:
-Dynamic connections:
-";
-    let fwds = parse_forward_output(output);
-    assert!(fwds.is_empty());
-}
-
-#[test]
-fn parse_output_with_no_forwards() {
-    let output = "";
-    let fwds = parse_forward_output(output);
-    assert!(fwds.is_empty());
-}
-
-#[test]
-fn parse_output_with_error_message() {
-    let output = "No forwards.\nLocal connections:\n";
-    let fwds = parse_forward_output(output);
-    assert!(fwds.is_empty());
-}
-
-#[test]
-fn parse_remote_forward_line() {
-    let line = "0.0.0.0 port 2222, forwarding to 127.0.0.1 port 22";
-    let fwd = parse_forward_line(line, ForwardType::Remote).unwrap();
-    assert_eq!(fwd.local_addr, "0.0.0.0");
-    assert_eq!(fwd.local_port, 2222);
-    assert_eq!(fwd.remote_addr, "127.0.0.1");
-    assert_eq!(fwd.remote_port, 22);
-    assert_eq!(fwd.forward_type, ForwardType::Remote);
-}
-
-#[test]
 fn extract_host_various_patterns() {
     assert_eq!(
         extract_host_from_name("cm-deploy@web01.example.com:22"),
@@ -131,57 +24,6 @@ fn extract_pid_from_patterns() {
     assert_eq!(extract_pid_from_name("ssh-abc123-48291"), Some(48291));
     assert_eq!(extract_pid_from_name("cm-user@host:22"), None);
     assert_eq!(extract_pid_from_name("ssh-hash-0"), None);
-}
-
-#[test]
-fn parse_forward_line_empty_string() {
-    assert!(parse_forward_line("", ForwardType::Local).is_none());
-}
-
-#[test]
-fn parse_forward_line_no_port_keyword() {
-    assert!(parse_forward_line("127.0.0.1 8080", ForwardType::Local).is_none());
-}
-
-#[test]
-fn parse_forward_line_dynamic_empty_addr() {
-    assert!(parse_forward_line(" port 1080", ForwardType::Dynamic).is_none());
-}
-
-#[test]
-fn parse_forward_line_remote_forward() {
-    let line = "0.0.0.0 port 2222, forwarding to 127.0.0.1 port 22";
-    let fwd = parse_forward_line(line, ForwardType::Remote).unwrap();
-    assert_eq!(fwd.forward_type, ForwardType::Remote);
-    assert_eq!(fwd.local_addr, "0.0.0.0");
-    assert_eq!(fwd.remote_port, 22);
-}
-
-#[test]
-fn parse_forward_output_only_local_section() {
-    let output = "Local connections:\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
-    let fwds = parse_forward_output(output);
-    assert_eq!(fwds.len(), 1);
-    assert_eq!(fwds[0].forward_type, ForwardType::Local);
-}
-
-#[test]
-fn parse_forward_output_unknown_section_header() {
-    let output = "Unknown section:\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
-    let fwds = parse_forward_output(output);
-    assert!(fwds.is_empty());
-}
-
-#[test]
-fn parse_forward_output_blank_lines_between_entries() {
-    let output = "\
-Local connections:
-  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80
-
-  127.0.0.1 port 9090, forwarding to 10.0.0.2 port 80
-";
-    let fwds = parse_forward_output(output);
-    assert_eq!(fwds.len(), 2);
 }
 
 #[test]
@@ -225,68 +67,6 @@ fn forward_type_display() {
 }
 
 #[test]
-fn parse_forward_line_with_extra_whitespace() {
-    let line = "  127.0.0.1  port  8080,  forwarding  to  10.0.0.1  port  80  ";
-    assert!(parse_forward_line(line, ForwardType::Local).is_none());
-}
-
-#[test]
-fn parse_forward_line_very_high_port() {
-    let line = "127.0.0.1 port 65535, forwarding to 10.0.0.1 port 80";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_port, 65535);
-}
-
-#[test]
-fn parse_forward_line_port_zero() {
-    let line = "127.0.0.1 port 0, forwarding to 10.0.0.1 port 80";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_port, 0);
-}
-
-#[test]
-fn parse_forward_line_remote_with_empty_remote_addr() {
-    let line = "0.0.0.0 port 2222, forwarding to  port 22";
-    let fwd = parse_forward_line(line, ForwardType::Remote).unwrap();
-    assert_eq!(fwd.remote_addr, "");
-    assert_eq!(fwd.remote_port, 22);
-}
-
-#[test]
-fn parse_forward_output_with_error_before_sections() {
-    let output = "Error: some error message\nLocal connections:\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
-    let fwds = parse_forward_output(output);
-    assert_eq!(fwds.len(), 1);
-}
-
-#[test]
-fn parse_forward_output_with_multiple_local_sections() {
-    let output = "\
-Local connections:
-  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80
-Local connections:
-  127.0.0.1 port 9090, forwarding to 10.0.0.2 port 80
-";
-    let fwds = parse_forward_output(output);
-    assert_eq!(fwds.len(), 2);
-}
-
-#[test]
-fn parse_forward_line_dynamic_with_remote_type() {
-    let line = "127.0.0.1 port 1080";
-    assert!(parse_forward_line(line, ForwardType::Remote).is_none());
-}
-
-#[test]
-fn parse_forward_line_local_with_dynamic_type() {
-    let line = "127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80";
-    let result = parse_forward_line(line, ForwardType::Dynamic);
-    if let Some(fwd) = result {
-        assert_eq!(fwd.local_port, 8080);
-    }
-}
-
-#[test]
 fn extract_host_from_name_very_long() {
     let long_name = format!("cm-user@{}:22", "a".repeat(256));
     let host = extract_host_from_name(&long_name);
@@ -313,64 +93,6 @@ fn extract_pid_from_name_at_boundary() {
         extract_pid_from_name("ssh-hash-4294967295"),
         Some(4294967295)
     );
-}
-
-#[test]
-fn parse_forward_output_with_tabs() {
-    let output = "Local connections:\n\t127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
-    let fwds = parse_forward_output(output);
-    assert_eq!(fwds.len(), 1);
-}
-
-#[test]
-fn parse_forward_line_same_local_remote_port() {
-    let line = "127.0.0.1 port 8080, forwarding to 10.0.0.1 port 8080";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_port, fwd.remote_port);
-}
-
-#[test]
-fn parse_forward_line_with_ipv6_localhost() {
-    let line = "::1 port 8080, forwarding to ::1 port 80";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_addr, "::1");
-    assert_eq!(fwd.remote_addr, "::1");
-}
-
-#[test]
-fn parse_forward_line_with_hostname() {
-    let line = "myhost port 8080, forwarding to remotehost port 80";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_addr, "myhost");
-    assert_eq!(fwd.remote_addr, "remotehost");
-}
-
-#[test]
-fn parse_forward_output_with_no_newline_at_end() {
-    let output = "Local connections:\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80";
-    let fwds = parse_forward_output(output);
-    assert_eq!(fwds.len(), 1);
-}
-
-#[test]
-fn parse_forward_output_with_multiple_blank_lines() {
-    let output = "Local connections:\n\n\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
-    let fwds = parse_forward_output(output);
-    assert_eq!(fwds.len(), 1);
-}
-
-#[test]
-fn parse_forward_line_with_port_1() {
-    let line = "127.0.0.1 port 1, forwarding to 10.0.0.1 port 80";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_port, 1);
-}
-
-#[test]
-fn parse_forward_line_with_port_65535() {
-    let line = "127.0.0.1 port 65535, forwarding to 10.0.0.1 port 80";
-    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
-    assert_eq!(fwd.local_port, 65535);
 }
 
 #[test]
@@ -597,24 +319,6 @@ fn extract_host_from_name_bare_ipv6_high_port() {
 }
 
 #[cfg(unix)]
-const FAKE_SSH_LIST_SCRIPT: &str = r#"#!/bin/sh
-action=""
-while [ $# -gt 0 ]; do
-    case "$1" in
-        -O) action="$2"; shift 2 ;;
-        *) shift ;;
-    esac
-done
-case "$action" in
-    list)
-        echo "Local connections:"
-        echo "  127.0.0.1 port 9090, forwarding to 10.0.0.1 port 80"
-        ;;
-    *) exit 0 ;;
-esac
-"#;
-
-#[cfg(unix)]
 fn install_fake_ssh(script: &str) -> (tempfile::TempDir, String) {
     use std::os::unix::fs::PermissionsExt;
 
@@ -627,54 +331,21 @@ fn install_fake_ssh(script: &str) -> (tempfile::TempDir, String) {
     (dir, modified)
 }
 
-#[cfg(unix)]
 #[tokio::test]
-#[serial]
-async fn cancel_forward_success() {
-    let (_dir, new_path) = install_fake_ssh(FAKE_SSH_LIST_SCRIPT);
-    let orig_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: test-only PATH mutation; tokio test runtime is single-threaded.
-    unsafe { std::env::set_var("PATH", &new_path) };
-
-    let result = cancel_forward(Path::new("/tmp/fake-ctrl-sock"), 9090).await;
-
-    // SAFETY: restoring the original value.
-    unsafe { std::env::set_var("PATH", &orig_path) };
-
-    assert!(result.is_ok(), "expected Ok(()) but got: {result:?}");
-}
-
-#[cfg(unix)]
-#[tokio::test]
-#[serial]
-async fn cancel_forward_forward_not_found() {
-    let (_dir, new_path) = install_fake_ssh(FAKE_SSH_LIST_SCRIPT);
-    let orig_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: test-only PATH mutation; tokio test runtime is single-threaded.
-    unsafe { std::env::set_var("PATH", &new_path) };
-
-    let result = cancel_forward(Path::new("/tmp/fake-ctrl-sock"), 8080).await;
-
-    // SAFETY: restoring the original value.
-    unsafe { std::env::set_var("PATH", &orig_path) };
-
-    match result {
-        Err(Error::ForwardNotFound(msg)) => {
-            assert!(msg.contains("8080"), "unexpected message: {msg}");
-        }
-        other => panic!("expected Error::ForwardNotFound, got: {other:?}"),
-    }
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn cancel_forward_invalid_control_path() {
+async fn cancel_known_forward_invalid_control_path() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
     let bad_path = std::path::Path::new(OsStr::from_bytes(b"/tmp/\xff\xfe/sock"));
+    let forward = PortForward {
+        local_addr: "127.0.0.1".to_owned(),
+        local_port: 8080,
+        remote_addr: "10.0.0.1".to_owned(),
+        remote_port: 80,
+        forward_type: ForwardType::Local,
+    };
 
-    let result = cancel_forward(bad_path, 8080).await;
+    let result = cancel_known_forward(bad_path, &forward).await;
 
     match result {
         Err(Error::ForwardFailed(msg)) => {
@@ -731,7 +402,8 @@ async fn exit_session_stale_socket_cleanup() {
 
     let tmp_dir = tempfile::tempdir().unwrap();
     let sock_path = tmp_dir.path().join("stale.sock");
-    let _listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+    drop(listener);
     assert!(sock_path.exists(), "socket file should exist before exit");
 
     let result = exit_session(&sock_path).await;
@@ -750,6 +422,50 @@ async fn exit_session_stale_socket_cleanup() {
     assert!(
         !sock_path.exists(),
         "stale socket file should be removed during cleanup"
+    );
+}
+
+#[cfg(unix)]
+const FAKE_SSH_EXIT_FAIL_CHECK_ALIVE_SCRIPT: &str = r#"#!/bin/sh
+action=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -O) action="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+case "$action" in
+    check) exit 0 ;;
+    *) exit 1 ;;
+esac
+"#;
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn exit_session_live_master_socket_survives_failed_exit() {
+    let (_dir, new_path) = install_fake_ssh(FAKE_SSH_EXIT_FAIL_CHECK_ALIVE_SCRIPT);
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    // SAFETY: test-only PATH mutation; tokio test runtime is single-threaded.
+    unsafe { std::env::set_var("PATH", &new_path) };
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let sock_path = tmp_dir.path().join("live.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
+    assert!(sock_path.exists(), "socket file should exist before exit");
+
+    let result = exit_session(&sock_path).await;
+
+    // SAFETY: restoring the original value.
+    unsafe { std::env::set_var("PATH", &orig_path) };
+
+    assert!(
+        result.is_err(),
+        "expected error from failed ssh -O exit: {result:?}"
+    );
+    assert!(
+        sock_path.exists(),
+        "a live master's socket must not be unlinked when the exit command fails"
     );
 }
 
@@ -1130,25 +846,4 @@ async fn join_all_bounded_sibling_failure_does_not_cancel_siblings() {
     ];
     let out = join_all_bounded(2, futs).await;
     assert_eq!(out, vec![false, true, false, true]);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-#[serial]
-async fn list_forwards_bounded_yields_one_result_per_input_even_on_failure() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let paths: Vec<std::path::PathBuf> = (0..5)
-        .map(|i| dir.path().join(format!("no-such-control-socket-{i}")))
-        .collect();
-
-    let results = list_forwards_bounded(paths.clone()).await;
-    assert_eq!(
-        results.len(),
-        paths.len(),
-        "isolation: every input yields exactly one result"
-    );
-    assert!(
-        results.iter().all(std::result::Result::is_err),
-        "a nonexistent control socket must error, not hang or vanish: {results:?}"
-    );
 }

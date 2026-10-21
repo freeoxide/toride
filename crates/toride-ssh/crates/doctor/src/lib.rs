@@ -3,12 +3,10 @@
 //! Provides [`DoctorService`], which orchestrates local and remote checks
 //! covering directory structure, file permissions, key strength, agent
 //! availability, config validity, and remote connectivity. Sub-modules
-//! define the `Check` trait, the local/remote check
-//! implementations, and the `CheckRegistry`.
+//! define the `Check` trait and the local/remote check implementations.
 
 mod check;
 mod local;
-mod registry;
 mod remote;
 
 use toride_ssh_core::CliRunner;

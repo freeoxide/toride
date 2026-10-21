@@ -6,7 +6,7 @@ It collects CPU, memory, disk, network, GPU, battery, sensor, and process metric
 
 ## Library crates on crates.io
 
-The app-management layer is released on crates.io as six versioned 0.x crates — the first 0.1.0 upload is performed by the Publish crates workflow (see [docs/publishing.md](docs/publishing.md)) — so embedders can depend on it instead of vendoring:
+The app-management layer is released on crates.io as six versioned 0.x crates (the first 0.1.0 upload is performed by the Publish crates workflow, see [docs/publishing.md](docs/publishing.md)), so embedders can depend on it instead of vendoring:
 
 | Crate | Role |
 |-------|------|
@@ -24,7 +24,7 @@ The heavy features stay off the default sets so a minimal dependency graph is th
 toride-apps = "0.1"
 ```
 
-The release process — ordering, version lockstep, changelog conventions — is documented in [docs/publishing.md](docs/publishing.md).
+The release process (ordering, version lockstep, changelog conventions) is documented in [docs/publishing.md](docs/publishing.md).
 
 ## Quick Start
 
@@ -154,54 +154,31 @@ for proc in status.system.processes.top_by_memory(5) {
 
 ## Supported Platforms
 
-| Feature         | Linux              | macOS          | Windows        |
-|-----------------|:------------------:|:--------------:|:--------------:|
-| CPU usage       | Full               | Full           | Full           |
-| Per-core CPU    | Full               | Full           | Full           |
-| Memory          | Full + /proc       | Full           | Full           |
-| Swap            | Full               | Full           | Full           |
-| Disk usage      | Full + /proc IO    | Full           | Full           |
-| Network I/O     | Full + rtnetlink   | Full           | Full           |
-| Load average    | Full               | Full           | Not available  |
-| Uptime          | Full               | Full           | Full           |
-| Hostname        | Full               | Full           | Full           |
-| OS info         | Full + os-release  | Full + edition | Full + edition |
-| Sensors         | lm-sensors         | SMC-based      | WMI-based      |
-| Processes       | Full + /proc       | Full           | Full           |
-| GPU             | NVIDIA (NVML)      | system_profiler| Not available  |
-| Battery         | /sys/class/power   | pmset          | Not available  |
-| DMI/SMBIOS      | dmidecode          | system_profiler| WMI            |
-| PCI devices     | pci-info           | system_profiler| Device Manager |
-| CPU topology    | hwlocality         | hwlocality     | hwlocality     |
-| Cgroups         | cgroups-rs         | N/A            | N/A            |
+| Feature         | Linux                    | macOS            | Windows        |
+|-----------------|:------------------------:|:----------------:|:--------------:|
+| CPU usage       | Full                     | Full             | Full           |
+| Per-core CPU    | Full                     | Full             | Full           |
+| Memory          | Full + /proc/meminfo     | Full             | Full           |
+| Swap            | Full                     | Full             | Full           |
+| Disk usage      | Full + /proc/diskstats   | Full             | Full           |
+| Network I/O     | Full + /sys/class/net    | Full             | Full           |
+| Load average    | Full                     | Full             | Not available  |
+| Uptime          | Full                     | Full             | Full           |
+| Hostname        | Full                     | Full             | Full           |
+| OS info         | Full + os-release        | Full             | Full           |
+| Sensors         | sysinfo + /sys/class/hwmon | sysinfo (SMC)  | sysinfo        |
+| Processes       | Full + /proc             | Full             | Full           |
+| GPU             | nvidia-smi               | system_profiler  | Not available  |
+| Battery         | starship-battery         | starship-battery | starship-battery |
+| DMI/SMBIOS      | /sys/class/dmi/id        | static (Apple)   | Not read       |
+| CPU topology    | /proc/cpuinfo + sysfs    | sysctl           | Not read       |
+| Cgroups         | /proc/self/cgroup        | N/A              | N/A            |
 
-**GPU support**: NVIDIA GPUs are well-supported via NVML (temperature, utilization, VRAM, power draw, clock speed, encoder/decoder utilization). Other vendors (AMD, Intel, Apple) report identity-only data (name, vendor, VRAM). Apple Silicon GPU metrics are limited by macOS API availability.
+**GPU support**: NVIDIA GPUs report through one `nvidia-smi` subprocess per collect (identity, VRAM, utilization, temperature, power draw, clocks, encoder/decoder utilization). NVML is not linked. macOS reports identity and VRAM via `system_profiler`. AMD and Intel GPUs are not probed, and Windows reports no GPUs.
 
 ## Feature Flags
 
-All optional features are disabled by default except `sysinfo-provider`. Enable only what you need:
-
-```toml
-[dependencies]
-toride = { version = "0.1", features = ["gpu-nvidia", "linux-procfs"] }
-```
-
-| Feature               | Default | Dependencies           | Description                                    |
-|-----------------------|:-------:|------------------------|------------------------------------------------|
-| `sysinfo-provider`    | Yes     | sysinfo                | Core system metrics via sysinfo                |
-| `linux-procfs`        | No      | procfs                 | Deep Linux telemetry via /proc                 |
-| `linux-sensors`       | No      | lm-sensors             | Temperature/fan sensors via lm-sensors         |
-| `linux-udev`          | No      | udev                   | Device metadata via udev                       |
-| `linux-rtnetlink`     | No      | rtnetlink              | Advanced Linux networking                      |
-| `linux-cgroups`       | No      | cgroups-rs             | Container limits via cgroups                   |
-| `os-info`             | No      | os_info                | Extended OS info (edition, codename, bitness)  |
-| `cpu-cpuid`           | No      | raw-cpuid              | x86 CPU feature detection                      |
-| `hardware-dmi`        | No      | dmidecode              | SMBIOS/DMI hardware inventory                  |
-| `hardware-pci`        | No      | pci-info, pci-ids      | PCI device enumeration                         |
-| `hardware-topology`   | No      | hwlocality             | CPU topology and NUMA awareness                |
-| `gpu-nvidia`          | No      | nvml-wrapper           | NVIDIA GPU metrics via NVML                    |
-| `battery`             | No      | starship-battery       | Battery status                                 |
-| `commands`            | No      | duct, which            | External command providers                     |
+`toride-status` has one optional feature: `battery` (on by default, backed by `starship-battery`). `sysinfo` is the only metrics backend; there are no backend-alternative features to enable.
 
 ## Privacy Model
 
@@ -324,15 +301,14 @@ Capabilities are detected using compile-time `cfg!` macros for platform features
 
 ## GPU Limitations
 
-| Vendor  | Method              | Identity | VRAM | Utilization | Temperature | Power | Clock |
-|---------|---------------------|:--------:|:----:|:-----------:|:-----------:|:-----:|:-----:|
-| NVIDIA  | NVML (gpu-nvidia)   | Yes      | Yes  | Yes         | Yes         | Yes   | Yes   |
-| NVIDIA  | nvidia-smi fallback | Yes      | Yes  | No          | No          | No    | No    |
-| AMD     | sysinfo             | Yes      | Some | No          | No          | No    | No    |
-| Intel   | sysinfo             | Yes      | Some | No          | No          | No    | No    |
-| Apple   | system_profiler     | Yes      | Yes  | No          | No          | No    | No    |
+| Vendor  | Method          | Identity | VRAM | Utilization | Temperature | Power | Clock |
+|---------|-----------------|:--------:|:----:|:-----------:|:-----------:|:-----:|:-----:|
+| NVIDIA  | nvidia-smi      | Yes      | Yes  | Yes         | Yes         | Yes   | Yes   |
+| Apple   | system_profiler | Yes      | Yes  | No          | No          | No    | No    |
+| AMD     | not probed      | No       | No   | No          | No          | No    | No    |
+| Intel   | not probed      | No       | No   | No          | No          | No    | No    |
 
-For full NVIDIA GPU metrics, enable the `gpu-nvidia` feature. Without it, NVIDIA GPUs are detected via `nvidia-smi` (Linux) with identity and VRAM only.
+NVIDIA data comes from one `nvidia-smi --query-gpu=...` subprocess per collect on Linux. NVML is not linked, and there is no GPU feature flag. Windows reports no GPUs.
 
 Apple Silicon GPUs report through `system_profiler` but macOS does not expose utilization, temperature, or power draw through public APIs.
 
@@ -340,31 +316,31 @@ Apple Silicon GPUs report through `system_profiler` but macOS does not expose ut
 
 ### Linux
 
-Linux has the deepest support through optional feature flags:
+Linux has the deepest support. Beyond sysinfo, the crate reads the kernel's own files directly:
 
-- **linux-procfs**: Reads `/proc/meminfo`, `/proc/stat`, `/proc/diskstats`, `/proc/net/dev` for detailed metrics beyond what sysinfo provides. Includes cached memory, buffer memory, disk I/O counters, and per-interface packet/error/drop counts.
-- **linux-sensors**: Reads temperature sensors and fan speeds via `lm-sensors`. Supports CPU and GPU temperature, fan RPM, and voltage readings.
-- **linux-udev**: Queries udev database for device metadata (model names, serial numbers, physical device paths).
-- **linux-rtnetlink**: Uses netlink sockets for advanced network interface data (IP addresses, link speed, duplex mode, gateway, DNS).
-- **linux-cgroups**: Detects cgroup v1/v2 and reads container resource limits (CPU quota, memory limit, swap limit, block I/O limit, cpuset).
+- `/proc/meminfo` for cached and buffer memory.
+- `/proc/diskstats` for disk I/O counters (base devices only; partitions are not double-counted).
+- `/sys/class/net` for link state, speed, duplex, and drop counters.
+- `/sys/class/hwmon` for fan and voltage readings.
+- `/proc/cpuinfo` and `/sys/devices/system/cpu` for topology and frequencies.
+- `/sys/class/dmi/id` for the hardware inventory.
+- `/proc/<pid>` for per-process I/O, cwd, fd, and thread counts.
 
 Virtualization detection (always available on Linux): Docker, LXC, containerd, Kubernetes, WSL, and VMs (VirtualBox, VMware, KVM, QEMU, Hyper-V).
 
 ### macOS
 
-- Battery status via `pmset -g batt`.
+- Battery status via `starship-battery`.
 - GPU detection via `system_profiler SPDisplaysDataType`.
-- OS edition and codename available with `os-info` feature.
 - Load average available (Unix).
-- No disk I/O counters from sysinfo; no native sensor data without third-party kexts.
 
 ### Windows
 
 - No load average (returns `None`).
-- No GPU detection in default provider.
-- No battery detection in default provider.
+- No GPU detection.
+- Battery via `starship-battery`.
 - Swap is reported as `None` when not configured.
-- Sensors available through WMI when `sysinfo-provider` is enabled.
+- Sensors via sysinfo.
 
 ## Container and Cgroup Notes
 
@@ -386,7 +362,7 @@ if virt.in_wsl {
     println!("Running in WSL");
 }
 
-// Cgroup limits (Linux only, requires linux-cgroups feature)
+// Cgroup limit fields exist but stay None in this release.
 if let Some(quota) = virt.cpu_quota {
     println!("CPU quota: {quota}");
 }
@@ -406,12 +382,7 @@ if let Some(limit) = virt.memory_limit_bytes {
 | Cgroup version   | `/proc/self/cgroup` prefix (`0::/` = v2)    |
 | Podman           | Container runtime detection                 |
 
-Cgroup resource limits are read when the `linux-cgroups` feature is enabled:
-- CPU quota (percentage of available CPU)
-- Memory limit (bytes)
-- Swap limit (bytes)
-- Block I/O limit (bytes)
-- CPU set (allowed CPU cores)
+The limit fields on `VirtualizationSnapshot` (`cpu_quota`, `memory_limit_bytes`, `swap_limit`, `blkio_limit`, `cpuset_cpus`) stay `None` in this release. The crate reads only the detection flags above and the cgroup version from `/proc/self/cgroup`.
 
 ## Performance Notes
 
@@ -563,4 +534,4 @@ println!("{power}");                // "75.5 W"
 
 ## License
 
-MIT — every published crate ships a `LICENSE-MIT`.
+MIT: every published crate ships a `LICENSE-MIT`.

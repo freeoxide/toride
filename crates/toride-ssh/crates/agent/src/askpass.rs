@@ -39,7 +39,7 @@
 //!   overwriting another handler's file; per-file ACL hardening relies on the
 //!   per-user `%TEMP%` directory ACL.
 //! - The passphrase never appears in process `argv`, parent stdout/stderr, or
-//!   `CommandFailed` error strings — only the script's filesystem path is
+//!   `CommandFailed` error strings; only the script's filesystem path is
 //!   included in errors.
 
 use std::path::PathBuf;
@@ -134,12 +134,6 @@ impl AskpassHandler {
         #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
 
-        // Copy the passphrase into an owned, zeroizable buffer. The script
-        // content is derived from this copy; once the file has been written
-        // and flushed we overwrite the buffer so the cleartext passphrase does
-        // not linger in memory (or in this stack frame's leftover `String`
-        // allocation) any longer than necessary. The caller still owns the
-        // original `&str` and is responsible for its lifetime.
         let mut passphrase_buf = passphrase.to_string();
 
         let ts = std::time::SystemTime::now()
@@ -164,32 +158,9 @@ impl AskpassHandler {
             let escaped = passphrase_buf.replace('\'', "'\\''");
             let script_content = format!("#!/bin/sh\necho '{escaped}'\n");
 
-            // Write atomically via a hidden sibling + `rename(2)`.
-            //
-            // The Linux kernel returns `ETXTBSY` ("Text file busy") from
-            // `execve(2)` whenever the target file is open for writing by *any*
-            // process at the moment of the call. Even though we close our own
-            // `File` handle before returning, the brief interval between the
-            // write and the close — combined with the kernel's deferred inode
-            // accounting — is enough to lose the race when a caller (or, in our
-            // test suite, multiple parallel tests) execs the script immediately
-            // after construction. `fsync` alone does not close this window
-            // because it flushes *data*, not the kernel's "file is being
-            // written" bookkeeping.
-            //
-            // The deterministic fix is to write the script to a temporary
-            // sibling file, fsync it, close every writer, and *then* atomically
-            // `rename(2)` it into its final path. After the rename, the
-            // destination inode has never been opened for writing by anyone, so
-            // a subsequent `execve` can never observe a writer and thus can
-            // never return `ETXTBSY`.
-            //
-            // The temp file is created with its final `0o700` mode (rwx------)
-            // via a single `open(2)` with `O_CREAT|O_EXCL`, so there is also no
-            // window in which the script exists but is world-readable or
-            // non-executable. We pass `create_new(true)` so a name collision
-            // fails loudly instead of silently overwriting another handler's
-            // script.
+            // Upstream constraint: execve(2) fails ETXTBSY on any file open for
+            // writing, so the script is staged on a sibling and rename(2)d
+            // into place; the destination inode is never open for writing.
             let tmp_path = {
                 let mut name = filename.clone();
                 name.push_str(".tmp");
@@ -212,15 +183,10 @@ impl AskpassHandler {
                     tmp_path.display()
                 ))
             })?;
-            // Flush data + metadata so the renamed file is fully on disk.
             let _ = file.sync_all();
             drop(file);
 
-            // Atomically publish the script at its final path. `rename(2)`
-            // within the same directory is atomic on POSIX, so no reader (or
-            // execve) ever sees a half-written file or an open writer.
             std::fs::rename(&tmp_path, &script_path).map_err(|e| {
-                // Best-effort cleanup of the temp file if rename failed.
                 let _ = std::fs::remove_file(&tmp_path);
                 Error::CommandFailed(format!(
                     "failed to publish askpass script {}: {e}",
@@ -231,21 +197,8 @@ impl AskpassHandler {
 
         #[cfg(windows)]
         {
-            // On Windows, write a batch file that echoes the passphrase.
-            //
-            // We use `setlocal enabledelayedexpansion` and `set "VAR=value"`
-            // so that shell metacharacters like `&`, `|`, `>`, `<`, and `^`
-            // are treated as literal text (they are harmless inside the
-            // quoted `set` form). The following characters still need
-            // escaping:
-            //
-            // - `%` → `%%` — prevents `%VAR%`-style expansion in the
-            //   percent-expansion phase (phase 1).
-            // - `!` → `^^!` — the first `^` is consumed by phase-1 caret
-            //   processing, leaving `^!`; in the delayed-expansion phase
-            //   (phase 3), `^` escapes `!`, yielding a literal `!`.
-            // - `"` → `""` — embeds a literal double-quote inside the
-            //   `set "VAR=value"` assignment (Windows 10+ / Server 2016+).
+            // set "VAR=value" keeps `&`/`|`/`>` literal; %, !, and " still
+            // need their cmd.exe phase-specific escapes below.
             let bat_path = script_path.with_extension("bat");
             let escaped = passphrase_buf
                 .replace('%', "%%")
@@ -259,13 +212,9 @@ impl AskpassHandler {
             );
 
             // Write via a hidden sibling + `MoveFileEx` (atomic rename), the
-            // Windows analogue of the Unix branch. The previous implementation
-            // used `std::fs::write`, which (a) silently overwrites any file
-            // already at the destination — a name collision would clobber
-            // another handler's script — and (b) opens the destination path
-            // for writing and hands it out to readers while the write may
-            // still be buffered, mirroring the `ETXTBSY`/sharing-violation
-            // window the Unix branch already avoids.
+            // Windows analogue of the Unix branch, so the destination is
+            // never opened for writing and name collisions never clobber
+            // another handler's script.
             //
             // We use `OpenOptions::create_new(true)` (`CREATE_NEW`) so a name
             // collision fails loudly instead of silently overwriting, then
@@ -346,17 +295,6 @@ impl Drop for AskpassHandler {
 mod tests {
     use super::*;
 
-    /// Each test gets its own dedicated [`tempfile::TempDir`] instead of the
-    /// shared `std::env::temp_dir()`. This isolates the askpass script from
-    /// other concurrently running tests (in this crate and across the
-    /// workspace), which was the root cause of the `ETXTBSY` ("Text file
-    /// busy") flakes observed on `script_outputs_passphrase` /
-    /// `script_with_empty_passphrase` / `script_with_single_quotes_in_passphrase`
-    /// under parallel test load.
-    ///
-    /// The `TempDir` is returned alongside the handler so the caller keeps it
-    /// alive (and thus the directory on disk) for the duration of the test; it
-    /// is removed automatically when it goes out of scope.
     fn handler_in_tempdir(passphrase: &str) -> (tempfile::TempDir, AskpassHandler) {
         let dir = tempfile::TempDir::new().expect("failed to create temp dir");
         let handler = AskpassHandler::new_in_dir(passphrase, dir.path())
@@ -469,15 +407,11 @@ mod tests {
 
     /// Run the askpass script, retrying on `ETXTBSY` ("Text file busy").
     ///
-    /// On Linux, `execve(2)` returns `ETXTBSY` (errno 26) when the file being
-    /// executed has an open writer. Even after an atomic write+rename (so no
-    /// userspace process holds the file open) the kernel's `i_writecount`
-    /// accounting can transiently report a write reference while the binfmt
-    /// layer sets up the text segment, **under concurrent fork/exec load** —
-    /// e.g. when cargo runs the askpass tests in parallel. This is a known,
-    /// purely-transient kernel race; the script is always executable a few
-    /// microseconds later. We retry a handful of times with a short backoff so
-    /// the tests are deterministic without weakening their assertions.
+    /// On Linux, `execve(2)` returns `ETXTBSY` when the file has an open
+    /// writer, and the kernel's `i_writecount` accounting can transiently
+    /// report one under concurrent fork/exec load even after an atomic
+    /// write+rename. The race is transient, so this retries with a short
+    /// backoff instead of weakening the tests' assertions.
     #[cfg(unix)]
     fn run_script_retrying_busy(path: &std::path::Path) -> std::process::Output {
         let mut backoff = std::time::Duration::from_micros(100);

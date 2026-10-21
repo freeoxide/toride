@@ -3,6 +3,7 @@
 use toride_ssh_config::resolve::resolve;
 use toride_ssh_core::HostKeyPolicy;
 use toride_ssh_core::HostSpec;
+use toride_ssh_core::fanout::join_all_bounded;
 use toride_ssh_core::paths::SshPaths;
 use toride_ssh_core::{Diagnostic, DiagnosticSeverity as Severity};
 use toride_ssh_core::{Error, Result};
@@ -33,7 +34,7 @@ fn parse_host_port(host: &str) -> (&str, Option<u16>) {
         return (bare, None);
     }
 
-    // Unbracketed form: `host:port` — only parse if there is exactly one
+    // Unbracketed form: `host:port`, only parse if there is exactly one
     // colon (so IPv6 addresses like `::1` are left alone).
     if let Some(colon_pos) = host.rfind(':')
         && !host[..colon_pos].contains(':')
@@ -43,7 +44,7 @@ fn parse_host_port(host: &str) -> (&str, Option<u16>) {
         if port != 22 {
             return (bare, Some(port));
         }
-        // Port is 22 (default) — still strip the suffix so the
+        // Port is 22 (default), still strip the suffix so the
         // returned host is clean.
         if !bare.is_empty() {
             return (bare, None);
@@ -56,7 +57,7 @@ fn parse_host_port(host: &str) -> (&str, Option<u16>) {
 /// Build the common SSH connection options, an optional `-p PORT` flag, and
 /// an optional `-J jump_host` flag for `ProxyJump`.
 ///
-/// The host is **not** included — the caller should append it (and any
+/// The host is **not** included, the caller should append it (and any
 /// extra flags or the remote command) after any additional options.
 ///
 /// Returns a `Vec<String>` suitable for passing to `Command::args(...)`.
@@ -79,6 +80,77 @@ fn ssh_connect_args(port: Option<u16>, proxy_jump: Option<&str>) -> Vec<String> 
         args.push(jump.to_owned());
     }
     args
+}
+
+const MAX_CONCURRENT_REMOTE_CMDS: usize = 8;
+
+// Boxing keeps one concrete `Send` future type for the heterogeneous fan-out
+// (rust-lang/rust#110338).
+type BoxedDiagFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + 'a>>;
+
+/// Results of the one-shot trivial remote probe.
+///
+/// `None` fields mean the probe could not determine the value (connection
+/// failure or a failing sub-command).
+struct RemoteTrivialProbe {
+    home: Option<String>,
+    ssh_mode: Option<String>,
+    authorized_keys_exists: Option<bool>,
+}
+
+/// Fetch the remote `$HOME`, `~/.ssh` mode, and `authorized_keys` existence
+/// in a single SSH round-trip.
+async fn run_trivial_probe(
+    host: &str,
+    port: Option<u16>,
+    proxy_jump: Option<&str>,
+    runner: &dyn toride_ssh_core::CliRunner,
+) -> Result<RemoteTrivialProbe> {
+    let cmd = "echo __home=\"$HOME\"; \
+echo __ssh_mode=\"$(stat -c '%a' ~/.ssh 2>/dev/null || stat -f '%Lp' ~/.ssh 2>/dev/null)\"; \
+if test -f ~/.ssh/authorized_keys; then echo __ak=yes; else echo __ak=no; fi";
+
+    let mut args = ssh_connect_args(port, proxy_jump);
+    args.push(host.into());
+    args.push(cmd.into());
+    let output = run_via_runner(runner, "ssh", args).await?;
+
+    let mut probe = RemoteTrivialProbe {
+        home: None,
+        ssh_mode: None,
+        authorized_keys_exists: None,
+    };
+    if !output.success {
+        return Ok(probe);
+    }
+    for line in output.stdout.lines() {
+        if let Some(value) = line.strip_prefix("__home=") {
+            probe.home = Some(value.to_owned());
+        } else if let Some(value) = line.strip_prefix("__ssh_mode=") {
+            probe.ssh_mode = Some(value.trim_matches('\'').to_owned());
+        } else if let Some(value) = line.strip_prefix("__ak=") {
+            probe.authorized_keys_exists = Some(value == "yes");
+        }
+    }
+    Ok(probe)
+}
+
+/// Fetch `sshd -T` output once for every settings check to reuse.
+///
+/// Returns `None` when the command fails; callers report their own
+/// could-not-read diagnostic.
+async fn fetch_sshd_t(
+    host: &str,
+    port: Option<u16>,
+    proxy_jump: Option<&str>,
+    runner: &dyn toride_ssh_core::CliRunner,
+) -> Option<String> {
+    let mut args = ssh_connect_args(port, proxy_jump);
+    args.push(host.into());
+    args.push("sshd -T 2>/dev/null".into());
+    let output = run_via_runner(runner, "ssh", args).await.ok()?;
+    output.success.then_some(output.stdout)
 }
 
 /// Return the host string in the format used by `known_hosts` entries.
@@ -193,7 +265,7 @@ struct HostKeyKnown<'a> {
 ///
 /// Uses `ssh-keygen -F` to look up stored keys and `ssh-keyscan` to query the
 /// live host, then compares the key data. A mismatch indicates the remote host
-/// key has changed since the last connection — this may signal a MITM attack or
+/// key has changed since the last connection, this may signal a MITM attack or
 /// a legitimate host reinstallation.
 struct HostKeyVerificationCheck<'a> {
     paths: &'a SshPaths,
@@ -213,17 +285,11 @@ struct AgentForwarding<'a> {
 /// Check that remote `~/.ssh` has restrictive permissions (should be 700).
 struct RemotePermissionsCheck<'a> {
     host: &'a str,
-    port: Option<u16>,
-    proxy_jump: Option<&'a str>,
-    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Check that remote `~/.ssh/authorized_keys` exists.
 struct RemoteAuthorizedKeysCheck<'a> {
     host: &'a str,
-    port: Option<u16>,
-    proxy_jump: Option<&'a str>,
-    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Verify that public-key authentication works to the remote host.
@@ -237,17 +303,11 @@ struct RemotePubkeyAuthCheck<'a> {
 /// Check remote sshd configuration for common misconfigurations.
 struct RemoteSshdConfigCheck<'a> {
     host: &'a str,
-    port: Option<u16>,
-    proxy_jump: Option<&'a str>,
-    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Verify the remote home directory is accessible and exists.
 struct RemoteHomeCheck<'a> {
     host: &'a str,
-    port: Option<u16>,
-    proxy_jump: Option<&'a str>,
-    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Detect and report `ProxyJump` configuration for the target host.
@@ -269,10 +329,6 @@ struct JumpHostReachableCheck<'a> {
     jump_host: &'a str,
     runner: &'a dyn toride_ssh_core::CliRunner,
 }
-
-// ---------------------------------------------------------------------------
-// Check implementations
-// ---------------------------------------------------------------------------
 
 impl HostReachabilityCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
@@ -382,7 +438,7 @@ impl HostKeyKnown<'_> {
                     let Some(host_field) = line.split_whitespace().next() else {
                         return false;
                     };
-                    // Skip hashed entries — we cannot verify them by name.
+                    // Skip hashed entries, we cannot verify them by name.
                     if host_field.starts_with('|') {
                         return false;
                     }
@@ -406,7 +462,7 @@ impl HostKeyKnown<'_> {
                         id: "host_key_known",
                         severity: Severity::Warning,
                         message: format!(
-                            "{} is not in known_hosts — you will be prompted on first connection",
+                            "{} is not in known_hosts, you will be prompted on first connection",
                             self.host
                         ),
                         hint: Some(format!(
@@ -427,10 +483,6 @@ impl HostKeyKnown<'_> {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// HostKeyVerificationCheck
-// ---------------------------------------------------------------------------
 
 impl HostKeyVerificationCheck<'_> {
     #[allow(clippy::too_many_lines)]
@@ -458,7 +510,7 @@ impl HostKeyVerificationCheck<'_> {
                 id: "host_key_verification",
                 severity: Severity::Info,
                 message: format!(
-                    "No stored host keys found for {} in known_hosts — cannot verify key integrity",
+                    "No stored host keys found for {} in known_hosts, cannot verify key integrity",
                     self.host
                 ),
                 hint: Some(format!(
@@ -488,7 +540,7 @@ impl HostKeyVerificationCheck<'_> {
                 id: "host_key_verification",
                 severity: Severity::Warning,
                 message: format!(
-                    "ssh-keyscan returned no keys from {} — host may be down or blocking key exchange",
+                    "ssh-keyscan returned no keys from {}, host may be down or blocking key exchange",
                     self.host
                 ),
                 hint: Some("Verify the host is reachable and the SSH port is open".into()),
@@ -496,101 +548,76 @@ impl HostKeyVerificationCheck<'_> {
             }]);
         }
 
-        // Step 3: Compare stored vs live keys.
-        //
-        // For each stored key type, check if the same key data appears in the
-        // live keys. If a stored key type is present but with different data,
-        // that is a mismatch (potential MITM or host reinstall). If no stored
-        // key type appears in the live keys at all, that is also a mismatch.
-        let stored_types: Vec<&str> = stored_keys
-            .iter()
-            .filter_map(|line| extract_key_type(line))
-            .collect();
+        // Step 3: Compare stored vs live keys through the shared,
+        // marker-aware comparison from toride-ssh-known-hosts.
+        let comparison = toride_ssh_known_hosts::compare_host_key_lines(&stored_keys, &live_keys);
 
         let mut diagnostics = Vec::new();
 
-        for stored_line in &stored_keys {
-            let Some(stored_type) = extract_key_type(stored_line) else {
-                continue;
-            };
-            let stored_data = extract_key_data(stored_line);
-
-            // Check if any live key of the same type matches.
-            let type_in_live = live_keys
-                .iter()
-                .filter(|lk| extract_key_type(lk).is_some_and(|t| t == stored_type))
-                .collect::<Vec<_>>();
-
-            if type_in_live.is_empty() {
-                // The key type from known_hosts is no longer offered by the host.
-                diagnostics.push(Diagnostic {
-                    id: "host_key_verification",
-                    severity: Severity::Warning,
-                    message: format!(
-                        "Host {} no longer offers {} key (was in known_hosts)",
-                        self.host, stored_type
-                    ),
-                    hint: Some(
-                        "The host may have been reconfigured. \
-                         Update known_hosts: `ssh-keygen -R <host> && ssh-keyscan -H <host> >> ~/.ssh/known_hosts`"
-                            .into(),
-                    ),
-                    module: "remote",
-                });
-                continue;
-            }
-
-            // Check if the stored key data matches any live key of the same type.
-            let data_matches = type_in_live
-                .iter()
-                .any(|lk| extract_key_data(lk) == stored_data);
-
-            if data_matches {
-                diagnostics.push(Diagnostic {
-                    id: "host_key_verification",
-                    severity: Severity::Ok,
-                    message: format!("Host {} {} key matches known_hosts", self.host, stored_type),
-                    hint: None,
-                    module: "remote",
-                });
-            } else {
-                diagnostics.push(Diagnostic {
-                    id: "host_key_verification",
-                    severity: Severity::Critical,
-                    message: format!(
-                        "Host key MISMATCH for {} ({}) — known_hosts key does not match the live host",
-                        self.host, stored_type
-                    ),
-                    hint: Some(
-                        "POSSIBLE MITM ATTACK or host reinstallation. \
-                         Verify the host identity before updating known_hosts: \
-                         `ssh-keygen -R <host> && ssh-keyscan -H <host> >> ~/.ssh/known_hosts`"
-                            .into(),
-                    ),
-                    module: "remote",
-                });
-            }
+        for key_type in &comparison.matched_types {
+            diagnostics.push(Diagnostic {
+                id: "host_key_verification",
+                severity: Severity::Ok,
+                message: format!("Host {} {key_type} key matches known_hosts", self.host),
+                hint: None,
+                module: "remote",
+            });
         }
 
-        // Report live key types that are not in known_hosts at all.
-        for live_line in &live_keys {
-            let Some(live_type) = extract_key_type(live_line) else {
-                continue;
-            };
-            if !stored_types.contains(&live_type) {
-                diagnostics.push(Diagnostic {
-                    id: "host_key_verification",
-                    severity: Severity::Info,
-                    message: format!(
-                        "Host {} offers {} key not present in known_hosts",
-                        self.host, live_type
-                    ),
-                    hint: Some(format!(
-                        "To trust this key: `ssh-keyscan -H {} >> ~/.ssh/known_hosts`",
-                        self.host
-                    )),
-                    module: "remote",
-                });
+        for change in &comparison.changes {
+            match &change.kind {
+                toride_ssh_known_hosts::KeyChangeKind::New => {
+                    diagnostics.push(Diagnostic {
+                        id: "host_key_verification",
+                        severity: Severity::Info,
+                        message: format!(
+                            "Host {} offers {} key not present in known_hosts",
+                            self.host, change.key_type
+                        ),
+                        hint: Some(format!(
+                            "To trust this key: `ssh-keyscan -H {} >> ~/.ssh/known_hosts`",
+                            self.host
+                        )),
+                        module: "remote",
+                    });
+                }
+                toride_ssh_known_hosts::KeyChangeKind::Removed => {
+                    diagnostics.push(Diagnostic {
+                        id: "host_key_verification",
+                        severity: Severity::Warning,
+                        message: format!(
+                            "Host {} no longer offers {} key (was in known_hosts)",
+                            self.host, change.key_type
+                        ),
+                        hint: Some(
+                            "The host may have been reconfigured. \
+                             Update known_hosts: `ssh-keygen -R <host> && ssh-keyscan -H <host> >> ~/.ssh/known_hosts`"
+                                .into(),
+                        ),
+                        module: "remote",
+                    });
+                }
+                toride_ssh_known_hosts::KeyChangeKind::Changed {
+                    stored_fingerprint,
+                    scanned_fingerprint,
+                } => {
+                    diagnostics.push(Diagnostic {
+                        id: "host_key_verification",
+                        severity: Severity::Critical,
+                        message: format!(
+                            "Host key MISMATCH for {} ({}), known_hosts key does not match the live host \
+                             (stored {stored_fingerprint}, live {scanned_fingerprint})",
+                            self.host, change.key_type
+                        ),
+                        hint: Some(
+                            "POSSIBLE MITM ATTACK or host reinstallation. \
+                             Verify the host identity before updating known_hosts: \
+                             `ssh-keygen -R <host> && ssh-keyscan -H <host> >> ~/.ssh/known_hosts`"
+                                .into(),
+                        ),
+                        module: "remote",
+                    });
+                }
             }
         }
 
@@ -707,34 +734,6 @@ impl HostKeyVerificationCheck<'_> {
     }
 }
 
-/// Extract the key type (e.g., "ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256")
-/// from a `known_hosts` key line.
-///
-/// A `known_hosts` line has the format: `[host]:port keytype base64data [comment]`
-/// or: `host keytype base64data [comment]`.
-fn extract_key_type(line: &str) -> Option<&str> {
-    // The key type is the second whitespace-delimited field (after the host
-    // field, which may contain commas for multiple hosts).
-    let mut parts = line.split_whitespace();
-    let _host_field = parts.next()?;
-    parts.next()
-}
-
-/// Extract the key data portion (key type + base64 blob) from a `known_hosts`
-/// line, stripping any host field and trailing comments.
-///
-/// Returns the "keytype base64data" portion used for equality comparison.
-fn extract_key_data(line: &str) -> String {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() >= 3 {
-        // host_field key_type base64data [comment...]
-        // We want "key_type base64data"
-        format!("{} {}", parts[1], parts[2])
-    } else {
-        line.to_owned()
-    }
-}
-
 impl AgentForwarding<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
         // The `-A` flag enables agent forwarding. This is safe for diagnostic
@@ -746,7 +745,7 @@ impl AgentForwarding<'_> {
             return Ok(vec![Diagnostic {
                 id: "agent_forwarding",
                 severity: Severity::Warning,
-                message: "SSH agent is not running locally — cannot test agent forwarding".into(),
+                message: "SSH agent is not running locally, cannot test agent forwarding".into(),
                 hint: Some("Start the SSH agent: `eval $(ssh-agent -s)`".into()),
                 module: "remote",
             }]);
@@ -784,45 +783,30 @@ impl AgentForwarding<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RemotePermissionsCheck
-// ---------------------------------------------------------------------------
-
 impl RemotePermissionsCheck<'_> {
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let mut args = ssh_connect_args(self.port, self.proxy_jump);
-        args.push(self.host.into());
-        // Use `stat -c %a` for GNU/Linux and fall back to `stat -f %Lp` for BSD/macOS.
-        // The portable idiom `$(stat -c %a . 2>/dev/null || stat -f %Lp .)` covers both.
-        args.push("stat -c '%a' ~/.ssh 2>/dev/null || stat -f '%Lp' ~/.ssh 2>/dev/null".into());
-        let output = run_via_runner(self.runner, "ssh", args).await?;
-
-        if !output.success {
-            return Ok(vec![Diagnostic {
+    /// `ssh_mode` comes from the shared trivial probe (`__ssh_mode=` value,
+    /// GNU `stat -c %a` with a BSD `stat -f %Lp` fallback).
+    fn analyze(&self, ssh_mode: Option<&str>) -> Vec<Diagnostic> {
+        let Some(mode) = ssh_mode.filter(|m| !m.is_empty()) else {
+            return vec![Diagnostic {
                 id: "remote_permissions",
                 severity: Severity::Warning,
-                message: format!(
-                    "Could not stat remote ~/.ssh on {}: {}",
-                    self.host,
-                    output.stderr.trim()
-                ),
+                message: format!("Could not stat remote ~/.ssh on {}", self.host),
                 hint: Some("Ensure ~/.ssh exists on the remote host".into()),
                 module: "remote",
-            }]);
-        }
-
-        let mode = output.stdout.trim().trim_matches('\'');
+            }];
+        };
 
         if mode == "700" {
-            Ok(vec![Diagnostic {
+            vec![Diagnostic {
                 id: "remote_permissions",
                 severity: Severity::Ok,
                 message: format!("Remote ~/.ssh permissions are {mode} (correct)"),
                 hint: None,
                 module: "remote",
-            }])
+            }]
         } else {
-            Ok(vec![Diagnostic {
+            vec![Diagnostic {
                 id: "remote_permissions",
                 severity: Severity::Warning,
                 message: format!(
@@ -831,32 +815,22 @@ impl RemotePermissionsCheck<'_> {
                 ),
                 hint: Some("Run on the remote: `chmod 700 ~/.ssh`".into()),
                 module: "remote",
-            }])
+            }]
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// RemoteAuthorizedKeysCheck
-// ---------------------------------------------------------------------------
-
 impl RemoteAuthorizedKeysCheck<'_> {
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let mut args = ssh_connect_args(self.port, self.proxy_jump);
-        args.push(self.host.into());
-        args.push("test -f ~/.ssh/authorized_keys".into());
-        let output = run_via_runner(self.runner, "ssh", args).await?;
-
-        if output.success {
-            Ok(vec![Diagnostic {
+    fn analyze(&self, exists: Option<bool>) -> Vec<Diagnostic> {
+        match exists {
+            Some(true) => vec![Diagnostic {
                 id: "remote_authorized_keys",
                 severity: Severity::Ok,
                 message: format!("~/.ssh/authorized_keys exists on {}", self.host),
                 hint: None,
                 module: "remote",
-            }])
-        } else {
-            Ok(vec![Diagnostic {
+            }],
+            Some(false) => vec![Diagnostic {
                 id: "remote_authorized_keys",
                 severity: Severity::Warning,
                 message: format!("~/.ssh/authorized_keys does not exist on {}", self.host),
@@ -865,14 +839,20 @@ impl RemoteAuthorizedKeysCheck<'_> {
                         .into(),
                 ),
                 module: "remote",
-            }])
+            }],
+            None => vec![Diagnostic {
+                id: "remote_authorized_keys",
+                severity: Severity::Warning,
+                message: format!("Could not check ~/.ssh/authorized_keys on {}", self.host),
+                hint: Some(
+                    "Copy your public key: `ssh-copy-id <user>@<host>` or manually create the file"
+                        .into(),
+                ),
+                module: "remote",
+            }],
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// RemotePubkeyAuthCheck
-// ---------------------------------------------------------------------------
 
 impl RemotePubkeyAuthCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
@@ -909,19 +889,10 @@ impl RemotePubkeyAuthCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RemoteSshdConfigCheck
-// ---------------------------------------------------------------------------
-
 impl RemoteSshdConfigCheck<'_> {
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let mut args = ssh_connect_args(self.port, self.proxy_jump);
-        args.push(self.host.into());
-        args.push("sshd -T 2>/dev/null".into());
-        let output = run_via_runner(self.runner, "ssh", args).await?;
-
-        if !output.success {
-            return Ok(vec![Diagnostic {
+    fn analyze(&self, stdout: Option<&str>) -> Vec<Diagnostic> {
+        let Some(stdout) = stdout else {
+            return vec![Diagnostic {
                 id: "remote_sshd_config",
                 severity: Severity::Info,
                 message: format!(
@@ -932,28 +903,27 @@ impl RemoteSshdConfigCheck<'_> {
                     "Ensure `PubkeyAuthentication yes` and `AllowAgentForwarding yes` are set in /etc/ssh/sshd_config".into(),
                 ),
                 module: "remote",
-            }]);
-        }
+            }];
+        };
 
-        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
         check_sshd_bool_setting(
-            &stdout,
+            stdout,
             "pubkeyauthentication",
             "PubkeyAuthentication",
             self.host,
             &mut diagnostics,
         );
         check_sshd_bool_setting(
-            &stdout,
+            stdout,
             "allowagentforwarding",
             "AllowAgentForwarding",
             self.host,
             &mut diagnostics,
         );
 
-        Ok(diagnostics)
+        diagnostics
     }
 }
 
@@ -1010,37 +980,23 @@ fn find_sshd_setting(config: &str, key: &str) -> Option<String> {
     None
 }
 
-// ---------------------------------------------------------------------------
-// RemoteHomeCheck
-// ---------------------------------------------------------------------------
-
 impl RemoteHomeCheck<'_> {
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let mut args = ssh_connect_args(self.port, self.proxy_jump);
-        args.push(self.host.into());
-        args.push("echo $HOME".into());
-        let output = run_via_runner(self.runner, "ssh", args).await?;
-
-        if !output.success {
-            return Ok(vec![Diagnostic {
+    fn analyze(&self, home: Option<&str>) -> Vec<Diagnostic> {
+        let Some(home) = home else {
+            return vec![Diagnostic {
                 id: "remote_home",
                 severity: Severity::Critical,
-                message: format!(
-                    "Could not determine remote home directory on {}: {}",
-                    self.host,
-                    output.stderr.trim()
-                ),
+                message: format!("Could not determine remote home directory on {}", self.host),
                 hint: Some(
                     "Verify the remote host is accessible and the shell is configured".into(),
                 ),
                 module: "remote",
-            }]);
-        }
+            }];
+        };
 
-        let home = output.stdout.trim().to_string();
-
+        let home = home.trim();
         if home.is_empty() {
-            Ok(vec![Diagnostic {
+            vec![Diagnostic {
                 id: "remote_home",
                 severity: Severity::Warning,
                 message: format!("Remote $HOME is empty on {}", self.host),
@@ -1048,22 +1004,18 @@ impl RemoteHomeCheck<'_> {
                     "Ensure the remote user has a properly configured shell environment".into(),
                 ),
                 module: "remote",
-            }])
+            }]
         } else {
-            Ok(vec![Diagnostic {
+            vec![Diagnostic {
                 id: "remote_home",
                 severity: Severity::Ok,
-                message: format!("Remote home directory is '{}' on {}", home, self.host),
+                message: format!("Remote home directory is '{home}' on {}", self.host),
                 hint: None,
                 module: "remote",
-            }])
+            }]
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// RemoteAuthorizedKeysContentCheck — compare local keys vs remote authorized_keys
-// ---------------------------------------------------------------------------
 
 /// Read local public key files and compare them against the remote
 /// `~/.ssh/authorized_keys` to detect missing or extra keys.
@@ -1206,30 +1158,18 @@ impl RemoteAuthorizedKeysContentCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RemoteSshdAuthMethodsCheck — parse sshd -T auth method settings
-// ---------------------------------------------------------------------------
-
 /// Parse `sshd -T` output and check authentication method settings:
 /// `KbdInteractiveAuthentication`, `GSSAPIAuthentication`,
 /// `PasswordAuthentication`, `HostbasedAuthentication`.
 struct RemoteSshdAuthMethodsCheck<'a> {
     host: &'a str,
-    port: Option<u16>,
-    proxy_jump: Option<&'a str>,
-    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 impl RemoteSshdAuthMethodsCheck<'_> {
     #[allow(clippy::too_many_lines)]
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let mut args = ssh_connect_args(self.port, self.proxy_jump);
-        args.push(self.host.into());
-        args.push("sshd -T 2>/dev/null".into());
-        let output = run_via_runner(self.runner, "ssh", args).await?;
-
-        if !output.success {
-            return Ok(vec![Diagnostic {
+    fn analyze(&self, stdout: Option<&str>) -> Vec<Diagnostic> {
+        let Some(stdout) = stdout else {
+            return vec![Diagnostic {
                 id: "remote_sshd_auth_methods",
                 severity: Severity::Info,
                 message: format!(
@@ -1240,10 +1180,9 @@ impl RemoteSshdAuthMethodsCheck<'_> {
                     "Run with sudo or check /etc/ssh/sshd_config for authentication method settings".into(),
                 ),
                 module: "remote",
-            }]);
-        }
+            }];
+        };
 
-        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
         // These are the key authentication methods. If PasswordAuthentication
@@ -1261,7 +1200,7 @@ impl RemoteSshdAuthMethodsCheck<'_> {
         ];
 
         for (key_lower, display_name) in &auth_settings {
-            match find_sshd_setting(&stdout, key_lower).as_deref() {
+            match find_sshd_setting(stdout, key_lower).as_deref() {
                 Some("yes") => {
                     let severity = if *display_name == "PasswordAuthentication"
                         || *display_name == "HostbasedAuthentication"
@@ -1321,34 +1260,22 @@ impl RemoteSshdAuthMethodsCheck<'_> {
             }
         }
 
-        Ok(diagnostics)
+        diagnostics
     }
 }
-
-// ---------------------------------------------------------------------------
-// RemoteAuthorizedKeysCommandCheck — check AuthorizedKeysCommand settings
-// ---------------------------------------------------------------------------
 
 /// Check for `AuthorizedKeysCommand` and `AuthorizedPrincipalsCommand` in
 /// the remote sshd config. These are used when the server fetches keys or
 /// principals from an external source (e.g., GitHub, LDAP).
 struct RemoteAuthorizedKeysCommandCheck<'a> {
     host: &'a str,
-    port: Option<u16>,
-    proxy_jump: Option<&'a str>,
-    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 impl RemoteAuthorizedKeysCommandCheck<'_> {
     #[allow(clippy::too_many_lines)]
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let mut args = ssh_connect_args(self.port, self.proxy_jump);
-        args.push(self.host.into());
-        args.push("sshd -T 2>/dev/null".into());
-        let output = run_via_runner(self.runner, "ssh", args).await?;
-
-        if !output.success {
-            return Ok(vec![Diagnostic {
+    fn analyze(&self, stdout: Option<&str>) -> Vec<Diagnostic> {
+        let Some(stdout) = stdout else {
+            return vec![Diagnostic {
                 id: "remote_authorized_keys_command",
                 severity: Severity::Info,
                 message: format!(
@@ -1359,14 +1286,13 @@ impl RemoteAuthorizedKeysCommandCheck<'_> {
                     "Run with sudo or check /etc/ssh/sshd_config for AuthorizedKeysCommand settings".into(),
                 ),
                 module: "remote",
-            }]);
-        }
+            }];
+        };
 
-        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
         // AuthorizedKeysCommand
-        match find_sshd_setting(&stdout, "authorizedkeyscommand") {
+        match find_sshd_setting(stdout, "authorizedkeyscommand") {
             Some(value) if value != "none" && !value.is_empty() => {
                 diagnostics.push(Diagnostic {
                     id: "remote_authorized_keys_command",
@@ -1396,7 +1322,7 @@ impl RemoteAuthorizedKeysCommandCheck<'_> {
         }
 
         // AuthorizedPrincipalsCommand
-        match find_sshd_setting(&stdout, "authorizedprincipalscommand") {
+        match find_sshd_setting(stdout, "authorizedprincipalscommand") {
             Some(value) if value != "none" && !value.is_empty() => {
                 diagnostics.push(Diagnostic {
                     id: "remote_authorized_keys_command",
@@ -1426,11 +1352,11 @@ impl RemoteAuthorizedKeysCommandCheck<'_> {
         }
 
         // AuthorizedKeysCommandUser (only relevant if the command is set)
-        if let Some(cmd) = find_sshd_setting(&stdout, "authorizedkeyscommand")
+        if let Some(cmd) = find_sshd_setting(stdout, "authorizedkeyscommand")
             && cmd != "none"
             && !cmd.is_empty()
         {
-            match find_sshd_setting(&stdout, "authorizedkeyscommanduser") {
+            match find_sshd_setting(stdout, "authorizedkeyscommanduser") {
                 Some(user) if user != "nobody" => {
                     diagnostics.push(Diagnostic {
                         id: "remote_authorized_keys_command",
@@ -1460,13 +1386,9 @@ impl RemoteAuthorizedKeysCommandCheck<'_> {
             }
         }
 
-        Ok(diagnostics)
+        diagnostics
     }
 }
-
-// ---------------------------------------------------------------------------
-// RemoteStrictModesCheck — check remote StrictModes setting
-// ---------------------------------------------------------------------------
 
 /// Report where to find remote SSH logs.
 ///
@@ -1490,14 +1412,7 @@ struct RemoteLogsHintCheck<'a> {
 /// caused by permission issues on the remote.
 struct RemoteStrictModesCheck<'a> {
     host: &'a str,
-    port: Option<u16>,
-    proxy_jump: Option<&'a str>,
-    runner: &'a dyn toride_ssh_core::CliRunner,
 }
-
-// ---------------------------------------------------------------------------
-// RemoteLogsHintCheck
-// ---------------------------------------------------------------------------
 
 impl RemoteLogsHintCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
@@ -1553,7 +1468,7 @@ impl RemoteLogsHintCheck<'_> {
                     self.host
                 ),
                 hint: Some(
-                    "Check your distribution's logging configuration — SSH logs may be in a custom location or require elevated privileges".into(),
+                    "Check your distribution's logging configuration, SSH logs may be in a custom location or require elevated privileges".into(),
                 ),
                 module: "remote",
             }])
@@ -1585,14 +1500,9 @@ impl RemoteLogsHintCheck<'_> {
 }
 
 impl RemoteStrictModesCheck<'_> {
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let mut args = ssh_connect_args(self.port, self.proxy_jump);
-        args.push(self.host.into());
-        args.push("sshd -T 2>/dev/null".into());
-        let output = run_via_runner(self.runner, "ssh", args).await?;
-
-        if !output.success {
-            return Ok(vec![Diagnostic {
+    fn analyze(&self, stdout: Option<&str>) -> Vec<Diagnostic> {
+        let Some(stdout) = stdout else {
+            return vec![Diagnostic {
                 id: "remote_strict_modes",
                 severity: Severity::Info,
                 message: format!(
@@ -1603,13 +1513,11 @@ impl RemoteStrictModesCheck<'_> {
                     "Check StrictModes setting in /etc/ssh/sshd_config on the remote host".into(),
                 ),
                 module: "remote",
-            }]);
-        }
+            }];
+        };
 
-        let stdout = output.stdout;
-
-        match find_sshd_setting(&stdout, "strictmodes").as_deref() {
-            Some("yes") => Ok(vec![Diagnostic {
+        match find_sshd_setting(stdout, "strictmodes").as_deref() {
+            Some("yes") => vec![Diagnostic {
                 id: "remote_strict_modes",
                 severity: Severity::Ok,
                 message: format!(
@@ -1618,20 +1526,20 @@ impl RemoteStrictModesCheck<'_> {
                 ),
                 hint: None,
                 module: "remote",
-            }]),
-            Some("no") => Ok(vec![Diagnostic {
+            }],
+            Some("no") => vec![Diagnostic {
                 id: "remote_strict_modes",
                 severity: Severity::Warning,
                 message: format!(
-                    "sshd StrictModes is 'no' on {} — file permission checks are disabled",
+                    "sshd StrictModes is 'no' on {}, file permission checks are disabled",
                     self.host
                 ),
                 hint: Some(
                     "Consider enabling StrictModes for security: set `StrictModes yes` in /etc/ssh/sshd_config".into(),
                 ),
                 module: "remote",
-            }]),
-            Some(other) => Ok(vec![Diagnostic {
+            }],
+            Some(other) => vec![Diagnostic {
                 id: "remote_strict_modes",
                 severity: Severity::Info,
                 message: format!(
@@ -1640,8 +1548,8 @@ impl RemoteStrictModesCheck<'_> {
                 ),
                 hint: None,
                 module: "remote",
-            }]),
-            None => Ok(vec![Diagnostic {
+            }],
+            None => vec![Diagnostic {
                 id: "remote_strict_modes",
                 severity: Severity::Ok,
                 message: format!(
@@ -1650,14 +1558,10 @@ impl RemoteStrictModesCheck<'_> {
                 ),
                 hint: None,
                 module: "remote",
-            }]),
+            }],
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// RemoteSshdFullConfigCheck — parse all relevant sshd settings
-// ---------------------------------------------------------------------------
 
 /// Parse all relevant sshd settings from `sshd -T` output:
 /// `AuthorizedKeysFile`, `RevokedKeys`, `TrustedUserCAKeys`,
@@ -1665,21 +1569,13 @@ impl RemoteStrictModesCheck<'_> {
 /// `PermitRootLogin`, and `MaxSessions`.
 struct RemoteSshdFullConfigCheck<'a> {
     host: &'a str,
-    port: Option<u16>,
-    proxy_jump: Option<&'a str>,
-    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 impl RemoteSshdFullConfigCheck<'_> {
     #[allow(clippy::too_many_lines)]
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let mut args = ssh_connect_args(self.port, self.proxy_jump);
-        args.push(self.host.into());
-        args.push("sshd -T 2>/dev/null".into());
-        let output = run_via_runner(self.runner, "ssh", args).await?;
-
-        if !output.success {
-            return Ok(vec![Diagnostic {
+    fn analyze(&self, stdout: Option<&str>) -> Vec<Diagnostic> {
+        let Some(stdout) = stdout else {
+            return vec![Diagnostic {
                 id: "remote_sshd_full_config",
                 severity: Severity::Info,
                 message: format!(
@@ -1690,14 +1586,13 @@ impl RemoteSshdFullConfigCheck<'_> {
                     "Run with sudo or check /etc/ssh/sshd_config for the full configuration".into(),
                 ),
                 module: "remote",
-            }]);
-        }
+            }];
+        };
 
-        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
-        // AuthorizedKeysFile — where sshd looks for authorized keys.
-        match find_sshd_setting(&stdout, "authorizedkeysfile") {
+        // AuthorizedKeysFile, where sshd looks for authorized keys.
+        match find_sshd_setting(stdout, "authorizedkeysfile") {
             Some(value) => {
                 let is_default = value == ".ssh/authorized_keys .ssh/authorized_keys2"
                     || value == ".ssh/authorized_keys";
@@ -1711,7 +1606,7 @@ impl RemoteSshdFullConfigCheck<'_> {
                     hint: if is_default {
                         None
                     } else {
-                        Some("Custom AuthorizedKeysFile — ensure your keys are in the correct location".into())
+                        Some("Custom AuthorizedKeysFile, ensure your keys are in the correct location".into())
                     },
                     module: "remote",
                 });
@@ -1730,8 +1625,8 @@ impl RemoteSshdFullConfigCheck<'_> {
             }
         }
 
-        // RevokedKeys — if set, keys listed here are rejected.
-        match find_sshd_setting(&stdout, "revokedkeys") {
+        // RevokedKeys, if set, keys listed here are rejected.
+        match find_sshd_setting(stdout, "revokedkeys") {
             Some(value) if !value.is_empty() && value != "none" => {
                 diagnostics.push(Diagnostic {
                     id: "remote_sshd_full_config",
@@ -1757,8 +1652,8 @@ impl RemoteSshdFullConfigCheck<'_> {
             }
         }
 
-        // TrustedUserCAKeys — CA certificates trusted for user authentication.
-        match find_sshd_setting(&stdout, "trustedusercakeys") {
+        // TrustedUserCAKeys, CA certificates trusted for user authentication.
+        match find_sshd_setting(stdout, "trustedusercakeys") {
             Some(value) if !value.is_empty() && value != "none" => {
                 diagnostics.push(Diagnostic {
                     id: "remote_sshd_full_config",
@@ -1768,7 +1663,7 @@ impl RemoteSshdFullConfigCheck<'_> {
                         value, self.host
                     ),
                     hint: Some(
-                        "Certificate-based authentication is configured — signed certificates are trusted".into(),
+                        "Certificate-based authentication is configured, signed certificates are trusted".into(),
                     ),
                     module: "remote",
                 });
@@ -1787,8 +1682,8 @@ impl RemoteSshdFullConfigCheck<'_> {
             }
         }
 
-        // AuthenticationMethods — multi-factor requirements.
-        match find_sshd_setting(&stdout, "authenticationmethods") {
+        // AuthenticationMethods, multi-factor requirements.
+        match find_sshd_setting(stdout, "authenticationmethods") {
             Some(value) if !value.is_empty() && value != "any" => {
                 diagnostics.push(Diagnostic {
                     id: "remote_sshd_full_config",
@@ -1818,7 +1713,7 @@ impl RemoteSshdFullConfigCheck<'_> {
         }
 
         // MaxAuthTries
-        match find_sshd_setting(&stdout, "maxauthtries") {
+        match find_sshd_setting(stdout, "maxauthtries") {
             Some(value) => {
                 let tries: u32 = value.parse().unwrap_or(6);
                 let severity = if tries <= 3 {
@@ -1832,7 +1727,7 @@ impl RemoteSshdFullConfigCheck<'_> {
                     message: format!("sshd MaxAuthTries is {} on {}", tries, self.host),
                     hint: if tries <= 3 {
                         Some(format!(
-                            "MaxAuthTries is low ({tries}) — clients with multiple keys may fail. \
+                            "MaxAuthTries is low ({tries}), clients with multiple keys may fail. \
                              Consider increasing to 6 or reducing loaded agent keys"
                         ))
                     } else {
@@ -1853,7 +1748,7 @@ impl RemoteSshdFullConfigCheck<'_> {
         }
 
         // PubkeyAuthOptions
-        match find_sshd_setting(&stdout, "pubkeyauthoptions") {
+        match find_sshd_setting(stdout, "pubkeyauthoptions") {
             Some(value) => {
                 let severity = if value.contains("no-touch-required") {
                     Severity::Info
@@ -1883,7 +1778,7 @@ impl RemoteSshdFullConfigCheck<'_> {
         }
 
         // PermitRootLogin
-        match find_sshd_setting(&stdout, "permitrootlogin") {
+        match find_sshd_setting(stdout, "permitrootlogin") {
             Some(value) => {
                 let severity = if value == "yes" || value == "without-password" {
                     Severity::Warning
@@ -1922,7 +1817,7 @@ impl RemoteSshdFullConfigCheck<'_> {
         }
 
         // MaxSessions
-        match find_sshd_setting(&stdout, "maxsessions") {
+        match find_sshd_setting(stdout, "maxsessions") {
             Some(value) => {
                 diagnostics.push(Diagnostic {
                     id: "remote_sshd_full_config",
@@ -1943,9 +1838,9 @@ impl RemoteSshdFullConfigCheck<'_> {
             }
         }
 
-        // AuthorizedPrincipalsFile — where sshd looks for allowed principals
+        // AuthorizedPrincipalsFile, where sshd looks for allowed principals
         // for certificate-based authentication.
-        match find_sshd_setting(&stdout, "authorizedprincipalsfile") {
+        match find_sshd_setting(stdout, "authorizedprincipalsfile") {
             Some(value) => {
                 let is_default = value == "none";
                 diagnostics.push(Diagnostic {
@@ -1963,7 +1858,7 @@ impl RemoteSshdFullConfigCheck<'_> {
                         None
                     } else {
                         Some(
-                            "Certificate authentication uses principals file — \
+                            "Certificate authentication uses principals file, \
                              ensure the file exists and contains the correct principals"
                                 .into(),
                         )
@@ -1985,13 +1880,9 @@ impl RemoteSshdFullConfigCheck<'_> {
             }
         }
 
-        Ok(diagnostics)
+        diagnostics
     }
 }
-
-// ---------------------------------------------------------------------------
-// RemoteAuthorizedPrincipalsFileCheck — verify AuthorizedPrincipalsFile exists
-// ---------------------------------------------------------------------------
 
 /// Check that the remote `AuthorizedPrincipalsFile` exists and is readable
 /// when `TrustedUserCAKeys` is configured. This is critical for certificate-
@@ -2006,13 +1897,8 @@ struct RemoteAuthorizedPrincipalsFileCheck<'a> {
 
 impl RemoteAuthorizedPrincipalsFileCheck<'_> {
     #[allow(clippy::too_many_lines)]
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let mut args = ssh_connect_args(self.port, self.proxy_jump);
-        args.push(self.host.into());
-        args.push("sshd -T 2>/dev/null".into());
-        let output = run_via_runner(self.runner, "ssh", args).await?;
-
-        if !output.success {
+    async fn analyze(&self, stdout: Option<&str>) -> Result<Vec<Diagnostic>> {
+        let Some(stdout) = stdout else {
             return Ok(vec![Diagnostic {
                 id: "remote_authorized_principals_file",
                 severity: Severity::Info,
@@ -2026,14 +1912,13 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
                 ),
                 module: "remote",
             }]);
-        }
+        };
 
-        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
-        // Only check if TrustedUserCAKeys is configured — without it,
+        // Only check if TrustedUserCAKeys is configured, without it,
         // AuthorizedPrincipalsFile is irrelevant.
-        let has_tuak = find_sshd_setting(&stdout, "trustedusercakeys")
+        let has_tuak = find_sshd_setting(stdout, "trustedusercakeys")
             .is_some_and(|v| !v.is_empty() && v != "none");
 
         if !has_tuak {
@@ -2041,7 +1926,7 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
                 id: "remote_authorized_principals_file",
                 severity: Severity::Ok,
                 message: format!(
-                    "TrustedUserCAKeys is not set on {} — \
+                    "TrustedUserCAKeys is not set on {}, \
                      AuthorizedPrincipalsFile is not applicable",
                     self.host
                 ),
@@ -2050,8 +1935,8 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
             }]);
         }
 
-        // TrustedUserCAKeys is set — check the principals file.
-        match find_sshd_setting(&stdout, "authorizedprincipalsfile") {
+        // TrustedUserCAKeys is set, check the principals file.
+        match find_sshd_setting(stdout, "authorizedprincipalsfile") {
             Some(value) if value != "none" && !value.is_empty() => {
                 // Verify the file exists on the remote host. The value comes
                 // from remote `sshd -T` output, so it is attacker-controlled
@@ -2082,7 +1967,7 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
                         id: "remote_authorized_principals_file",
                         severity: Severity::Warning,
                         message: format!(
-                            "AuthorizedPrincipalsFile '{}' does not exist on {} — \
+                            "AuthorizedPrincipalsFile '{}' does not exist on {}, \
                              certificate auth may fail",
                             value, self.host
                         ),
@@ -2098,7 +1983,7 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
                     id: "remote_authorized_principals_file",
                     severity: Severity::Info,
                     message: format!(
-                        "TrustedUserCAKeys is set but AuthorizedPrincipalsFile is 'none' on {} — \
+                        "TrustedUserCAKeys is set but AuthorizedPrincipalsFile is 'none' on {}, \
                          all principals from CA certificates will be accepted",
                         self.host
                     ),
@@ -2117,7 +2002,7 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
                     message: format!(
                         "AuthorizedPrincipalsFile is set on {} (value: '{}')",
                         self.host,
-                        find_sshd_setting(&stdout, "authorizedprincipalsfile").unwrap_or_default()
+                        find_sshd_setting(stdout, "authorizedprincipalsfile").unwrap_or_default()
                     ),
                     hint: None,
                     module: "remote",
@@ -2128,10 +2013,6 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
         Ok(diagnostics)
     }
 }
-
-// ---------------------------------------------------------------------------
-// ProxyJumpDetectionCheck
-// ---------------------------------------------------------------------------
 
 impl ProxyJumpDetectionCheck<'_> {
     fn run_check(&self) -> Vec<Diagnostic> {
@@ -2164,10 +2045,6 @@ impl ProxyJumpDetectionCheck<'_> {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// JumpHostReachableCheck
-// ---------------------------------------------------------------------------
 
 impl JumpHostReachableCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
@@ -2222,16 +2099,12 @@ impl JumpHostReachableCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// run_all — execute every remote check
-// ---------------------------------------------------------------------------
-
 /// Run all remote diagnostic checks for a host.
 ///
 /// If the host is unreachable, subsequent checks (`known_hosts`, agent forwarding)
-/// are still run — the `known_hosts` check is local, and agent forwarding provides
+/// are still run, the `known_hosts` check is local, and agent forwarding provides
 /// a useful diagnostic regardless. However, if the host-reachability check itself
-/// errors (not just returns a diagnostic), we short-circuit to avoid cascading
+/// errors (not only returns a diagnostic), we short-circuit to avoid cascading
 /// failures.
 #[allow(clippy::too_many_lines)]
 pub async fn run_all(
@@ -2250,8 +2123,8 @@ pub async fn run_all(
     // Resolve the SSH config once and reuse the result for both ProxyJump
     // detection and the proxy_jump value consumed by every subsequent
     // SSH-based check. `resolve` performs a disk read plus a recursive glob
-    // walk (`load_and_flatten`), so resolving twice — as the detection check
-    // and the extraction previously did independently — is wasteful.
+    // walk (`load_and_flatten`), so resolving twice, as the detection check
+    // and the extraction previously did independently, is wasteful.
     let proxy_jump_value: Option<String> = match resolve(paths.ssh_dir(), host, None).await {
         Ok(resolved) => resolved
             .proxy_jump
@@ -2260,7 +2133,7 @@ pub async fn run_all(
     };
     let proxy_jump: Option<&str> = proxy_jump_value.as_deref();
 
-    // ProxyJump detection — report the resolved ProxyJump value. Runs early
+    // ProxyJump detection, report the resolved ProxyJump value. Runs early
     // so that subsequent SSH-dependent checks can use the jump host.
     let proxy_jump_check = ProxyJumpDetectionCheck { host, proxy_jump };
     all_diagnostics.extend(proxy_jump_check.run_check());
@@ -2285,7 +2158,7 @@ pub async fn run_all(
         }
     }
 
-    // DNS resolution — run first since it is a prerequisite for SSH connectivity.
+    // DNS resolution, run first since it is a prerequisite for SSH connectivity.
     let check = HostReachabilityCheck { host, port };
     let host_resolved = match check.run_check().await {
         Ok(d) => {
@@ -2299,7 +2172,7 @@ pub async fn run_all(
         }
     };
 
-    // Host reachability — skip if DNS failed since the connection will
+    // Host reachability, skip if DNS failed since the connection will
     // certainly fail too, and the DNS diagnostic is more actionable.
     let host_reachable = if host_resolved {
         let check = HostReachable {
@@ -2337,7 +2210,7 @@ pub async fn run_all(
         Err(e) => all_diagnostics.push(err_diagnostic("host_key_known", &e)),
     }
 
-    // Host key verification — compare stored vs live keys (local + network).
+    // Host key verification, compare stored vs live keys (local + network).
     let check = HostKeyVerificationCheck {
         paths,
         host,
@@ -2349,162 +2222,121 @@ pub async fn run_all(
         Err(e) => all_diagnostics.push(err_diagnostic("host_key_verification", &e)),
     }
 
-    // Agent forwarding — skip if host is not reachable to avoid a slow timeout.
+    // The remaining checks each need their own SSH round-trip, so they run
+    // concurrently under a bounded semaphore. The trivial probes ($HOME,
+    // ~/.ssh mode, authorized_keys existence) share one connection, and the
+    // `sshd -T` output is fetched once for every settings check.
     if host_reachable {
-        let check = AgentForwarding {
+        let agent_check = AgentForwarding {
             host,
             port,
             proxy_jump,
             runner,
         };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("agent_forwarding", &e)),
-        }
-
-        // Remote home directory
-        let check = RemoteHomeCheck {
+        let pubkey_check = RemotePubkeyAuthCheck {
             host,
             port,
             proxy_jump,
             runner,
         };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_home", &e)),
-        }
-
-        // Public-key authentication
-        let check = RemotePubkeyAuthCheck {
-            host,
-            port,
-            proxy_jump,
-            runner,
-        };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_pubkey_auth", &e)),
-        }
-
-        // Remote ~/.ssh permissions
-        let check = RemotePermissionsCheck {
-            host,
-            port,
-            proxy_jump,
-            runner,
-        };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_permissions", &e)),
-        }
-
-        // Remote authorized_keys existence
-        let check = RemoteAuthorizedKeysCheck {
-            host,
-            port,
-            proxy_jump,
-            runner,
-        };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_authorized_keys", &e)),
-        }
-
-        // Remote sshd configuration
-        let check = RemoteSshdConfigCheck {
-            host,
-            port,
-            proxy_jump,
-            runner,
-        };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_sshd_config", &e)),
-        }
-
-        // Remote authorized_keys content comparison
-        let check = RemoteAuthorizedKeysContentCheck {
+        let content_check = RemoteAuthorizedKeysContentCheck {
             paths,
             host,
             port,
             proxy_jump,
             runner,
         };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_authorized_keys_content", &e)),
-        }
-
-        // Remote sshd auth methods
-        let check = RemoteSshdAuthMethodsCheck {
+        let logs_check = RemoteLogsHintCheck {
             host,
             port,
             proxy_jump,
             runner,
         };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_sshd_auth_methods", &e)),
+
+        let agent_fut: BoxedDiagFuture<'_> = Box::pin(agent_check.run_check());
+        let pubkey_fut: BoxedDiagFuture<'_> = Box::pin(pubkey_check.run_check());
+        let content_fut: BoxedDiagFuture<'_> = Box::pin(content_check.run_check());
+        let logs_fut: BoxedDiagFuture<'_> = Box::pin(logs_check.run_check());
+
+        let (probe, sshd_t, results) = tokio::join!(
+            run_trivial_probe(host, port, proxy_jump, runner),
+            fetch_sshd_t(host, port, proxy_jump, runner),
+            join_all_bounded(
+                MAX_CONCURRENT_REMOTE_CMDS,
+                [agent_fut, pubkey_fut, content_fut, logs_fut],
+            ),
+        );
+        let agent = &results[0];
+        let pubkey = &results[1];
+        let content = &results[2];
+        let logs = &results[3];
+
+        let probe = probe.unwrap_or(RemoteTrivialProbe {
+            home: None,
+            ssh_mode: None,
+            authorized_keys_exists: None,
+        });
+        let sshd_t = sshd_t.as_deref();
+
+        for (id, result) in [
+            ("agent_forwarding", agent),
+            ("remote_pubkey_auth", pubkey),
+            ("remote_authorized_keys_content", content),
+            ("remote_logs_hint", logs),
+        ] {
+            match result {
+                Ok(diagnostics) => all_diagnostics.extend(diagnostics.clone()),
+                Err(e) => all_diagnostics.push(err_diagnostic(id, e)),
+            }
         }
 
-        // Remote AuthorizedKeysCommand
-        let check = RemoteAuthorizedKeysCommandCheck {
+        let append = |all: &mut Vec<Diagnostic>, diagnostics: Vec<Diagnostic>| {
+            all.extend(diagnostics);
+        };
+
+        append(
+            &mut all_diagnostics,
+            RemoteHomeCheck { host }.analyze(probe.home.as_deref()),
+        );
+        append(
+            &mut all_diagnostics,
+            RemotePermissionsCheck { host }.analyze(probe.ssh_mode.as_deref()),
+        );
+        append(
+            &mut all_diagnostics,
+            RemoteAuthorizedKeysCheck { host }.analyze(probe.authorized_keys_exists),
+        );
+        append(
+            &mut all_diagnostics,
+            RemoteSshdConfigCheck { host }.analyze(sshd_t),
+        );
+        append(
+            &mut all_diagnostics,
+            RemoteSshdAuthMethodsCheck { host }.analyze(sshd_t),
+        );
+        append(
+            &mut all_diagnostics,
+            RemoteAuthorizedKeysCommandCheck { host }.analyze(sshd_t),
+        );
+        append(
+            &mut all_diagnostics,
+            RemoteStrictModesCheck { host }.analyze(sshd_t),
+        );
+        append(
+            &mut all_diagnostics,
+            RemoteSshdFullConfigCheck { host }.analyze(sshd_t),
+        );
+        match (RemoteAuthorizedPrincipalsFileCheck {
             host,
             port,
             proxy_jump,
             runner,
-        };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_authorized_keys_command", &e)),
-        }
-
-        // Remote StrictModes
-        let check = RemoteStrictModesCheck {
-            host,
-            port,
-            proxy_jump,
-            runner,
-        };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_strict_modes", &e)),
-        }
-
-        // Remote sshd full config
-        let check = RemoteSshdFullConfigCheck {
-            host,
-            port,
-            proxy_jump,
-            runner,
-        };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_sshd_full_config", &e)),
-        }
-
-        // Remote AuthorizedPrincipalsFile
-        let check = RemoteAuthorizedPrincipalsFileCheck {
-            host,
-            port,
-            proxy_jump,
-            runner,
-        };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
+        })
+        .analyze(sshd_t)
+        .await
+        {
+            Ok(diagnostics) => all_diagnostics.extend(diagnostics),
             Err(e) => all_diagnostics.push(err_diagnostic("remote_authorized_principals_file", &e)),
-        }
-
-        // Remote SSH logs hint
-        let check = RemoteLogsHintCheck {
-            host,
-            port,
-            proxy_jump,
-            runner,
-        };
-        match check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("remote_logs_hint", &e)),
         }
     } else {
         let skipped = [
@@ -2753,103 +2585,6 @@ trustedusercakeys /etc/ssh/ca.pub
         );
     }
 
-    // -----------------------------------------------------------------------
-    // extract_key_type / extract_key_data tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn extract_key_type_ed25519() {
-        let line = "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrS...";
-        assert_eq!(extract_key_type(line), Some("ssh-ed25519"));
-    }
-
-    #[test]
-    fn extract_key_type_rsa() {
-        let line = "example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC...";
-        assert_eq!(extract_key_type(line), Some("ssh-rsa"));
-    }
-
-    #[test]
-    fn extract_key_type_ecdsa() {
-        let line = "example.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYT...";
-        assert_eq!(extract_key_type(line), Some("ecdsa-sha2-nistp256"));
-    }
-
-    #[test]
-    fn extract_key_type_with_port() {
-        let line = "[example.com]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...";
-        assert_eq!(extract_key_type(line), Some("ssh-ed25519"));
-    }
-
-    #[test]
-    fn extract_key_type_with_comment() {
-        let line = "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrS user@host";
-        assert_eq!(extract_key_type(line), Some("ssh-ed25519"));
-    }
-
-    #[test]
-    fn extract_key_type_empty_line() {
-        assert_eq!(extract_key_type(""), None);
-    }
-
-    #[test]
-    fn extract_key_type_single_field() {
-        assert_eq!(extract_key_type("example.com"), None);
-    }
-
-    #[test]
-    fn extract_key_data_ed25519() {
-        let line = "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrS";
-        assert_eq!(
-            extract_key_data(line),
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrS"
-        );
-    }
-
-    #[test]
-    fn extract_key_data_with_comment() {
-        let line = "example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC user@host";
-        assert_eq!(
-            extract_key_data(line),
-            "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC"
-        );
-    }
-
-    #[test]
-    fn extract_key_data_with_port() {
-        let line = "[example.com]:2222 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYT";
-        assert_eq!(
-            extract_key_data(line),
-            "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYT"
-        );
-    }
-
-    #[test]
-    fn extract_key_data_matching_keys_different_hosts() {
-        // Same key data on two different host entries should compare equal.
-        let line1 = "host-a.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrS";
-        let line2 = "host-b.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrS";
-        assert_eq!(extract_key_data(line1), extract_key_data(line2));
-    }
-
-    #[test]
-    fn extract_key_data_mismatching_keys() {
-        let line1 = "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrS";
-        let line2 = "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDifferent";
-        assert_ne!(extract_key_data(line1), extract_key_data(line2));
-    }
-
-    #[test]
-    fn extract_key_data_different_types_same_host() {
-        let line1 = "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrS";
-        let line2 = "example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC";
-        assert_ne!(extract_key_data(line1), extract_key_data(line2));
-    }
-
-    // -----------------------------------------------------------------------
-    // parse_host_port tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn parse_host_port_bare_hostname() {
         assert_eq!(parse_host_port("example.com"), ("example.com", None));
@@ -2923,13 +2658,9 @@ trustedusercakeys /etc/ssh/ca.pub
 
     #[test]
     fn parse_host_port_no_host() {
-        // ":2222" has an empty host part — the port is still parsed.
+        // ":2222" has an empty host part, the port is still parsed.
         assert_eq!(parse_host_port(":2222"), ("", Some(2222)));
     }
-
-    // -----------------------------------------------------------------------
-    // known_hosts_host tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn known_hosts_host_standard_port() {
@@ -2943,10 +2674,6 @@ trustedusercakeys /etc/ssh/ca.pub
             "[example.com]:2222"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // ssh_connect_args tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn ssh_connect_args_no_port() {
@@ -3049,7 +2776,7 @@ trustedusercakeys /etc/ssh/ca.pub
         let quoted = shell_quote(malicious);
         assert!(quoted.starts_with('\''));
         assert!(quoted.ends_with('\''));
-        // The whole value sits inside the single-quoted region — the literal
+        // The whole value sits inside the single-quoted region, the literal
         // `;` is quoted and therefore inert.
         assert_eq!(quoted, "'/tmp/x; rm -rf ~'");
     }
@@ -3082,5 +2809,78 @@ trustedusercakeys /etc/ssh/ca.pub
             .await
             .unwrap_err();
         assert!(matches!(err, toride_ssh_core::Error::InvalidHost(_)));
+    }
+
+    const HKV_HOST_KEY: &str =
+        "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+
+    #[tokio::test]
+    async fn host_key_verification_ignores_cert_authority_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = SshPaths::with_dir(dir.path());
+        let runner = toride_ssh_core::MockCliRunner::new();
+        runner.push_run_response(
+            "ssh-keygen",
+            Ok(format!(
+                "# Host example.com found: line 1\n\
+                 example.com ssh-ed25519 {HKV_HOST_KEY}\n\
+                 # Host example.com found: line 2\n\
+                 @cert-authority *.example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDCaKeyNotOfferedByTheHost0000\n"
+            )),
+        );
+        runner.push_run_response(
+            "ssh-keyscan",
+            Ok(format!("example.com ssh-ed25519 {HKV_HOST_KEY}\n")),
+        );
+
+        let check = HostKeyVerificationCheck {
+            paths: &paths,
+            host: "example.com",
+            port: None,
+            runner: &runner,
+        };
+        let diags = check.run_check().await.unwrap();
+
+        assert!(
+            diags.iter().any(|d| d.severity == Severity::Ok
+                && d.message.contains("ssh-ed25519 key matches known_hosts")),
+            "the matching host key must be reported Ok: {diags:?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.severity != Severity::Warning && d.severity != Severity::Critical),
+            "a @cert-authority line must not raise a false warning: {diags:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn host_key_verification_reports_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = SshPaths::with_dir(dir.path());
+        let runner = toride_ssh_core::MockCliRunner::new();
+        runner.push_run_response(
+            "ssh-keygen",
+            Ok("# Host example.com found: line 1\nexample.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n".to_owned()),
+        );
+        runner.push_run_response(
+            "ssh-keyscan",
+            Ok("example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIADifferentHostKeyAfterReinstall0000000\n".to_owned()),
+        );
+
+        let check = HostKeyVerificationCheck {
+            paths: &paths,
+            host: "example.com",
+            port: None,
+            runner: &runner,
+        };
+        let diags = check.run_check().await.unwrap();
+
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.severity == Severity::Critical && d.message.contains("MISMATCH")),
+            "a changed blob must be reported Critical: {diags:?}"
+        );
     }
 }

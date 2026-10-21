@@ -11,7 +11,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Snap backend: `SnapInstall`/`SnapUninstall`/`SnapUpdate` plan
   operations, a `SnapBackend` executing them (listings via `SnapEntry`),
   `BackendId::Snap`/`NativeIds::Snap` native-id mapping, and
-  `SnapBackend::detect` wiring — the builder auto-attaches a detected
+  `SnapBackend::detect` wiring: the builder auto-attaches a detected
   snap backend and the facade registers it behind a probe gate.
 - Snap surface documented, with the read-only snap live probes gated
   behind `TORIDE_APPS_INTEGRATION=1`.
@@ -22,6 +22,29 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   claim scoped to Homebrew.
 - Release hygiene: keywords and categories metadata added across the
   publish set's crate manifests.
+- `Target::host()` refuses to compile on CPU architectures `Arch`
+  cannot spell (riscv64, ppc64le, s390x, loongarch64, ...) instead of
+  silently planning them as x86_64.
+- Install records are keyed under the caller's requested id even when
+  adapter resolution returns an app with a different id, so
+  `status`/`uninstall` on the requested id read the record back.
+- Exactly one presence probe per install: the backend's own post-install
+  version evidence stands in for the facade's verify probe whenever it
+  reports a version.
+- Homebrew status answers through the kind-scoped
+  `brew list --formula|--cask --versions` probes instead of the full
+  `brew info --json=v2 --installed` store listing per query.
+- The flatpak backend memoizes confirmed-present remotes per
+  (installation, remote), so repeated installs in one process probe
+  `flatpak remotes` at most once per pair.
+- `update` consults snap's `refresh --list` stale signal (alongside
+  brew's kind-scoped `outdated`) before deciding a record is current.
+- Manifest saves serialize straight from the borrowed record snapshot;
+  the two intermediate ledger deep clones per save are gone.
+- `merge_by_canonical_path` computes each merge key once per detection
+  instead of once per comparison (O(n) `fs::canonicalize` calls, was
+  O(n^2)).
+- Consumer-facing docs swept for em dashes and filler words.
 
 ## [0.1.0] - 2026-10-02
 

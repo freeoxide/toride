@@ -11,6 +11,20 @@ use toride_ssh_core::HostSpec;
 use toride_ssh_core::paths::pub_path_for;
 use toride_ssh_core::{CliRunner, Error, Fingerprint, KeySource, KeyType, Result, SshKey};
 
+/// Map a `UnixStream` connect failure to its agent-availability meaning.
+///
+/// A refused connection (stale socket, dead master) or a vanished socket
+/// file is ordinary agent absence, not an operation failure.
+#[cfg(feature = "native")]
+fn connect_error(e: &std::io::Error) -> Error {
+    match e.kind() {
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound => {
+            Error::AgentNotAvailable
+        }
+        _ => Error::AgentOperationFailed(e.to_string()),
+    }
+}
+
 /// Connect to the SSH agent via `SSH_AUTH_SOCK`.
 ///
 /// Returns a boxed [`Session`](ssh_agent_lib::agent::Session) trait object
@@ -41,8 +55,7 @@ pub async fn connect() -> Result<Box<dyn ssh_agent_lib::agent::Session>> {
 
     // Connect directly via UnixStream to avoid pulling in service_binding.
     let stream = tokio::task::spawn_blocking(move || {
-        std::os::unix::net::UnixStream::connect(&path)
-            .map_err(|e| Error::AgentOperationFailed(e.to_string()))
+        std::os::unix::net::UnixStream::connect(&path).map_err(|e| connect_error(&e))
     })
     .await
     .map_err(|e| Error::AgentOperationFailed(e.to_string()))??;
@@ -67,9 +80,9 @@ pub async fn list_identities(runner: &dyn CliRunner) -> Result<Vec<SshKey>> {
     {
         match list_identities_native().await {
             Ok(keys) => return Ok(keys),
-            // No agent at all — propagate immediately rather than trying CLI.
+            // No agent at all, propagate immediately rather than trying CLI.
             Err(Error::AgentNotAvailable) => return Err(Error::AgentNotAvailable),
-            // Other errors (e.g. protocol mismatch) — fall through to CLI.
+            // Other errors (e.g. protocol mismatch), fall through to CLI.
             Err(_) => {}
         }
     }
@@ -170,10 +183,6 @@ pub async fn remove_key(key_path: &Path, runner: &dyn CliRunner) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Native implementation (agent feature)
-// ---------------------------------------------------------------------------
-
 #[cfg(feature = "native")]
 async fn list_identities_native() -> Result<Vec<SshKey>> {
     let mut client = connect().await?;
@@ -186,7 +195,7 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
     for identity in identities {
         let key_data = identity.credential.key_data();
         let alg_str = key_data.algorithm().to_string();
-        let Some(key_type) = parse_key_type_from_algorithm(&alg_str) else {
+        let Some((key_type, has_certificate)) = parse_key_type_from_algorithm(&alg_str) else {
             tracing::warn!("skipping agent key with unknown algorithm: {alg_str}");
             continue;
         };
@@ -216,7 +225,7 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
             source: KeySource::Agent,
             permissions: None,
             has_public_pair: false,
-            has_certificate: false,
+            has_certificate,
             last_modified: None,
             used_by_hosts: Vec::new(),
             key_format: None,
@@ -255,31 +264,41 @@ fn compute_sha256_fingerprint(bytes: &[u8], key_type: KeyType) -> Fingerprint {
     }
 }
 
-/// Map an algorithm name string (e.g. `"ssh-ed25519"`, `"ssh-rsa"`) to [`KeyType`].
+/// Map an algorithm name string (e.g. `"ssh-ed25519"`, `"ssh-rsa"`, or a
+/// `*-cert-v01@openssh.com` certificate type) to its base [`KeyType`] plus
+/// whether the identity is a certificate.
 ///
-/// Returns `None` for unknown algorithms so callers can decide how to handle them
-/// rather than silently misidentifying the key type.
-#[allow(dead_code, reason = "public API helper, not exercised in-workspace")]
-pub(crate) fn parse_key_type_from_algorithm(alg: &str) -> Option<KeyType> {
-    match alg {
-        "ssh-ed25519" => Some(KeyType::Ed25519),
-        "ssh-rsa" => Some(KeyType::Rsa { bits: 0 }),
-        "ecdsa-sha2-nistp256" => Some(KeyType::EcdsaP256),
-        "ecdsa-sha2-nistp384" => Some(KeyType::EcdsaP384),
-        "ecdsa-sha2-nistp521" => Some(KeyType::EcdsaP521),
-        "ssh-dss" => Some(KeyType::Dsa),
-        "sk-ssh-ed25519@openssh.com" => Some(KeyType::SkEd25519),
-        "sk-ecdsa-sha2-nistp256@openssh.com" => Some(KeyType::SkEcdsaP256),
+/// Returns `None` for unknown algorithms so callers can decide how to handle
+/// them rather than silently misidentifying the key type.
+#[cfg_attr(
+    not(feature = "native"),
+    allow(
+        dead_code,
+        reason = "exercised by the native agent path and unit tests"
+    )
+)]
+pub(crate) fn parse_key_type_from_algorithm(alg: &str) -> Option<(KeyType, bool)> {
+    const CERT_SUFFIX: &str = "-cert-v01@openssh.com";
+    let (base, is_cert) = match alg.strip_suffix(CERT_SUFFIX) {
+        Some(base) => (base, true),
+        None => (alg, false),
+    };
+    let key_type = match base {
+        "ssh-ed25519" => KeyType::Ed25519,
+        "ssh-rsa" => KeyType::Rsa { bits: 0 },
+        "ecdsa-sha2-nistp256" => KeyType::EcdsaP256,
+        "ecdsa-sha2-nistp384" => KeyType::EcdsaP384,
+        "ecdsa-sha2-nistp521" => KeyType::EcdsaP521,
+        "ssh-dss" => KeyType::Dsa,
+        "sk-ssh-ed25519" | "sk-ssh-ed25519@openssh.com" => KeyType::SkEd25519,
+        "sk-ecdsa-sha2-nistp256" | "sk-ecdsa-sha2-nistp256@openssh.com" => KeyType::SkEcdsaP256,
         _ => {
             tracing::warn!("unknown SSH key algorithm \"{alg}\"");
-            None
+            return None;
         }
-    }
+    };
+    Some((key_type, is_cert))
 }
-
-// ---------------------------------------------------------------------------
-// CLI fallback
-// ---------------------------------------------------------------------------
 
 /// Parse `ssh-add -l` output into a list of [`SshKey`] values.
 async fn list_identities_via_cli(runner: &dyn CliRunner) -> Result<Vec<SshKey>> {
@@ -311,7 +330,7 @@ pub(crate) fn parse_ssh_add_line(line: &str) -> Option<SshKey> {
         (rest, None)
     };
 
-    let key_type = key_type_opt.and_then(parse_key_type_from_display)?;
+    let (key_type, has_certificate) = key_type_opt.and_then(parse_key_type_from_display)?;
 
     // Split fingerprint from comment, keeping both as borrowed slices.
     let (fingerprint_part, comment_part) = if let Some(space) = rest.find(' ') {
@@ -336,33 +355,46 @@ pub(crate) fn parse_ssh_add_line(line: &str) -> Option<SshKey> {
         source: KeySource::Agent,
         permissions: None,
         has_public_pair: false,
-        has_certificate: false,
+        has_certificate,
         last_modified: None,
         used_by_hosts: Vec::new(),
         key_format: None,
     })
 }
 
-/// Map a display key type like "ED25519" or "RSA" to [`KeyType`].
+/// Map a display key type like "ED25519" or "RSA" to [`KeyType`], plus
+/// whether the identity is a certificate.
 ///
 /// These strings come from `ssh-add -l` output, e.g. `(ED25519)`, `(RSA)`,
-/// `(ECDSA)`, `(ED25519-SK)`, `(ECDSA-SK)`.
-fn parse_key_type_from_display(s: &str) -> Option<KeyType> {
-    if s.eq_ignore_ascii_case("ED25519") {
-        Some(KeyType::Ed25519)
-    } else if s.eq_ignore_ascii_case("ED25519-SK") {
-        Some(KeyType::SkEd25519)
-    } else if s.eq_ignore_ascii_case("RSA") {
-        Some(KeyType::Rsa { bits: 0 })
-    } else if s.eq_ignore_ascii_case("ECDSA") {
-        Some(KeyType::EcdsaP256)
-    } else if s.eq_ignore_ascii_case("ECDSA-SK") {
-        Some(KeyType::SkEcdsaP256)
-    } else if s.eq_ignore_ascii_case("DSA") {
-        Some(KeyType::Dsa)
+/// `(ECDSA)`, `(ED25519-SK)`, `(ECDSA-SK)`, and the certificate forms
+/// `(RSA-CERT)`, `(ED25519-CERT)`, `(ECDSA-CERT)`, `(ECDSA-SK-CERT)`,
+/// `(ED25519-SK-CERT)` that ssh-add prints for certificate-loaded keys.
+fn parse_key_type_from_display(s: &str) -> Option<(KeyType, bool)> {
+    const CERT_SUFFIX: &str = "-CERT";
+    let (base, is_cert) = if s.len() > CERT_SUFFIX.len()
+        && s[s.len() - CERT_SUFFIX.len()..].eq_ignore_ascii_case(CERT_SUFFIX)
+    {
+        (&s[..s.len() - CERT_SUFFIX.len()], true)
     } else {
-        None
-    }
+        (s, false)
+    };
+
+    let key_type = if base.eq_ignore_ascii_case("ED25519") {
+        KeyType::Ed25519
+    } else if base.eq_ignore_ascii_case("ED25519-SK") {
+        KeyType::SkEd25519
+    } else if base.eq_ignore_ascii_case("RSA") {
+        KeyType::Rsa { bits: 0 }
+    } else if base.eq_ignore_ascii_case("ECDSA") {
+        KeyType::EcdsaP256
+    } else if base.eq_ignore_ascii_case("ECDSA-SK") {
+        KeyType::SkEcdsaP256
+    } else if base.eq_ignore_ascii_case("DSA") {
+        KeyType::Dsa
+    } else {
+        return None;
+    };
+    Some((key_type, is_cert))
 }
 
 #[cfg(test)]

@@ -30,10 +30,6 @@ fn parse_keyscan_line_should_error_for_malformed_input() {
     assert!(parse_keyscan_line("host", "two fields").is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn parse_keyscan_line_empty_string() {
     assert!(parse_keyscan_line("host", "").is_err());
@@ -106,4 +102,48 @@ fn parse_keyscan_output_malformed_lines_skipped() {
     let output = "host ssh-ed25519 AAAAC3...\nmalformed\nhost ssh-rsa AAAAB3...\n";
     let keys = parse_keyscan_output("host", output);
     assert_eq!(keys.len(), 2); // malformed line is skipped
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn add_to_known_hosts_preserves_preexisting_0600_mode() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known_hosts");
+    std::fs::write(&path, "host ssh-ed25519 AAAA existing\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    let key = ScannedHostKey {
+        host: "host2".to_owned(),
+        key_type: "ssh-ed25519".to_owned(),
+        public_key: "BBBB".to_owned(),
+        raw_host: "host2".to_owned(),
+    };
+    add_to_known_hosts(&path, &[key]).await.unwrap();
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "appending must not relax a 0600 known_hosts");
+    let contents = std::fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("host2 ssh-ed25519 BBBB"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn add_to_known_hosts_sets_0644_on_new_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("known_hosts");
+
+    let key = ScannedHostKey {
+        host: "host".to_owned(),
+        key_type: "ssh-ed25519".to_owned(),
+        public_key: "AAAA".to_owned(),
+        raw_host: "host".to_owned(),
+    };
+    add_to_known_hosts(&path, &[key]).await.unwrap();
+
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o644, "a newly created known_hosts is world-readable");
 }

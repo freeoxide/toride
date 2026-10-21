@@ -1,9 +1,5 @@
 use super::parse_serials;
 
-// ---------------------------------------------------------------------------
-// Workflow-discovered edge cases: KRL serial range OOM
-// ---------------------------------------------------------------------------
-
 #[test]
 fn parse_serials_normal_range() {
     let mut out = Vec::new();
@@ -51,7 +47,7 @@ fn parse_serials_exact_cap_boundary() {
 fn parse_serials_just_over_cap() {
     let mut out = Vec::new();
     parse_serials("0-10000", &mut out);
-    // 10001 entries is just over the cap, should be capped
+    // 10001 entries is one over the cap.
     assert_eq!(out.len(), 10_000);
 }
 

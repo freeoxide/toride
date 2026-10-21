@@ -34,25 +34,44 @@ use toride_ssh_core::Result;
 /// Best-effort datetime string to Unix timestamp (seconds since epoch).
 ///
 /// Handles the compact format emitted by `ssh-keygen` (`20240101T000000`)
-/// as well as common ISO-ish formats. Returns `None` if no format matches.
+/// as well as common ISO-ish formats. Timestamps without an explicit UTC
+/// offset are interpreted in the local timezone, matching how ssh-keygen
+/// formats them (`strftime` over `localtime`). Returns `None` if no format
+/// matches.
 pub(crate) fn parse_ssh_datetime(s: &str) -> Option<i64> {
-    let formats = [
+    use chrono::TimeZone as _;
+
+    fn local_timestamp(dt: chrono::NaiveDateTime) -> Option<i64> {
+        let local = chrono::Local.from_local_datetime(&dt);
+        // DST fold: prefer the earliest mapping so the timestamp is stable.
+        local
+            .single()
+            .or_else(|| local.earliest())
+            .map(|dt| dt.timestamp())
+    }
+
+    let naive_formats = [
         "%Y%m%dT%H%M%S", // compact form used by ssh-keygen KRL output
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S%:z",
-        "%Y-%m-%dT%H:%M:%S%#z",
     ];
 
-    for fmt in &formats {
+    for fmt in &naive_formats {
         if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(dt.and_utc().timestamp());
+            return local_timestamp(dt);
+        }
+    }
+
+    let offset_formats = ["%Y-%m-%dT%H:%M:%S%:z", "%Y-%m-%dT%H:%M:%S%#z"];
+    for fmt in &offset_formats {
+        if let Ok(dt) = chrono::DateTime::parse_from_str(s, fmt) {
+            return Some(dt.timestamp());
         }
     }
 
     // Try date-only.
     if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return d.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc().timestamp());
+        return d.and_hms_opt(0, 0, 0).and_then(local_timestamp);
     }
 
     None
@@ -203,30 +222,43 @@ impl CertificateService {
 mod tests {
     use super::*;
 
+    fn local_unix_midnight(y: i32, mo: u32, d: u32) -> i64 {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(y, mo, d, 0, 0, 0)
+            .earliest()
+            .map_or(0, |dt| dt.timestamp())
+    }
+
     #[test]
     fn parse_ssh_datetime_compact() {
-        // ssh-keygen KRL format: 20240101T000000
+        // ssh-keygen KRL format: 20240101T000000, formatted in local time.
         let ts = parse_ssh_datetime("20240101T000000").unwrap();
-        assert!(ts > 0);
-        // Should be 2024-01-01 00:00:00 UTC
-        assert_eq!(ts, 1_704_067_200);
+        assert_eq!(ts, local_unix_midnight(2024, 1, 1));
     }
 
     #[test]
     fn parse_ssh_datetime_iso() {
         let ts = parse_ssh_datetime("2024-01-01T00:00:00").unwrap();
-        assert_eq!(ts, 1_704_067_200);
+        assert_eq!(ts, local_unix_midnight(2024, 1, 1));
     }
 
     #[test]
     fn parse_ssh_datetime_space_separated() {
         let ts = parse_ssh_datetime("2024-01-01 00:00:00").unwrap();
-        assert_eq!(ts, 1_704_067_200);
+        assert_eq!(ts, local_unix_midnight(2024, 1, 1));
     }
 
     #[test]
     fn parse_ssh_datetime_date_only() {
         let ts = parse_ssh_datetime("2024-01-01").unwrap();
+        assert_eq!(ts, local_unix_midnight(2024, 1, 1));
+    }
+
+    #[test]
+    fn parse_ssh_datetime_explicit_offset() {
+        // An explicit offset is honored instead of the local zone.
+        let ts = parse_ssh_datetime("2024-01-01T00:00:00+00:00").unwrap();
         assert_eq!(ts, 1_704_067_200);
     }
 
@@ -244,10 +276,6 @@ mod tests {
         let ts2 = parse_ssh_datetime("2024-06-15").unwrap();
         assert!(ts2 > ts1);
     }
-
-    // -----------------------------------------------------------------------
-    // TrustedUserCAKeys local checking
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn trusted_user_ca_keys_file_exists() {

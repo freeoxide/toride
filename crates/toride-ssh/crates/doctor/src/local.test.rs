@@ -504,7 +504,11 @@ async fn identity_file_pub_detected() {
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "identity_file_pub");
-    assert!(matches.iter().any(|d| d.severity == Severity::Warning));
+    assert!(
+        matches
+            .iter()
+            .any(|d| d.severity == Severity::Info && d.message.contains("agent-held private key"))
+    );
 }
 
 #[tokio::test]
@@ -1280,7 +1284,7 @@ async fn rsa_weak_key_ok_for_4096_bits() {
     assert_eq!(
         diags[0].severity,
         Severity::Ok,
-        "4096-bit RSA key should be Ok, got: {:?} — {}",
+        "4096-bit RSA key should be Ok, got: {:?}, {}",
         diags[0].severity,
         diags[0].message,
     );
@@ -1308,7 +1312,7 @@ async fn rsa_weak_key_warns_for_2048_bits() {
     assert_eq!(
         diags[0].severity,
         Severity::Warning,
-        "2048-bit RSA key should warn, got: {:?} — {}",
+        "2048-bit RSA key should warn, got: {:?}, {}",
         diags[0].severity,
         diags[0].message,
     );
@@ -1344,7 +1348,7 @@ async fn rsa_weak_key_warns_for_1024_bits() {
     assert_eq!(
         diags[0].severity,
         Severity::Warning,
-        "1024-bit RSA key should warn, got: {:?} — {}",
+        "1024-bit RSA key should warn, got: {:?}, {}",
         diags[0].severity,
         diags[0].message,
     );
@@ -1375,7 +1379,7 @@ async fn rsa_weak_key_skips_ed25519_key() {
     assert_eq!(
         diags[0].severity,
         Severity::Ok,
-        "Ed25519 key should not trigger RSA warning, got: {:?} — {}",
+        "Ed25519 key should not trigger RSA warning, got: {:?}, {}",
         diags[0].severity,
         diags[0].message,
     );
@@ -1700,7 +1704,7 @@ async fn nfs_home_returns_valid_diagnostic() {
         assert_eq!(
             diags[0].severity,
             Severity::Info,
-            "expected Info on non-Linux, got: {:?} — {}",
+            "expected Info on non-Linux, got: {:?}, {}",
             diags[0].severity,
             diags[0].message,
         );

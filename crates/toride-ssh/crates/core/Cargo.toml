@@ -23,6 +23,8 @@ toride-fs = { path = "../../../toride-fs", version = "0.2.0" }
 toride-runner = { path = "../../../toride-runner", version = "0.2.0", features = ["tokio-runner", "fake"] }
 toride-diagnostic-types = { path = "../../../toride-diagnostic-types", version = "0.2.0", features = ["serde"] }
 duct = "1"
+# join_all semantics for bounded-concurrency fan-out (core fanout module).
+futures = "0.3"
 libc = "0.2"
 base64 = "0.22"
 gethostname = "0.5"

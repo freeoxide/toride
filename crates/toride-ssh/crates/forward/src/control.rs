@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use toride_ssh_core::{Error, Result};
+use toride_ssh_core::Error;
+use toride_ssh_core::Result;
+use toride_ssh_core::fanout::join_all_bounded;
 
 const MAX_CONTROL_SOCKET_CANDIDATE_SIZE: u64 = 1024;
 
@@ -28,7 +30,11 @@ impl std::fmt::Display for ForwardType {
     }
 }
 
-/// A single active port forward on a `ControlMaster` session.
+/// A port forward spec for `ssh -O cancel`, supplied by the caller.
+///
+/// The mux protocol cannot enumerate a master's forwards (there is no
+/// `-O list`), so canceling requires the spec of the forward as it was
+/// passed to `ssh -L`/`-R`/`-D` at creation time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortForward {
     /// Local bind address (e.g. `127.0.0.1` or `*` under `GatewayPorts`).
@@ -70,144 +76,11 @@ async fn check_alive(control_path: &Path) -> bool {
     ssh_control_cmd(control_path, "check").await.is_ok()
 }
 
-/// List active port forwards on a `ControlMaster` session.
-///
-/// # Errors
-/// [`Error::ForwardFailed`] (non-UTF-8 path), [`Error::CommandFailed`]
-/// (ssh fails), or [`Error::TaskFailed`] (spawn failure).
-pub async fn list_forwards(control_path: &Path) -> Result<Vec<PortForward>> {
-    let output = ssh_control_cmd(control_path, "list").await?;
-    Ok(parse_forward_output(&output))
-}
-
 // Boxing works around the higher-ranked `Send` inference limitation
 // ("Send is not general enough", rust-lang/rust#110338).
 type BoxedFanoutFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
-async fn join_all_bounded<I, T>(limit: usize, futs: I) -> Vec<T>
-where
-    I: IntoIterator,
-    I::Item: std::future::Future<Output = T>,
-{
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
-    let guarded = futs.into_iter().map(|fut| {
-        let semaphore = std::sync::Arc::clone(&semaphore);
-        async move {
-            let _permit = semaphore.acquire_owned().await.ok();
-            fut.await
-        }
-    });
-    futures::future::join_all(guarded).await
-}
-
-/// Run [`list_forwards`] for many control paths with bounded `ssh -O list`
-/// spawns; results in input order, one failure never cancels the others.
-pub async fn list_forwards_bounded<I>(paths: I) -> Vec<Result<Vec<PortForward>>>
-where
-    I: IntoIterator<Item = PathBuf>,
-{
-    let futs: Vec<BoxedFanoutFuture<Result<Vec<PortForward>>>> = paths
-        .into_iter()
-        .map(|path| {
-            let fut: BoxedFanoutFuture<_> = Box::pin(async move { list_forwards(&path).await });
-            fut
-        })
-        .collect();
-    join_all_bounded(MAX_CONCURRENT_CONTROL_CMDS, futs).await
-}
-
-pub(crate) fn parse_forward_output(output: &str) -> Vec<PortForward> {
-    let mut forwards = Vec::new();
-    let mut current_type: Option<ForwardType> = None;
-
-    for line in output.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.starts_with("Local connections") {
-            current_type = Some(ForwardType::Local);
-            continue;
-        }
-        if trimmed.starts_with("Remote connections") {
-            current_type = Some(ForwardType::Remote);
-            continue;
-        }
-        if trimmed.starts_with("Dynamic connections") {
-            current_type = Some(ForwardType::Dynamic);
-            continue;
-        }
-
-        let Some(ft) = current_type else {
-            continue;
-        };
-
-        if let Some(fwd) = parse_forward_line(trimmed, ft) {
-            forwards.push(fwd);
-        }
-    }
-
-    forwards
-}
-
-pub(crate) fn parse_forward_line(line: &str, forward_type: ForwardType) -> Option<PortForward> {
-    let line = line.trim_start();
-
-    let port_idx = line.find(" port ")?;
-    let local_addr = line[..port_idx].trim().trim_end_matches('.').to_owned();
-
-    let rest = &line[port_idx + 6..];
-
-    if forward_type == ForwardType::Dynamic {
-        let local_port: u16 = rest.trim().parse().ok()?;
-        return Some(PortForward {
-            local_addr,
-            local_port,
-            remote_addr: String::new(),
-            remote_port: 0,
-            forward_type,
-        });
-    }
-
-    let comma_idx = rest.find(',')?;
-    let local_port: u16 = rest[..comma_idx].trim().parse().ok()?;
-
-    let fwd_rest = &rest[comma_idx + 1..];
-    let fwd_label = "forwarding to ";
-    let fwd_idx = fwd_rest.find(fwd_label)?;
-    let rhost_port = &fwd_rest[fwd_idx + fwd_label.len()..];
-
-    let rport_idx = rhost_port.rfind(" port ")?;
-    let remote_addr = rhost_port[..rport_idx].trim().to_owned();
-    let remote_port: u16 = rhost_port[rport_idx + 6..].trim().parse().ok()?;
-
-    Some(PortForward {
-        local_addr,
-        local_port,
-        remote_addr,
-        remote_port,
-        forward_type,
-    })
-}
-
-/// Cancel the forward on `local_port` (lists first to find its spec);
-/// an inherent TOCTOU race means it may vanish before the cancel lands.
-///
-/// # Errors
-/// [`Error::ForwardNotFound`] if no forward is listening on `local_port`;
-/// otherwise as [`list_forwards`] / [`cancel_known_forward`].
-pub async fn cancel_forward(control_path: &Path, local_port: u16) -> Result<()> {
-    let forwards = list_forwards(control_path).await?;
-
-    let forward = forwards
-        .iter()
-        .find(|f| f.local_port == local_port)
-        .ok_or_else(|| {
-            Error::ForwardNotFound(format!("no forward found on local port {local_port}"))
-        })?;
-
-    cancel_known_forward(control_path, forward).await
-}
-
-/// Cancel a known forward directly, skipping the list round-trip; the spec
+/// Cancel a known forward directly; the spec sent to `ssh -O cancel`
 /// is `[addr]:lport[:rhost:rport]`, with an empty rhost sent as `localhost`.
 ///
 /// # Errors
@@ -265,8 +138,11 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
     Ok(())
 }
 
-/// Close a `ControlMaster` session (`ssh -O exit`); the socket file is
-/// unlinked asynchronously, so re-check the path before assuming removal.
+/// Close a `ControlMaster` session (`ssh -O exit`).
+///
+/// The socket file is unlinked only after the exit command succeeds or,
+/// when it fails, after `ssh -O check` confirms no master is listening,
+/// so a live master's socket is never destroyed by a failed exit.
 ///
 /// # Errors
 /// [`Error::ForwardFailed`] (non-UTF-8 path), [`Error::CommandFailed`]
@@ -279,11 +155,11 @@ pub async fn exit_session(control_path: &Path) -> Result<()> {
             .to_str()
             .ok_or_else(|| Error::ForwardFailed("control path is not valid UTF-8".into()))?;
 
-        let result = duct::cmd("ssh", ["-O", "exit", "-S", path_str])
+        let result = duct::cmd("ssh", ["-O", "exit", "-S", path_str, "-x", "nohost"])
             .run()
             .map_err(|e| Error::CommandFailed(format!("ssh -O exit: {e}")));
 
-        if result.is_ok() || is_stale_socket(&path) {
+        if result.is_ok() || master_absent(&path) {
             let _ = std::fs::remove_file(&path);
         }
 
@@ -295,17 +171,15 @@ pub async fn exit_session(control_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn is_stale_socket(path: &Path) -> bool {
-    match std::fs::metadata(path) {
-        Ok(meta) => {
-            #[cfg(unix)]
-            if meta.file_type().is_socket() {
-                return true;
-            }
-            meta.is_file() && meta.len() == 0
-        }
-        Err(_) => false,
-    }
+fn master_absent(path: &Path) -> bool {
+    let Some(path_str) = path.to_str() else {
+        return false;
+    };
+    duct::cmd("ssh", ["-O", "check", "-S", path_str, "-x", "nohost"])
+        .stdout_null()
+        .stderr_null()
+        .run()
+        .is_err()
 }
 
 const MAX_CONCURRENT_CONTROL_CMDS: usize = 8;

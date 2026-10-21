@@ -1178,7 +1178,7 @@ fn purge_expired_in_dry_run_skips_the_unban_action() {
     assert!(!marker.exists(), "dry-run purge must not execute actions");
 }
 
-/// stop() must actually gate operations, not just flip a status bit.
+/// stop() must actually gate operations, not only flip a status bit.
 #[test]
 fn stopped_manager_refuses_scan_and_ban_verbs() {
     let (_dir, mut manager) = setup();

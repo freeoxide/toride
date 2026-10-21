@@ -25,7 +25,7 @@ Initial crates.io release.
 - The alias index (DESIGN.md §5, offline subset): `AliasIndex` maps the
   canonical id to per-source `SourceRef` rows (JSON-serializable,
   preloadable via `RegistryBuilder::with_alias_index`); `search` merges
-  same-app hits across adapters — never within one adapter's own hits —
+  same-app hits across adapters: never within one adapter's own hits:
   into one row carrying every source's refs and records it, suffixed
   per DESIGN.md §5 when a same-slug row conflicts (`notes` →
   `notes-flathub`) so no two rows share one id, and `resolve` consults
@@ -50,8 +50,8 @@ Initial crates.io release.
 ### Changed
 
 - `Registry::plan` (and the new lifecycle renders) refuse Homebrew
-  casks on non-macOS hosts — casks are macOS-only, matching
-  toride-apps' planner — routing the install to the checksummed
+  casks on non-macOS hosts: casks are macOS-only, matching
+  toride-apps' planner: routing the install to the checksummed
   direct-download fallback (or `Unsupported`) instead of rendering a
   `brew --cask` argv Linuxbrew would reject.
 

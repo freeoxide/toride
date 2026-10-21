@@ -265,7 +265,7 @@ pub async fn generate_key(
 /// Host-block alias and directives that `add_to_config` writes for a new key.
 ///
 /// `HostName` is emitted only when the caller supplied a real `config_host`;
-/// without one the block carries just `IdentityFile`, because `HostName`
+/// without one the block carries only `IdentityFile`, because `HostName`
 /// defaulting to the key name would make `ssh <key name>` resolve the
 /// hostname `<key name>`.
 fn config_block_for(params: &KeyCreateParams) -> (String, Vec<(String, String)>) {
