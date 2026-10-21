@@ -106,6 +106,47 @@ fn render_rule_args_should_include_log_all() {
     assert!(args.contains(&"log-all".to_string()));
 }
 
+#[test]
+fn render_rule_args_should_emit_direction_and_interface_before_logging() {
+    // ufw 0.36.2 raises "Invalid interface clause" for
+    // `allow log in on eth0 ...`; the grammar is direction+interface,
+    // then the logging keyword.
+    let spec = RuleSpec::builder(Action::Allow)
+        .direction(Direction::In)
+        .on_interface("eth0")
+        .logging(RuleLogging::Log)
+        .to_port(443)
+        .build_unchecked();
+
+    let args = render_rule_args(&spec);
+    let dir_idx = args
+        .iter()
+        .position(|a| a == "in")
+        .expect("direction token present");
+    let log_idx = args
+        .iter()
+        .position(|a| a == "log")
+        .expect("logging token present");
+    assert!(
+        dir_idx < log_idx,
+        "direction must precede the logging keyword: {args:?}"
+    );
+    let on_idx = args
+        .iter()
+        .position(|a| a == "on")
+        .expect("interface clause present");
+    assert!(
+        on_idx < log_idx,
+        "interface clause must precede logging: {args:?}"
+    );
+    assert_eq!(
+        args,
+        vec![
+            "allow", "in", "on", "eth0", "log", "to", "any", "port", "443"
+        ]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Position rendering
 // ---------------------------------------------------------------------------
@@ -146,6 +187,25 @@ fn render_delete_args_should_prefix_with_delete() {
 
     let args = render_delete_args(&spec);
     assert_eq!(args[0], "delete");
+}
+
+#[test]
+fn render_delete_args_should_drop_the_position_prefix() {
+    // ufw's parser rejects `delete insert N allow ...` at the action check,
+    // so a deleted rule renders with no position prefix at all.
+    let spec = RuleSpec::builder(Action::Allow)
+        .position(RulePosition::Insert(1))
+        .to_port(22)
+        .proto(Protocol::Tcp)
+        .build_unchecked();
+
+    let args = render_delete_args(&spec);
+    assert_eq!(args[0], "delete");
+    assert_eq!(args[1], "allow");
+    assert!(
+        !args.iter().any(|a| a == "insert" || a == "prepend"),
+        "delete must not carry a position prefix: {args:?}"
+    );
 }
 
 #[test]

@@ -1,9 +1,12 @@
 //! Parse and handle `authorized_keys` option fields.
 //!
-//! Supports all documented options from `man sshd` `AUTHORIZED_KEYS FILE FORMAT`:
-//! command, environment, from, permit-open, port-forwarding, principals,
-//! no-pty, no-port-forwarding, no-X11-forwarding, no-agent-forwarding,
-//! no-user-rc, restrict, tunnel, cert-authority, expiry-time, perferrp.
+//! Covers the commonly used `man sshd` `AUTHORIZED_KEYS FILE FORMAT`
+//! options: `command`, `environment`, `from`, `permit-open`, `permitlisten`,
+//! `principals`, `no-pty`, `no-port-forwarding`, `no-X11-forwarding`,
+//! `no-agent-forwarding`, `no-user-rc`, `no-touch-required`,
+//! `verify-required`, `restrict`, `tunnel`, `cert-authority`, and
+//! `expiry-time`. Options outside this set are preserved verbatim in
+//! [`AuthorizedKeyOptions::custom`] so lines round-trip without loss.
 
 use serde::{Deserialize, Serialize};
 
@@ -48,8 +51,13 @@ pub struct AuthorizedKeyOptions {
     pub principals: Vec<String>,
     /// Expiry time for this key (OpenSSH 8.6+).
     pub expiry_time: Option<String>,
-    /// Prefer RP (relying party) identity for FIDO keys (OpenSSH 9.6+).
-    pub perferrp: bool,
+    /// Requires physical presence for FIDO authenticator-attached keys.
+    pub no_touch_required: bool,
+    /// Requires user verification for FIDO authenticator-attached keys.
+    pub verify_required: bool,
+    /// Restricts remote port-forwarding listen destinations
+    /// (`permitlisten`, the remote twin of `permit-open`).
+    pub permit_listen: Vec<String>,
     /// Unrecognized / custom options preserved for round-tripping.
     pub custom: Vec<(String, Option<String>)>,
 }
@@ -108,6 +116,14 @@ pub fn parse_options(options_str: &str) -> Result<AuthorizedKeyOptions> {
                 "tunnel" => opts.tunnel = Some(value),
                 "principals" => opts.principals.push(value),
                 "expiry-time" => opts.expiry_time = Some(value),
+                "permitlisten" => {
+                    for target in value.split(',') {
+                        let target = target.trim();
+                        if !target.is_empty() {
+                            opts.permit_listen.push(target.to_string());
+                        }
+                    }
+                }
                 other => {
                     opts.custom.push((other.to_string(), Some(value)));
                 }
@@ -122,7 +138,8 @@ pub fn parse_options(options_str: &str) -> Result<AuthorizedKeyOptions> {
                 "no-user-rc" => opts.no_user_rc = true,
                 "restrict" => opts.restrict = true,
                 "cert-authority" => opts.cert_authority = true,
-                "perferrp" => opts.perferrp = true,
+                "no-touch-required" => opts.no_touch_required = true,
+                "verify-required" => opts.verify_required = true,
                 other => {
                     opts.custom.push((other.to_string(), None));
                 }

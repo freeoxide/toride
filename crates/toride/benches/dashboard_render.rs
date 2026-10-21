@@ -74,7 +74,7 @@ fn dashboard_data_delivery(c: &mut Criterion) {
 
     for (width, height) in SIZES {
         let mut screen = fixed_dashboard();
-        let status = common::fixed_status();
+        let status = std::sync::Arc::new(common::fixed_status());
         let palette = render_palette();
         let mut terminal = Terminal::new(TestBackend::new(width, height))
             .expect("TestBackend terminal construction cannot fail");
@@ -84,13 +84,13 @@ fn dashboard_data_delivery(c: &mut Criterion) {
 
         group.bench_function(format!("set_status_{width}x{height}"), |b| {
             b.iter(|| {
-                screen.set_status(std::hint::black_box(status.clone()));
+                screen.set_status(std::hint::black_box(std::sync::Arc::clone(&status)));
             });
         });
 
         group.bench_function(format!("set_status_then_view_{width}x{height}"), |b| {
             b.iter(|| {
-                screen.set_status(std::hint::black_box(status.clone()));
+                screen.set_status(std::hint::black_box(std::sync::Arc::clone(&status)));
                 terminal
                     .draw(|f| screen.view(f, palette))
                     .expect("TestBackend draw cannot fail");

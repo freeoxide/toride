@@ -2,7 +2,7 @@
 //!
 //! Detects Docker installations, firewall backend configuration, published
 //! container ports, and common reverse proxy setups (Traefik, Dokploy).
-//! All findings are informational or warnings — this module never mutates state.
+//! All findings are informational or warnings: this module never mutates state.
 
 use crate::command::CommandRunner;
 use crate::spec::{Finding, Severity};
@@ -99,24 +99,52 @@ pub fn inspect_docker<R: CommandRunner + ?Sized>(runner: &R) -> DockerInspection
     }
 }
 
+/// Read the Docker daemon configuration, whichever variant exists.
+///
+/// Both the `iptables` and `firewall-backend` checks consult the same path
+/// list so they can never disagree about which file governs the answer.
+fn read_daemon_config() -> Option<String> {
+    ["/etc/docker/daemon.json", "/etc/docker/daemon.jsonc"]
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+}
+
+/// Strip `//`-comment lines so jsonc files do not defeat key lookup.
+fn strip_jsonc_comments(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Extract the raw value token following `"key"` in a JSON object body.
+///
+/// Handles arbitrary whitespace around the colon, which naive substring
+/// matching (`"iptables" : false`) missed. The value is returned verbatim
+/// up to the closing `,` or `}`.
+fn json_value_after_key<'a>(content: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{key}\"");
+    let pos = content.find(&needle)?;
+    let after_key = content[pos + needle.len()..].trim_start();
+    let after_colon = after_key.strip_prefix(':')?.trim_start();
+    let end = after_colon.find([',', '}']).unwrap_or(after_colon.len());
+    Some(after_colon[..end].trim())
+}
+
 /// Detect Docker's firewall backend by reading daemon.json.
 fn detect_docker_firewall_backend<R: CommandRunner + ?Sized>(runner: &R) -> DockerFirewallBackend {
-    // Check daemon.json for firewall-backend setting
-    let daemon_json_paths = ["/etc/docker/daemon.json", "/etc/docker/daemon.jsonc"];
-
-    for path in &daemon_json_paths {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let lower = content.to_ascii_lowercase();
-            if lower.contains("\"firewall-backend\"") {
-                if lower.contains("\"nftables\"") {
-                    return DockerFirewallBackend::Nftables;
-                }
-                if lower.contains("\"iptables\"") {
-                    return DockerFirewallBackend::Iptables;
-                }
-                if lower.contains("\"none\"") {
-                    return DockerFirewallBackend::None;
-                }
+    if let Some(content) = read_daemon_config().map(|c| strip_jsonc_comments(&c)) {
+        if let Some(value) = json_value_after_key(&content, "firewall-backend") {
+            let value = value.trim_matches('"');
+            if value.eq_ignore_ascii_case("nftables") {
+                return DockerFirewallBackend::Nftables;
+            }
+            if value.eq_ignore_ascii_case("iptables") {
+                return DockerFirewallBackend::Iptables;
+            }
+            if value.eq_ignore_ascii_case("none") {
+                return DockerFirewallBackend::None;
             }
         }
     }
@@ -133,19 +161,13 @@ fn detect_docker_firewall_backend<R: CommandRunner + ?Sized>(runner: &R) -> Dock
 
 /// Detect whether Docker iptables management is enabled.
 fn detect_iptables_management<R: CommandRunner + ?Sized>(runner: &R) -> Option<bool> {
-    // Check daemon.json for "iptables": false
-    let daemon_json_paths = ["/etc/docker/daemon.json"];
-
-    for path in &daemon_json_paths {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let lower = content.to_ascii_lowercase();
-            if lower.contains("\"iptables\"") {
-                if lower.contains("\"iptables\": false") || lower.contains("\"iptables\":false") {
-                    return Some(false);
-                }
-                if lower.contains("\"iptables\": true") || lower.contains("\"iptables\":true") {
-                    return Some(true);
-                }
+    if let Some(content) = read_daemon_config().map(|c| strip_jsonc_comments(&c)) {
+        if let Some(value) = json_value_after_key(&content, "iptables") {
+            if value.eq_ignore_ascii_case("false") {
+                return Some(false);
+            }
+            if value.eq_ignore_ascii_case("true") {
+                return Some(true);
             }
         }
     }
@@ -263,7 +285,7 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
     let info = inspect_docker(runner);
 
     if !info.installed {
-        // Docker not installed — nothing to check
+        // Docker not installed: nothing to check
         return findings;
     }
 
@@ -569,6 +591,41 @@ pub fn check_routing(_runner: &dyn CommandRunner) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_value_after_key_handles_space_before_colon() {
+        // Regression: '"iptables" : false' defeated the fixed-spacing
+        // substring match and fell through to Some(true), firing a false
+        // docker:iptables:enabled warning on correctly configured hosts.
+        let content = "{ \"iptables\" : false }";
+        assert_eq!(json_value_after_key(content, "iptables"), Some("false"));
+
+        let tight = "{\"iptables\":false}";
+        assert_eq!(json_value_after_key(tight, "iptables"), Some("false"));
+
+        let spaced = "{\n  \"iptables\" :   true,\n  \"debug\": false\n}";
+        assert_eq!(json_value_after_key(spaced, "iptables"), Some("true"));
+    }
+
+    #[test]
+    fn json_value_after_key_handles_jsonc_comments() {
+        let content = "// managed by ops\n{\n  // disable docker's iptables management\n  \"iptables\": false\n}";
+        let stripped = strip_jsonc_comments(content);
+        assert_eq!(
+            json_value_after_key(&stripped, "iptables"),
+            Some("false"),
+            "comment lines must not defeat key lookup"
+        );
+    }
+
+    #[test]
+    fn json_value_after_key_reads_firewall_backend() {
+        let content = "{ \"firewall-backend\": \"nftables\" }";
+        assert_eq!(
+            json_value_after_key(content, "firewall-backend"),
+            Some("\"nftables\"")
+        );
+    }
 
     #[test]
     fn parse_single_port_mapping_should_handle_common_formats() {

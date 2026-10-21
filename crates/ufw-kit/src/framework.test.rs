@@ -2,7 +2,7 @@ use super::*;
 use crate::spec::FrameworkRuleBlock;
 
 // ---------------------------------------------------------------------------
-// upsert_block — insert new
+// upsert_block: insert new
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -21,7 +21,7 @@ fn upsert_block_should_insert_new_block() {
 }
 
 // ---------------------------------------------------------------------------
-// upsert_block — replace existing
+// upsert_block: replace existing
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -154,6 +154,77 @@ fn list_blocks_should_handle_multiple_on_same_line() {
     let content = "# >>> ufw-kit a\n# >>> ufw-kit b\n";
     let blocks = list_blocks(content);
     assert_eq!(blocks.len(), 2);
+}
+
+// ---------------------------------------------------------------------------
+// Marker line-granularity regression tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn upsert_block_should_not_replace_prefix_matching_block_id() {
+    // Regression: id "foo" prefix-matched block "foo-bar" and replaced or
+    // deleted the wrong region.
+    let content = "\
+# >>> ufw-kit foo-bar
+keep me
+# <<< ufw-kit foo-bar
+";
+
+    let block = FrameworkRuleBlock {
+        id: "foo".into(),
+        content: "new".into(),
+        ipv6: false,
+    };
+
+    let result = upsert_block(content, &block).unwrap();
+    assert!(
+        result.contains("keep me"),
+        "upserting 'foo' must leave block 'foo-bar' intact: {result}"
+    );
+    assert!(result.contains(">>> ufw-kit foo\n"));
+    assert!(result.contains("<<< ufw-kit foo\n"));
+}
+
+#[test]
+fn remove_block_should_not_remove_prefix_matching_block_id() {
+    let content = "\
+# >>> ufw-kit foo-bar
+keep me
+# <<< ufw-kit foo-bar
+";
+
+    let result = remove_block(content, "foo").unwrap();
+    assert_eq!(
+        result, content,
+        "removing 'foo' must not touch block 'foo-bar'"
+    );
+}
+
+#[test]
+fn upsert_block_should_error_on_orphan_start_marker() {
+    // Regression: a start marker with no end marker used to fall through to
+    // append, producing a duplicate block that the doctor flags as corrupt.
+    let content = "# >>> ufw-kit orphan\nuser content\n";
+    let block = FrameworkRuleBlock {
+        id: "orphan".into(),
+        content: "new".into(),
+        ipv6: false,
+    };
+
+    let result = upsert_block(content, &block);
+    assert!(
+        result.is_err(),
+        "an orphan start marker must fail closed instead of appending"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("orphan"), "error names the block id: {err}");
+}
+
+#[test]
+fn remove_block_should_error_on_orphan_start_marker() {
+    let content = "# >>> ufw-kit orphan\nuser content\n";
+    let result = remove_block(content, "orphan");
+    assert!(result.is_err());
 }
 
 // ---------------------------------------------------------------------------

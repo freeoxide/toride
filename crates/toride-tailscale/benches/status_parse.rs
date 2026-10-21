@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use toride_tailscale::TailscaleClient;
 use toride_tailscale::status::NodeStatus;
 use toride_tailscale::tailnet::TailnetTopology;
-use toride_tailscale::TailscaleClient;
 
 const PEER_COUNTS: [usize; 3] = [10, 100, 500];
 
@@ -63,11 +63,18 @@ fn oracle() {
     let report = node.to_report();
     assert!(report.connected);
 
-    let topology =
-        TailnetTopology::from_status_json(&document).expect("topology parses");
+    let topology = TailnetTopology::from_status_json(&document).expect("topology parses");
     assert_eq!(topology.peers().len(), PEER_COUNTS[0]);
-    assert_eq!(topology.online_peers().len(), 8, "three of eleven nodes are offline");
-    assert_eq!(topology.exit_nodes().len(), 1, "peer 7 offers exit-node service");
+    assert_eq!(
+        topology.online_peers().len(),
+        8,
+        "three of eleven nodes are offline"
+    );
+    assert_eq!(
+        topology.exit_nodes().len(),
+        1,
+        "peer 7 offers exit-node service"
+    );
 
     let parsed: serde_json::Value =
         serde_json::from_str(&status_text(PEER_COUNTS[0])).expect("document round-trips");
@@ -149,27 +156,30 @@ fn status_parse(criterion: &mut Criterion) {
             b.iter(|| {
                 let document: serde_json::Value =
                     serde_json::from_str(black_box(text)).expect("document parses");
-                black_box(document.get("Peer").and_then(|peers| peers.as_object()).map_or(0, serde_json::Map::len))
-            })
+                black_box(
+                    document
+                        .get("Peer")
+                        .and_then(|peers| peers.as_object())
+                        .map_or(0, serde_json::Map::len),
+                );
+            });
         });
 
         group.bench_function(format!("node_status_report_{peers}_peers"), |b| {
-            let document: serde_json::Value =
-                serde_json::from_str(text).expect("document parses");
+            let document: serde_json::Value = serde_json::from_str(text).expect("document parses");
             b.iter(|| {
                 let report = NodeStatus::from_raw(document.clone()).to_report();
-                black_box(report.connected)
-            })
+                black_box(report.connected);
+            });
         });
 
         group.bench_function(format!("topology_from_status_{peers}_peers"), |b| {
-            let document: serde_json::Value =
-                serde_json::from_str(text).expect("document parses");
+            let document: serde_json::Value = serde_json::from_str(text).expect("document parses");
             b.iter(|| {
                 let topology =
                     TailnetTopology::from_status_json(black_box(&document)).expect("parses");
-                black_box(topology.peers().len())
-            })
+                black_box(topology.peers().len());
+            });
         });
     }
 

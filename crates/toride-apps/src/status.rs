@@ -4,29 +4,29 @@
 //! [`TorideId`], combining the two sources the crate keeps:
 //!
 //! - the **install records** ([`InstallRecord`], the caller holds the
-//!   record the store loaded) — the source of truth for what *toride*
+//!   record the store loaded), the source of truth for what *toride*
 //!   installed: a record's identifiers are probed verbatim, never
 //!   re-planned (the A1 round-1 flatpak-ref finding);
-//! - the **backends** ([`BackendSet`]) — each backend present on the host
+//! - the **backends** ([`BackendSet`]), each backend present on the host
 //!   confirms or refutes presence with its kind-aware offline probe.
 //!
 //! ## The three answers
 //!
-//! - [`AppStatus::Installed`] — a record was supplied and the recorded
+//! - [`AppStatus::Installed`]: a record was supplied and the recorded
 //!   backend confirms the recorded identifiers are still present (with
 //!   the version its probe reports now, not the stale recorded one).
-//! - [`AppStatus::Foreign`] — no record, but the app's backend-native
+//! - [`AppStatus::Foreign`]: no record, but the app's backend-native
 //!   identifiers (supplied by the caller from the registry app's install
 //!   method, since a bare `TorideId` carries none) are present through
-//!   that backend: installed by someone else — the user, the distro
+//!   that backend: installed by someone else: the user, the distro
 //!   image, another tool.
-//! - [`AppStatus::NotInstalled`] — neither: no record, or the recorded
+//! - [`AppStatus::NotInstalled`]: neither: no record, or the recorded
 //!   backend no longer (or never could) report the identifiers.
 //!
 //! ## Absent backends are answers, not errors
 //!
-//! A backend missing from the set — no brew on this Linux box, no flatpak
-//! on that macOS one — is simply skipped: the app cannot be installed via
+//! A backend missing from the set (no brew on this Linux box, no flatpak
+//! on that macOS one) is skipped: the app cannot be installed via
 //! a backend that is not here, so a record under it reads `NotInstalled`
 //! and a `Foreign` probe under it contributes nothing. Only a backend that
 //! *is* present failing its probe (brew crashing, unparseable listing) is
@@ -34,12 +34,12 @@
 //!
 //! ## Probe choice, per backend
 //!
-//! Kind-aware, per the A2–A4 interface notes:
+//! Kind-aware, per the A2-A4 interface notes:
 //!
 //! - homebrew records probe [`HomebrewBackend::installed_version`] with
-//!   the recorded cask/formula kind — `Ok(None)` is the documented
+//!   the recorded cask/formula kind: `Ok(None)` is the documented
 //!   not-installed signal (exit-gated silent failure or marker line);
-//! - distro records probe [`Backend::status`] presence — apk's listing
+//! - distro records probe [`Backend::status`] presence: apk's listing
 //!   reports installed packages with no version, so
 //!   [`DistroBackend::installed_version`]'s `Ok(None)` cannot distinguish
 //!   absent from present-without-a-version;
@@ -48,7 +48,7 @@
 //!   [`FlatpakBackend::installed_version`]: flatpak reports apps without
 //!   appdata version metadata as an empty version cell, so
 //!   `installed_version`'s `Ok(None)` cannot distinguish "absent" from
-//!   "present without a version" — the listing row can;
+//!   "present without a version": the listing row can;
 //! - `Foreign` probes (no record, so no recorded kind or scope) ride the
 //!   trait's [`Backend::status`] presence lookup: kind-agnostic for brew,
 //!   all-installations for flatpak, a single package query for distro.
@@ -83,17 +83,17 @@ pub enum AppStatus {
         /// Backend the (still-present) record names.
         backend: BackendId,
         /// Version the backend's probe reports *now* (`None` when the
-        /// backend confirms presence but reports no version — e.g. a
+        /// backend confirms presence but reports no version: e.g. a
         /// flatpak app without appdata metadata).
         version: Option<String>,
     },
-    /// The app is installed on this host, but **not by toride** — the
+    /// The app is installed on this host, but **not by toride**: the
     /// manifest has no record for it and a backend reports its native
     /// identifiers present.
     Foreign {
         /// Backend that reports the app present.
         backend: BackendId,
-        /// Human-readable evidence (native id, reported version) — the
+        /// Human-readable evidence (native id, reported version), the
         /// UI-facing "someone else installed this" note.
         detail: String,
     },
@@ -102,7 +102,7 @@ pub enum AppStatus {
     NotInstalled,
 }
 
-/// The backends available on this host for a status lookup — one optional
+/// The backends available on this host for a status lookup: one optional
 /// slot per install technology. An absent slot is a skipped backend (see
 /// the module docs), never an error; an empty set answers `NotInstalled`
 /// for everything.
@@ -141,7 +141,7 @@ pub struct BackendSet<'a> {
     mise: Option<&'a MiseBackend>,
 }
 
-/// Debug prints slot occupancy, not the backends (they are not `Debug` —
+/// Debug prints slot occupancy, not the backends (they are not `Debug`:
 /// their seam carries an unprintable runner handle).
 impl std::fmt::Debug for BackendSet<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -164,41 +164,41 @@ impl std::fmt::Debug for BackendSet<'_> {
 }
 
 impl<'a> BackendSet<'a> {
-    /// The empty set — every backend absent, nothing probed.
+    /// The empty set: every backend absent, nothing probed.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Attach the homebrew backend — consume-and-return.
+    /// Attach the homebrew backend: consume-and-return.
     #[must_use]
     pub const fn homebrew(mut self, backend: &'a HomebrewBackend) -> Self {
         self.homebrew = Some(backend);
         self
     }
 
-    /// Attach the flatpak backend — consume-and-return.
+    /// Attach the flatpak backend: consume-and-return.
     #[must_use]
     pub const fn flatpak(mut self, backend: &'a FlatpakBackend) -> Self {
         self.flatpak = Some(backend);
         self
     }
 
-    /// Attach the snap backend — consume-and-return.
+    /// Attach the snap backend: consume-and-return.
     #[must_use]
     pub const fn snap(mut self, backend: &'a SnapBackend) -> Self {
         self.snap = Some(backend);
         self
     }
 
-    /// Attach the distro backend — consume-and-return.
+    /// Attach the distro backend: consume-and-return.
     #[must_use]
     pub const fn distro(mut self, backend: &'a DistroBackend) -> Self {
         self.distro = Some(backend);
         self
     }
 
-    /// Attach the direct-download backend — consume-and-return (the
+    /// Attach the direct-download backend: consume-and-return (the
     /// `direct` feature).
     #[cfg(feature = "direct")]
     #[must_use]
@@ -207,35 +207,35 @@ impl<'a> BackendSet<'a> {
         self
     }
 
-    /// Attach the npm backend — consume-and-return.
+    /// Attach the npm backend: consume-and-return.
     #[must_use]
     pub const fn npm(mut self, backend: &'a NpmBackend) -> Self {
         self.npm = Some(backend);
         self
     }
 
-    /// Attach the cargo backend — consume-and-return.
+    /// Attach the cargo backend: consume-and-return.
     #[must_use]
     pub const fn cargo(mut self, backend: &'a CargoBackend) -> Self {
         self.cargo = Some(backend);
         self
     }
 
-    /// Attach the pipx backend — consume-and-return.
+    /// Attach the pipx backend: consume-and-return.
     #[must_use]
     pub const fn pipx(mut self, backend: &'a PipxBackend) -> Self {
         self.pipx = Some(backend);
         self
     }
 
-    /// Attach the uv backend — consume-and-return.
+    /// Attach the uv backend: consume-and-return.
     #[must_use]
     pub const fn uv(mut self, backend: &'a UvBackend) -> Self {
         self.uv = Some(backend);
         self
     }
 
-    /// Attach the mise backend — consume-and-return (the `mise` feature).
+    /// Attach the mise backend: consume-and-return (the `mise` feature).
     #[cfg(feature = "mise")]
     #[must_use]
     pub const fn mise(mut self, backend: &'a MiseBackend) -> Self {
@@ -244,7 +244,7 @@ impl<'a> BackendSet<'a> {
     }
 }
 
-/// The slot a set of ids routes to — the one seam the language ecosystems
+/// The slot a set of ids routes to: the one seam the language ecosystems
 /// and snap share (their trait `status` presence probe over a listing);
 /// `None` when that backend is not attached.
 fn language_backend<'a>(set: &BackendSet<'a>, ids: &NativeIds) -> Option<&'a dyn Backend> {
@@ -284,7 +284,7 @@ fn language_native_id(ids: &NativeIds) -> &str {
 /// Resolve one app's standing on this host.
 ///
 /// Precedence: `record` (the manifest's record for the app, when the
-/// caller holds one) is probed with its own recorded identifiers — the
+/// caller holds one) is probed with its own recorded identifiers: the
 /// source of truth, never the caller's re-derived ones. Without a record,
 /// `native` (the registry app's backend-native identifiers, when the
 /// caller knows them) is probed for `Foreign` presence; without either,
@@ -293,7 +293,7 @@ fn language_native_id(ids: &NativeIds) -> &str {
 /// # Errors
 ///
 /// [`Error::Command`](crate::Error::Command) when a backend that *is* in
-/// the set fails its probe. An absent backend is never an error — it is
+/// the set fails its probe. An absent backend is never an error: it is
 /// skipped.
 pub async fn app_status(
     record: Option<&InstallRecord>,
@@ -440,7 +440,7 @@ async fn foreign_status(native: &NativeIds, backends: &BackendSet<'_>) -> Result
                 return Ok(AppStatus::NotInstalled);
             };
             // Kind-agnostic presence, deliberately: the caller's
-            // cask/formula kind is destructured away on purpose — whoever
+            // cask/formula kind is destructured away on purpose: whoever
             // installed this app may have used the OTHER kind than the
             // registry method names (user installed the cask, method
             // says formula, or vice versa), and presence of either kind
@@ -457,8 +457,8 @@ async fn foreign_status(native: &NativeIds, backends: &BackendSet<'_>) -> Result
                 return Ok(AppStatus::NotInstalled);
             };
             // All installations (trait default), deliberately: the
-            // caller's installation scope is destructured away on purpose
-            // — a foreign install may live in the other installation
+            // caller's installation scope is destructured away on purpose,
+            // as a foreign install may live in the other installation
             // (user-installed under --system while toride plans --user),
             // and presence in either makes the app Foreign.
             let status = backend.status(StatusQuery::new(app_id)).await?;
@@ -556,7 +556,7 @@ fn foreign_from(backend: BackendId, subject: &str, status: BackendStatus) -> App
 }
 
 /// The sync twin of [`app_status`]: same precedence, same probe choices,
-/// same absent-backend-is-an-answer rule — the probes run on the calling
+/// same absent-backend-is-an-answer rule: the probes run on the calling
 /// thread through the backends' sync twins.
 ///
 /// # Errors
@@ -870,10 +870,6 @@ mod tests {
     }
 
     /// The exact `brew info` spec the trait-default presence status runs.
-    fn brew_info_spec() -> toride_runner::CommandSpec {
-        command("brew", ["info", "--json=v2", "--installed"])
-    }
-
     /// The exact `flatpak list` spec the scoped listing runs.
     fn flatpak_list_spec(scope: FlatpakListScope) -> toride_runner::CommandSpec {
         let mut args = vec!["list"];
@@ -907,12 +903,6 @@ mod tests {
     }
 
     /// The `brew info` document carrying one installed cask.
-    fn brew_cask_installed_document(token: &str, version: &str) -> String {
-        format!(
-            r#"{{"formulae": [], "casks": [{{"token": "{token}", "name": ["Cask"], "version": "{version}", "installed": "{version}"}}]}}"#
-        )
-    }
-
     /// One flatpak listing row (tab-separated, four columns).
     fn flatpak_row(app_id: &str, version: &str, installation: &str) -> String {
         format!("{app_id}\t{version}\tflathub\t{installation}\n")
@@ -1010,7 +1000,7 @@ mod tests {
 
     #[tokio::test]
     async fn manifest_hit_flatpak_record_without_a_version_still_reports_installed() {
-        // The empty-version row (flatpak apps without appdata metadata) —
+        // The empty-version row (flatpak apps without appdata metadata),
         // the exact case that rules out `installed_version`, whose
         // Ok(None) cannot tell this apart from absence.
         let fake = FakeRunner::new().strict().respond(
@@ -1070,7 +1060,7 @@ mod tests {
     async fn manifest_hit_flatpak_record_absent_from_the_scoped_listing_reports_not_installed() {
         // The target lives only in the user installation; the --system
         // scoped listing flatpak would run here lists *other* apps, never
-        // a user row — so the scoped probe must not find it.
+        // a user row, so the scoped probe must not find it.
         let fake = FakeRunner::new().strict().respond(
             flatpak_list_spec(FlatpakListScope::System),
             CommandOutput::from_stdout(flatpak_row("org.gnome.Calculator", "47.1", "system")),
@@ -1160,7 +1150,7 @@ mod tests {
     #[tokio::test]
     async fn manifest_hit_distro_record_on_a_foreign_family_backend_reports_not_installed() {
         // A Debian record against a Fedora backend: the family gate must
-        // skip the probe entirely — nothing dispatched.
+        // skip the probe entirely: nothing dispatched.
         let fake = FakeRunner::new().strict();
         let distro = distro_backend(DistroFamily::Fedora, &fake);
         let backends = BackendSet::new().distro(&distro);
@@ -1235,10 +1225,16 @@ mod tests {
 
     #[tokio::test]
     async fn manifest_miss_with_brew_listing_the_token_reports_foreign() {
-        let fake = FakeRunner::new().strict().respond(
-            brew_info_spec(),
-            CommandOutput::from_stdout(brew_cask_installed_document("firefox", "138.0")),
-        );
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                brew_versions_spec(BrewKind::Formula, "firefox"),
+                CommandOutput::from_stdout(String::new()),
+            )
+            .respond(
+                brew_versions_spec(BrewKind::Cask, "firefox"),
+                CommandOutput::from_stdout("firefox 138.0\n"),
+            );
         let brew = homebrew_backend(&fake);
         let backends = BackendSet::new().homebrew(&brew);
         let native = NativeIds::Homebrew {
@@ -1309,11 +1305,17 @@ mod tests {
 
     #[tokio::test]
     async fn manifest_miss_when_the_backend_does_not_carry_the_id_reports_not_installed() {
-        // Brew lists other things, not this token.
-        let fake = FakeRunner::new().strict().respond(
-            brew_info_spec(),
-            CommandOutput::from_stdout(brew_cask_installed_document("something-else", "1.0")),
-        );
+        // Both kind-scoped probes miss: brew carries no such token.
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                brew_versions_spec(BrewKind::Formula, "firefox"),
+                CommandOutput::from_stdout(String::new()),
+            )
+            .respond(
+                brew_versions_spec(BrewKind::Cask, "firefox"),
+                CommandOutput::from_stdout(String::new()),
+            );
         let brew = homebrew_backend(&fake);
         let backends = BackendSet::new().homebrew(&brew);
         let native = NativeIds::Homebrew {
@@ -1414,10 +1416,16 @@ mod tests {
 
     #[test]
     fn sync_manifest_miss_with_brew_listing_the_token_reports_foreign() {
-        let fake = FakeRunner::new().strict().respond(
-            brew_info_spec(),
-            CommandOutput::from_stdout(brew_cask_installed_document("firefox", "138.0")),
-        );
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                brew_versions_spec(BrewKind::Formula, "firefox"),
+                CommandOutput::from_stdout(String::new()),
+            )
+            .respond(
+                brew_versions_spec(BrewKind::Cask, "firefox"),
+                CommandOutput::from_stdout("firefox 138.0\n"),
+            );
         let brew = homebrew_backend(&fake);
         let backends = BackendSet::new().homebrew(&brew);
         let native = NativeIds::Homebrew {

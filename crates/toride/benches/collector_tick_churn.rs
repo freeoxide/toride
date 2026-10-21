@@ -161,8 +161,7 @@ fn collector_tick_churn(c: &mut Criterion) {
     rt.block_on(tick.tick());
 
     let before_count = host.spawn_count();
-    let before_by_name: HashMap<String, usize> =
-        host.spawn_breakdown().into_iter().collect();
+    let before_by_name: HashMap<String, usize> = host.spawn_breakdown().into_iter().collect();
     let measured_ticks = Cell::new(0usize);
 
     let mut group = c.benchmark_group("collector_tick_churn");

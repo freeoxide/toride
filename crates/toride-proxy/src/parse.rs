@@ -169,26 +169,31 @@ pub fn parse_openssl_cert(output: &str) -> Option<CertInfo> {
     // Compute real days remaining from the Not After date vs now. The
     // `openssl x509 -text` "Not After" line uses the same `Mon DD HH:MM:SS YYYY
     // GMT` format as `-enddate`, so we reuse the shared epoch parser. When the
-    // date is absent or unparseable we surface 0 (treated as invalid by
-    // CertInfo::new, since is_valid is `days_remaining > 0`) rather than
-    // fabricating a healthy expiry.
-    let days_remaining = not_after
+    // date is absent or unparseable we surface 0 with `is_valid = false`
+    // rather than fabricating a healthy expiry; when it parses, `is_valid`
+    // comes from `expiry_epoch > now_epoch`, so a cert inside its final 24 h
+    // stays valid with `days_remaining = 0`.
+    let cert_info_state = not_after
         .split_whitespace()
         .next()
         .and_then(|_| parse_openssl_enddate_epoch(&not_after))
-        .map_or(0, |expiry_epoch| {
+        .map_or((0, false), |expiry_epoch| {
             let now_epoch = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
-            days_until(now_epoch, expiry_epoch)
+            (
+                days_until(now_epoch, expiry_epoch),
+                expiry_epoch > now_epoch,
+            )
         });
 
-    Some(CertInfo::new(
+    Some(CertInfo::from_expiry_state(
         subject,
         issuer,
         not_before,
         not_after,
-        days_remaining,
+        cert_info_state.0,
+        cert_info_state.1,
     ))
 }
 

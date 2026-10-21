@@ -10,9 +10,9 @@
 //!
 //! ## Quarantine, not hard stop
 //!
-//! A corrupt manifest document — above all one written by a newer toride
-//! — does not fail the build and does not get saved over: the JSON store
-//! moves it aside to a `.corrupt-`-suffixed sibling and answers an empty
+//! A corrupt manifest document, above all one written by a newer
+//! toride, does not fail the build and does not get saved over: the JSON
+//! store moves it aside to a `.corrupt-`-suffixed sibling and answers an empty
 //! snapshot, so the facade keeps operating, the next save starts a fresh
 //! document, and the unreadable bytes stay on disk for inspection
 //! ([`StoreLoad::quarantined`] names the moved file). Only a quarantine
@@ -38,7 +38,7 @@ pub struct StoreLoad {
     pub quarantined: Option<Utf8PathBuf>,
 }
 
-/// The durable ownership ledger under the [`Apps`] facade — what toride
+/// The durable ownership ledger under the [`Apps`] facade: what toride
 /// installed, exchanged as whole [`RecordSnapshot`]s.
 ///
 /// Implementations must be callable from any thread (`Send + Sync`); the
@@ -50,7 +50,7 @@ pub struct StoreLoad {
 pub trait RecordStore: Send + Sync {
     /// Read every record. A store holding nothing answers an empty
     /// snapshot, never an error; how (or whether) to recover from
-    /// unreadable prior state is the store's own choice — the default
+    /// unreadable prior state is the store's own choice: the default
     /// JSON store quarantines (see the module docs).
     ///
     /// # Errors
@@ -68,7 +68,7 @@ pub trait RecordStore: Send + Sync {
 }
 
 /// The default [`RecordStore`]: the crate's JSON manifest document at
-/// `path` — written atomically, loaded strictly, recovered by quarantine.
+/// `path`: written atomically, loaded strictly, recovered by quarantine.
 #[derive(Debug)]
 pub struct JsonRecordStore {
     path: Utf8PathBuf,
@@ -129,7 +129,7 @@ impl RecordStore for JsonRecordStore {
     }
 
     fn save(&self, snapshot: &RecordSnapshot) -> ManifestResult<()> {
-        InstallManifest::from_snapshot(self.path.clone(), snapshot.clone()).save()
+        InstallManifest::write_snapshot(&self.path, snapshot)
     }
 }
 

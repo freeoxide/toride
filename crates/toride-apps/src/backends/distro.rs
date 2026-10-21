@@ -6,12 +6,12 @@
 //! through the shared [`CommandRunner`] seam and answers list/status queries
 //! from the distro's package database. One backend instance serves one
 //! [`DistroFamily`]; every family the registry names executes its manager's
-//! stable, scriptable CLI — `apt-get` (Debian/Ubuntu), `dnf` (Fedora),
+//! stable, scriptable CLI: `apt-get` (Debian/Ubuntu), `dnf` (Fedora),
 //! `pacman` (Arch), `apk` (Alpine).
 //!
 //! ## Real-CLI semantics (verified against the shipped man pages and source)
 //!
-//! - **Install** — `apt-get install -y <pkg>` / `dnf install -y <pkg>` /
+//! - **Install**: `apt-get install -y <pkg>` / `dnf install -y <pkg>` /
 //!   `pacman --sync --noconfirm <pkg>` / `apk add <pkg>`. Interactivity
 //!   suppression is per manager, never a shared `-y`: `-y` is apt-get's
 //!   `--yes, --assume-yes` ("Automatic yes to prompts; assume \"yes\" as
@@ -21,27 +21,27 @@
 //!   all 'Are you sure?' messages", pacman(8)) because pacman's `-y` is
 //!   `--refresh`, the download-a-fresh-copy-of-the-package-databases flag,
 //!   which belongs to a future update verb and never to install; apk takes
-//!   no flag at all ("By default apk is non-interactive", apk(8) — asking is
+//!   no flag at all ("By default apk is non-interactive", apk(8), asking is
 //!   opt-in via `--interactive`, and apk has no `-y`, so `apk add -y` is an
 //!   unrecognized-option error). The apt arm additionally carries
 //!   `DEBIAN_FRONTEND=noninteractive` (the debconf frontend selector,
 //!   debconf(7)) so configure scripts never try to prompt. Why `apt-get` and
 //!   not the `apt` the plan's canonical argv names: apt(8) itself warns that
 //!   the `apt` CLI "is designed for end users" and may change between
-//!   versions — scripts are told to use `apt-get`. The plan carries the
+//!   versions: scripts are told to use `apt-get`. The plan carries the
 //!   family's manager name and verb (A1's canonical `apt install <pkg>`,
 //!   `pacman --sync <pkg>`, `apk add <pkg>`); execution uses the scriptable
 //!   program and the per-manager suppression flags, both runtime ergonomics
 //!   that stay out of the plan's argv by contract.
-//! - **Uninstall** — `apt-get remove -y <pkg>` / `dnf remove -y <pkg>` /
+//! - **Uninstall**: `apt-get remove -y <pkg>` / `dnf remove -y <pkg>` /
 //!   `pacman --remove --noconfirm <pkg>` / `apk del <pkg>`.
 //!   Purging config files (`apt-get remove --purge`, apt-get(8)) is a
 //!   deliberate non-goal: the plan's [`UninstallOptions`] carries no purge
 //!   slot, and inventing an execution-time knob the planner never planned
 //!   would break the plan-is-the-record invariant. `dnf remove` removes
-//!   dependent packages along with the named one (dnf(8)) — that is dnf's
+//!   dependent packages along with the named one (dnf(8)), that is dnf's
 //!   own dependency semantics, not something toride opts into.
-//! - **Update** — `apt-get install --only-upgrade -y <pkg>` / `dnf
+//! - **Update**: `apt-get install --only-upgrade -y <pkg>` / `dnf
 //!   upgrade -y <pkg>` / `pacman --sync --refresh --noconfirm <pkg>` /
 //!   `apk upgrade <pkg>`. Per-package only: `apt-get upgrade` upgrades the
 //!   world, so apt's verb is `install --only-upgrade` (apt-get(8)
@@ -49,20 +49,20 @@
 //!   install, only-upgrade will install upgrades for already-installed
 //!   packages only"), and pacman's carries the database sync because a
 //!   stale sync db cannot know about upgrades at all (`--refresh`,
-//!   pacman(8) — which is why it belongs here and never to install).
+//!   pacman(8), which is why it belongs here and never to install).
 //!   Embedded-use hazard: the pacman shape is the partial upgrade Arch
 //!   documents as unsupported (`wiki.archlinux.org/title/
-//!   System_maintenance#Partial_upgrades_are_unsupported`) — a refreshed
+//!   System_maintenance#Partial_upgrades_are_unsupported`), a refreshed
 //!   database plus one package can move a shared library past binaries
 //!   Arch expects built against the older one; embedders needing Arch's
 //!   supported-state currency should run the manager's own full
 //!   `pacman -Syu` outside this per-app verb.
-//! - **Queries** — Debian-like state comes from `dpkg-query --show
+//! - **Queries**: Debian-like state comes from `dpkg-query --show
 //!   --showformat=${db:Status-Abbrev}${Package}\t${Version}\n <pkg...>`
 //!   (dpkg-query(1); the `\t`/`\n` escapes are dpkg's own format escapes,
 //!   the argv carries them literally). The status-abbrev column is prepended
 //!   deliberately: dpkg's database keeps removed-but-configured packages
-//!   (`rc ` abbrev), which are **not** installed — rows whose status
+//!   (`rc ` abbrev), which are **not** installed: rows whose status
 //!   character is not `i` are dropped. With no package operand the same
 //!   command lists the whole database. Fedora-like state comes from
 //!   `rpm --query --queryformat %{NAME}\t%{VERSION}\n <pkg...>`
@@ -72,9 +72,9 @@
 //!   with no operand reads package names from stdin. Arch state comes from
 //!   `pacman --query <pkg...>` ("If no package names are provided in the
 //!   command line, all installed packages will be queried", pacman(8)), one
-//!   `name version` row per package — the space-separated `printf` shape of
+//!   `name version` row per package: the space-separated `printf` shape of
 //!   pacman's own query loop (`src/pacman/query.c`; pacman disables its
-//!   color escapes when stdout is not a tty — `src/pacman/conf.c` — so the
+//!   color escapes when stdout is not a tty (`src/pacman/conf.c`) so the
 //!   captured rows toride reads are plain text, `--color always` aside).
 //!   Alpine state comes from
 //!   `apk list --installed --quiet <pkg...>` (apk-list(8): patterns are
@@ -88,7 +88,7 @@
 //!   to the name (`name-version`) or needs apk-tools 3.x (`--manifest`), so
 //!   Alpine rows report `version: None` rather than splitting a glued token
 //!   by guesswork.
-//! - **Not installed is an answer, not an error** — `dpkg-query` exits 1
+//! - **Not installed is an answer, not an error**: `dpkg-query` exits 1
 //!   with `dpkg-query: no packages found matching <pkg>` on stderr
 //!   (dpkg-query(1): exit 1 = "the requested query failed either fully or
 //!   partially, due to no file or package being found"; exit 2 = fatal);
@@ -98,38 +98,38 @@
 //!   packages exit 2, not 1. `pacman --query` exits 1 with `error: package
 //!   '<pkg>' was not found` (`src/pacman/query.c`) while still printing the
 //!   found operands' rows. All three signals map to `Ok(None)` /
-//!   [`BackendStatus::NotInstalled`](crate::BackendStatus::NotInstalled) —
+//!   [`BackendStatus::NotInstalled`](crate::BackendStatus::NotInstalled),
 //!   never an error. `apk list` cannot fail on a no-match (its `list_main`
 //!   returns unconditionally, `src/app_list.c`): an empty answer with exit 0
 //!   is apk's not-found signal, so a nonzero apk exit is always a real
-//!   error. Those markers are the programs' C-locale wording — dpkg-query,
+//!   error. Those markers are the programs' C-locale wording: dpkg-query,
 //!   rpm, and pacman all translate their stderr (pacman's German po renders
 //!   the not-found line as `Paket »…« wurde nicht gefunden`), so every
 //!   query spec pins `LC_ALL=C`; without the pin, a localized host would
-//!   turn a simply-absent package into [`Error::Command`]. Partial results
+//!   turn an absent package into [`Error::Command`]. Partial results
 //!   survive: dpkg-query prints found packages on stdout while reporting the
 //!   missing ones on stderr, and the classification keeps the stdout rows.
-//! - **Failures surface with their stderr tail** — apt-get fails at exit
+//! - **Failures surface with their stderr tail**: apt-get fails at exit
 //!   100 ("returns zero on normal operation, decimal 100 on error",
 //!   apt-get(8)) with the dpkg lock complaint in stderr (`E: Could not get
 //!   lock /var/lib/dpkg/lock-frontend ...`); dnf's lock problems are their
 //!   own exit class (dnf(8): 200, "There was a problem with acquiring or
 //!   releasing of locks"). Without a dedicated error variant (the crate's
 //!   error enum is fixed), these classify as [`Error::Command`] carrying the
-//!   manager's own wording — the lock-held diagnosis travels verbatim.
+//!   manager's own wording: the lock-held diagnosis travels verbatim.
 //!   Unlike the flatpak backend, a failed uninstall of a *missing* package
 //!   is **not** reclassified as success: apt-get remove is natively lenient
 //!   about absent packages, and dnf's not-found wording differs between
-//!   dnf4 and dnf5, so marker-matching there would be guesswork — the
+//!   dnf4 and dnf5, so marker-matching there would be guesswork: the
 //!   facade (A6) post-verifies instead.
-//! - **Family detection** — [`parse_distro_family`] reads an os-release(5)
+//! - **Family detection**: [`parse_distro_family`] reads an os-release(5)
 //!   document (`ID`, then `ID_LIKE` as the ancestor fallback, first known
 //!   ancestor wins: Rocky's `ID="rocky" ID_LIKE="rhel fedora"` is Fedora
 //!   because `fedora` is the first entry the registry knows, and Mint's
 //!   `ID_LIKE="ubuntu debian"` is Ubuntu). [`DistroBackend::detect`] reads
-//!   the real os-release(5) locations — [`OS_RELEASE_PATH`] first, then
+//!   the real os-release(5) locations: [`OS_RELEASE_PATH`] first, then
 //!   [`OS_RELEASE_FALLBACK_PATH`] when it is absent, the spec's mandated
-//!   two-path check — and PATH-checks both the manager and the query
+//!   two-path check, and PATH-checks both the manager and the query
 //!   program; [`detect_family_from`] is the injectable-reader seam the
 //!   fixture tests ride.
 //!
@@ -139,7 +139,7 @@
 //! this backend never acquires root itself: without an explicit
 //! `elevated(true)` grant on the request, [`ensure_install_allowed`] /
 //! [`ensure_uninstall_allowed`] / [`ensure_update_allowed`] refuse with
-//! [`Error::ElevationRequired`] before any command is built — the caller
+//! [`Error::ElevationRequired`] before any command is built: the caller
 //! arranges privileges (toride never constructs `sudo`).
 //!
 //! [`Operation::DistroInstall`]: crate::Operation::DistroInstall
@@ -164,14 +164,14 @@ use crate::runner::{CommandRunner, command};
 
 /// The primary os-release(5) location, read first by
 /// [`DistroBackend::detect`] and [`detect_host_family`]. `/etc/os-release`
-/// is the administrator-owned file — normally a symlink into the OS
+/// is the administrator-owned file: normally a symlink into the OS
 /// vendor's `/usr` tree, which is why it usually wins by existing.
 pub const OS_RELEASE_PATH: &str = "/etc/os-release";
 
 /// The os-release(5) fallback location, consulted only when
 /// [`OS_RELEASE_PATH`] is absent. The spec **mandates** this explicit
 /// two-path check rather than relying on the `/etc` symlink: the symlink
-/// is the common arrangement on complete systems, not a guarantee — a
+/// is the common arrangement on complete systems, not a guarantee: a
 /// stripped-down container can lack it while the vendor's file remains.
 pub const OS_RELEASE_FALLBACK_PATH: &str = "/usr/lib/os-release";
 
@@ -184,18 +184,18 @@ const QUERY_LOCALE_ENV: (&str, &str) = ("LC_ALL", "C");
 
 /// The dpkg-query showformat: a three-character status abbrev
 /// (`ii ` = installed) glued in front of `<package>\t<version>`, one row per
-/// line. The literal `\t`/`\n` are dpkg's own format escapes — the argv
+/// line. The literal `\t`/`\n` are dpkg's own format escapes: the argv
 /// carries them as two characters, exactly as the shell passes
 /// `'${Package}\t${Version}\n'` in single quotes.
 const DPKG_QUERY_FORMAT: &str = "${db:Status-Abbrev}${Package}\\t${Version}\\n";
 
 /// The rpm queryformat: `<name>\t<version>`, one row per line, with C-style
 /// `\t`/`\n` escapes rpm-queryformat(7) documents. `%{VERSION}` is the
-/// upstream version — the distro release suffix lives in the separate
+/// upstream version: the distro release suffix lives in the separate
 /// `%{RELEASE}` tag and stays out of the version toride records.
 const RPM_QUERY_FORMAT: &str = "%{NAME}\\t%{VERSION}\\n";
 
-/// The second character of the dpkg status abbrev — the package's current
+/// The second character of the dpkg status abbrev: the package's current
 /// state (dpkg-query(1), the `--list` legend): `i` in every installed state
 /// (`ii ` installed, `hi ` held-installed), never in `rc ` (removed,
 /// config-files left), `un ` (not installed) or the mid-install states
@@ -210,13 +210,13 @@ const DPKG_INSTALLED_STATUS_CHAR: u8 = b'i';
 /// family the registry names routes to one of four executors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DistroExecutor {
-    /// Debian-like — `apt-get` mutates, `dpkg-query` reads.
+    /// Debian-like: `apt-get` mutates, `dpkg-query` reads.
     Apt,
-    /// Fedora-like — `dnf` mutates, `rpm` reads.
+    /// Fedora-like: `dnf` mutates, `rpm` reads.
     Dnf,
-    /// Arch — `pacman` mutates and reads.
+    /// Arch: `pacman` mutates and reads.
     Pacman,
-    /// Alpine — `apk` mutates and reads.
+    /// Alpine: `apk` mutates and reads.
     Apk,
 }
 
@@ -236,7 +236,7 @@ impl DistroExecutor {
         }
     }
 
-    /// The executor a planned [`PackageManager`] routes to — the inverse of
+    /// The executor a planned [`PackageManager`] routes to: the inverse of
     /// [`DistroExecutor::manager`]. Every manager this crate plans routes to
     /// one: the match is exhaustive, so a future [`PackageManager`] variant
     /// fails compilation here instead of executing wrongly.
@@ -250,7 +250,7 @@ impl DistroExecutor {
         }
     }
 
-    /// The A1 [`PackageManager`] whose plan operations this executor runs —
+    /// The A1 [`PackageManager`] whose plan operations this executor runs:
     /// the router cross-checks a plan's manager against this before
     /// executing.
     #[must_use]
@@ -264,7 +264,7 @@ impl DistroExecutor {
     }
 
     /// The mutating program, in its scriptable spelling (`apt-get`, not the
-    /// end-user `apt` — see the module docs).
+    /// end-user `apt`: see the module docs).
     #[must_use]
     pub const fn program(self) -> &'static str {
         match self {
@@ -320,7 +320,7 @@ impl DistroExecutor {
 /// taking the **first** ancestor the registry knows (derivatives list their
 /// ancestors most-specific first: `ID_LIKE="rhel fedora"` → Fedora).
 /// Quoted values (single or double, os-release(5) permits double quotes and
-/// systemd's parser both) are unquoted. `None` means unknown — no parseable
+/// systemd's parser both) are unquoted. `None` means unknown: no parseable
 /// `ID`, or neither the id nor any ancestor maps to a known family.
 #[must_use]
 pub fn parse_distro_family(os_release: &str) -> Option<DistroFamily> {
@@ -332,7 +332,7 @@ pub fn parse_distro_family(os_release: &str) -> Option<DistroFamily> {
         .and_then(|like| like.split_whitespace().find_map(family_for_id))
 }
 
-/// Detect the family through an injected os-release reader — the seam the
+/// Detect the family through an injected os-release reader: the seam the
 /// fixture tests ride. The reader is called with each of
 /// [`OS_RELEASE_PATH`] and [`OS_RELEASE_FALLBACK_PATH`] in spec order;
 /// the first document it reads is authoritative even when its family does
@@ -344,7 +344,7 @@ pub fn detect_family_from(
     mut read_os_release: impl FnMut(&str) -> std::io::Result<String>,
 ) -> Option<DistroFamily> {
     for path in [OS_RELEASE_PATH, OS_RELEASE_FALLBACK_PATH] {
-        // First readable document wins — a present-but-unknown
+        // First readable document wins: a present-but-unknown
         // /etc/os-release must not be second-guessed against a stale
         // /usr/lib copy.
         if let Ok(content) = read_os_release(path) {
@@ -365,7 +365,7 @@ pub fn detect_host_family() -> Option<DistroFamily> {
 }
 
 /// The registry family an os-release id (or `ID_LIKE` entry) names. Ids the
-/// registry has no family for (`gentoo`, `rhel`, …) return `None` — either
+/// registry has no family for (`gentoo`, `rhel`, …) return `None`: either
 /// an unknown distro or a pointer onward through `ID_LIKE`.
 fn family_for_id(id: &str) -> Option<DistroFamily> {
     match id {
@@ -425,7 +425,7 @@ fn unquote(value: &str) -> String {
 /// # }
 /// ```
 pub struct DistroBackend {
-    /// The family this backend serves — picks the executor, doubles as the
+    /// The family this backend serves: picks the executor, doubles as the
     /// [`BackendId`].
     family: DistroFamily,
     /// The seam every manager command flows through.
@@ -437,7 +437,7 @@ impl DistroBackend {
     /// assumptions. This is the test-friendly constructor: the family is
     /// injectable and the seam's runner is fake-able. A family a future
     /// registry release adds (one with no [`DistroExecutor`]) is
-    /// constructible — its id is a real routing target — but every operation
+    /// constructible (its id is a real routing target) but every operation
     /// answers with the honest `Self::executor` error.
     #[must_use]
     pub const fn new(family: DistroFamily, runner: CommandRunner) -> Self {
@@ -447,7 +447,7 @@ impl DistroBackend {
     /// Create the backend for this host: read the os-release(5) locations
     /// ([`OS_RELEASE_PATH`], then [`OS_RELEASE_FALLBACK_PATH`] when it is
     /// absent), refuse unknown families, and PATH-check both the manager and
-    /// its query program (via toride-runner's discovery helpers — no command
+    /// its query program (via toride-runner's discovery helpers: no command
     /// is executed).
     ///
     /// # Errors
@@ -513,7 +513,7 @@ impl DistroBackend {
             .and_then(|app| app.version))
     }
 
-    /// The sync twin of [`DistroBackend::installed_version`] — same query
+    /// The sync twin of [`DistroBackend::installed_version`]: same query
     /// and classification, executed on the calling thread.
     ///
     /// # Errors
@@ -546,7 +546,7 @@ impl DistroBackend {
         Err(command_failed_error(&spec, &output))
     }
 
-    /// The sync twin of [`DistroBackend::query_packages`] — same spec,
+    /// The sync twin of [`DistroBackend::query_packages`]: same spec,
     /// classification, and parsing, executed on the calling thread.
     fn query_packages_sync(
         &self,
@@ -572,7 +572,7 @@ impl Backend for DistroBackend {
         // The backend executes its own family's manager, on Linux, after
         // the planner's family-match rule already routed the plan here; an
         // undetected family (`distro: None`) is not a target this backend
-        // can vouch for — callers fill it via detection first.
+        // can vouch for: callers fill it via detection first.
         self.executor().is_ok() && target.os == Os::Linux && target.distro == Some(self.family)
     }
 
@@ -684,7 +684,7 @@ impl Backend for DistroBackend {
 
     // `status` keeps the trait's default list-derived implementation: one
     // single-package query answers it, and not-found is NotInstalled, never
-    // an error — the classification lives in `query_packages`. Callers that
+    // an error: the classification lives in `query_packages`. Callers that
     // want the raw probe call `installed_version(package)` directly.
 }
 // ---------------------------------------------------------------------------
@@ -763,9 +763,9 @@ enum QueryRow {
     /// A well-formed row in the installed state.
     Installed(InstalledApp),
     /// A well-formed dpkg row in a non-installed state (`rc ` leftovers of
-    /// removed packages, mid-install states) — seen, not kept.
+    /// removed packages, mid-install states), seen, not kept.
     NonInstalledState,
-    /// A row that does not match the expected shape — skipped.
+    /// A row that does not match the expected shape: skipped.
     Malformed,
 }
 
@@ -773,7 +773,7 @@ enum QueryRow {
 ///
 /// Per-row tolerance: malformed rows are skipped, never fatal. A non-empty
 /// document where **no** row is well-formed is an error, not an empty
-/// answer — that means the format string no longer matches the program's
+/// answer: that means the format string no longer matches the program's
 /// output shape and must surface loudly. (A document of only non-installed
 /// dpkg states is well-formed and legitimately yields no rows.)
 ///
@@ -811,8 +811,8 @@ fn parse_query_row(executor: DistroExecutor, line: &str) -> QueryRow {
         DistroExecutor::Apt => {
             // `${db:Status-Abbrev}` is exactly three characters (`ii `)
             // glued in front of the package name: desired char, status
-            // char, err char. Shape first (abbrev, tab, name), state after
-            // — garbage without a tab is malformed, never a state.
+            // char, err char. Shape first (abbrev, tab, name), state
+            // after; garbage without a tab is malformed, never a state.
             let Some((abbrev, rest)) = line.split_at_checked(3) else {
                 return QueryRow::Malformed;
             };
@@ -876,7 +876,7 @@ fn query_reports_not_found(executor: DistroExecutor, output: &CommandOutput) -> 
 }
 
 /// Whether every non-empty stderr line carries a not-found marker (at least
-/// one marker line must exist — an exit-1 with empty stderr is not the
+/// one marker line must exist: an exit-1 with empty stderr is not the
 /// programs' not-found signal, which always prints its line).
 fn stderr_all_not_found(executor: DistroExecutor, stderr: &str) -> bool {
     let mut marker_lines = 0;
@@ -949,8 +949,8 @@ mod tests {
 
     // --- test helpers ----------------------------------------------------------
 
-    /// Root of this crate's fixture tree (runtime reads, not `include_str!`
-    /// — the house pattern from conventions.md §7).
+    /// Root of this crate's fixture tree (runtime reads, not
+    /// `include_str!`): the house pattern from conventions.md §7).
     fn fixtures_dir() -> &'static Path {
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"))
     }
@@ -1119,7 +1119,7 @@ mod tests {
     }
 
     /// The manager's dpkg lock error, as real apt-get reports it (exit 100,
-    /// stderr `E:` line — apt-get(8): "returns zero on normal operation,
+    /// stderr `E:` line: apt-get(8): "returns zero on normal operation,
     /// decimal 100 on error").
     fn apt_lock_output() -> CommandOutput {
         CommandOutput::new(
@@ -1239,7 +1239,7 @@ mod tests {
     #[test]
     fn detect_family_from_prefers_the_etc_os_release_document() {
         // os-release(5) precedence: /etc/os-release is authoritative when
-        // present — the fallback must not even be read (a panic in the
+        // present: the fallback must not even be read (a panic in the
         // fallback arm fails the test if it ever is).
         let family = detect_family_from(|path| {
             if path == OS_RELEASE_PATH {
@@ -1254,7 +1254,7 @@ mod tests {
 
     #[test]
     fn detect_family_from_falls_back_to_usr_lib_when_etc_is_absent() {
-        // First /etc read fails, the /usr/lib fallback answers — and both
+        // First /etc read fails, the /usr/lib fallback answers, and both
         // paths are consulted in spec order.
         let mut reads: Vec<String> = Vec::new();
         let family = detect_family_from(|path| {
@@ -1382,7 +1382,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_refuses_elevation_requiring_plans_without_a_grant() {
-        // Distro plans always carry requires_elevation (A1 planner) — the
+        // Distro plans always carry requires_elevation (A1 planner), the
         // refusal fires before any command is built or dispatched.
         let fake = FakeRunner::new().strict();
         let backend = backend_for(DistroFamily::Debian, &fake);
@@ -1556,7 +1556,7 @@ mod tests {
     #[test]
     fn plan_argv_stays_canonical_while_execution_layers_the_runtime_flags() {
         // The plan's argv is A1's canonical family spelling (apt, verb,
-        // package) — the scriptable program and -y/env are execution-time
+        // package), the scriptable program and -y/env are execution-time
         // ergonomics this backend adds, never plan semantics.
         let plan = install_plan_for(DistroFamily::Debian);
         assert_eq!(plan.operation.argv(), ["apt", "install", "brave-browser"]);
@@ -1639,7 +1639,7 @@ mod tests {
 
     #[tokio::test]
     async fn install_maps_an_apt_get_failure_to_command_error_with_the_stderr_tail() {
-        // Real apt-get lock-held shape: exit 100 with the E: line — the
+        // Real apt-get lock-held shape: exit 100 with the E: line: the
         // lock diagnosis must travel with the error.
         let fake = FakeRunner::new()
             .strict()
@@ -1811,7 +1811,7 @@ mod tests {
     #[tokio::test]
     async fn uninstall_maps_manager_failures_to_command_error() {
         // Deliberate divergence from flatpak: a failed uninstall of a
-        // missing package is NOT reclassified as success — apt-get remove
+        // missing package is NOT reclassified as success: apt-get remove
         // is natively lenient, dnf's not-found wording varies dnf4/dnf5,
         // and the facade (A6) post-verifies instead.
         let fake = FakeRunner::new().strict().respond(
@@ -2137,7 +2137,7 @@ mod tests {
             spec.args,
             [
                 "--show",
-                // The format escapes travel literally — the same bytes the
+                // The format escapes travel literally, the same bytes the
                 // shell passes in '--showformat=${Package}\t${Version}\n'
                 // (plus the status-abbrev prefix; dpkg-query(1)).
                 "--showformat=${db:Status-Abbrev}${Package}\\t${Version}\\n",
@@ -2328,7 +2328,7 @@ mod tests {
     #[test]
     fn parse_query_output_skips_rows_in_non_installed_dpkg_states() {
         // `rc ` rows (removed, config files left) are well-formed but not
-        // installed — dropped without failing the document.
+        // installed, dropped without failing the document.
         let document = "ii bash\t5.2.37-2+b9\nrc removed-pkg\t1.0-1\n";
         let apps = parse_query_output(DistroExecutor::Apt, document).unwrap();
         assert_eq!(apps.len(), 1, "{apps:?}");
@@ -2378,7 +2378,7 @@ mod tests {
     #[test]
     fn parse_query_output_errors_when_nothing_in_a_non_empty_document_parses() {
         // Every row malformed means the format string no longer matches
-        // the program's output shape — that must not read as "nothing
+        // the program's output shape: that must not read as "nothing
         // installed".
         let error = parse_query_output(DistroExecutor::Apt, "totally garbage\nnot a listing\n")
             .unwrap_err();
@@ -2429,7 +2429,7 @@ mod tests {
     #[test]
     fn stderr_all_not_found_requires_at_least_one_marker_line() {
         // Exit-1 with empty stderr is not the programs' not-found signal
-        // (both always print their line) — that stays a real error.
+        // (both always print their line), that stays a real error.
         assert!(!stderr_all_not_found(DistroExecutor::Apt, ""));
         assert!(!stderr_all_not_found(DistroExecutor::Apt, "  \n"));
     }
@@ -2464,7 +2464,7 @@ mod tests {
     #[test]
     fn query_reports_not_found_accepts_any_nonzero_rpm_exit() {
         // rpm's exit code counts failed lookups, so two missing packages
-        // exit 2 — the stderr markers discriminate, not the exact code.
+        // exit 2: the stderr markers discriminate, not the exact code.
         let two_missing = CommandOutput::new(
             String::new(),
             "package ghost is not installed\npackage other is not installed\n".to_owned(),
@@ -2605,7 +2605,7 @@ mod tests {
 
     #[tokio::test]
     async fn installed_version_returns_none_for_a_removed_but_configured_package() {
-        // The `rc ` row parses but is not installed state — no version.
+        // The `rc ` row parses but is not installed state: no version.
         let fake = FakeRunner::new().strict().respond(
             dpkg_query_spec(&["removed-pkg"]),
             CommandOutput::from_stdout("rc removed-pkg\t1.0-1\n"),
@@ -2750,7 +2750,7 @@ mod tests {
     #[tokio::test]
     async fn list_installed_keeps_partial_results_when_some_ids_are_missing() {
         // dpkg-query exits 1 with the not-found line on stderr while the
-        // found packages still land on stdout — both survive as the answer.
+        // found packages still land on stdout: both survive as the answer.
         let partial = CommandOutput::new(
             "ii bash\t5.2.37-2+b9\n".to_owned(),
             "dpkg-query: no packages found matching ghost".to_owned(),
@@ -2935,7 +2935,7 @@ mod tests {
         assert!(!backend.supports(&target(DistroFamily::Debian)));
         assert!(!backend.supports(&Target::new(Os::Linux, Arch::X86_64)));
         assert!(!backend.supports(&Target::macos(Arch::X86_64)));
-        // The Ubuntu backend is a distinct instance from the Debian one —
+        // The Ubuntu backend is a distinct instance from the Debian one:
         // both execute apt, but each vouches for its own family only.
         let ubuntu = backend_for(DistroFamily::Ubuntu, &FakeRunner::new().strict());
         assert!(ubuntu.supports(&target(DistroFamily::Ubuntu)));

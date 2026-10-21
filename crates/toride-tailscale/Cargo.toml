@@ -20,6 +20,13 @@ name = "toride-tailscale"
 path = "src/main.rs"
 required-features = ["cli"]
 
+## The lib carries no `#[bench]` functions; criterion owns the `[[bench]]`
+## target. Disabling the lib bench target keeps `cargo bench -- <criterion
+## args>` from forwarding those args to the libtest harness, which does not
+## understand them.
+[lib]
+bench = false
+
 [features]
 default = ["client", "doctor"]
 client = ["dep:duct", "dep:reqwest", "dep:tokio", "toride-runner/duct-runner"]

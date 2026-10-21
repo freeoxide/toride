@@ -6,9 +6,7 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use toride_apps::manifest::{InstallRecord, NativeIds, RecordSnapshot};
 use toride_apps::plan::{InstallOptions, Target, plan_install};
 use toride_apps::store::{JsonRecordStore, RecordStore};
-use toride_registry::model::{
-    App, Availability, InstallMethod, SourceKind, SourceRef, TorideId,
-};
+use toride_registry::model::{App, Availability, InstallMethod, SourceKind, SourceRef, TorideId};
 
 const SAMPLE_SIZE: usize = 30;
 const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
@@ -70,8 +68,9 @@ fn snapshot(size: usize) -> RecordSnapshot {
 }
 
 fn oracle(path: &std::path::Path) {
-    let store = JsonRecordStore::at(Utf8PathBuf::from_path_buf(path.to_path_buf())
-        .expect("temp path is valid UTF-8"));
+    let store = JsonRecordStore::at(
+        Utf8PathBuf::from_path_buf(path.to_path_buf()).expect("temp path is valid UTF-8"),
+    );
     let snapshot = snapshot(SIZES[0]);
     store
         .save(&snapshot)
@@ -97,15 +96,14 @@ fn manifest_save(c: &mut Criterion) {
     group.warm_up_time(WARM_UP_TIME);
 
     for size in SIZES {
-        let store = JsonRecordStore::at(Utf8PathBuf::from_path_buf(path.clone())
-            .expect("temp path is valid UTF-8"));
+        let store = JsonRecordStore::at(
+            Utf8PathBuf::from_path_buf(path.clone()).expect("temp path is valid UTF-8"),
+        );
         let snapshot = snapshot(size);
         group.throughput(Throughput::Elements(size as u64));
         group.bench_function(format!("json_record_store_save_{size}_records"), |b| {
             b.iter(|| {
-                store
-                    .save(black_box(&snapshot))
-                    .expect("save succeeds");
+                store.save(black_box(&snapshot)).expect("save succeeds");
             });
         });
     }

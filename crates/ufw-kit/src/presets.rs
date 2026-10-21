@@ -2,8 +2,11 @@
 //!
 //! Provides ready-made rule sets for common server configurations.
 //! Each preset returns a [`Preset`] containing a list of [`RuleSpec`]
-//! values that can be applied via the client.
+//! values that can be applied via the client. Constructors that take
+//! caller-supplied input return [`Result`] so invalid arguments surface
+//! as [`crate::Error::Validation`] instead of a panic.
 
+use crate::error::{Error, Result};
 use crate::spec::{Action, Address, Direction, Protocol, RuleSpec};
 
 /// A named preset with a description and list of rules.
@@ -155,8 +158,13 @@ pub fn wireguard() -> Preset {
 /// Database server preset: SSH + a configurable database port.
 ///
 /// Common ports: `PostgreSQL` (5432), `MySQL` (3306).
-pub fn database(db_port: u16) -> Preset {
-    Preset {
+///
+/// # Errors
+///
+/// Returns [`crate::Error::InvalidPort`] when `db_port` is 0 (spec
+/// validation rejects port 0), surfaced as a value instead of a panic.
+pub fn database(db_port: u16) -> Result<Preset> {
+    Ok(Preset {
         id: "database",
         name: "Database Server",
         description: format!("Allow SSH and database port {db_port}."),
@@ -166,17 +174,15 @@ pub fn database(db_port: u16) -> Preset {
                 .proto(Protocol::Tcp)
                 .to_port(22)
                 .comment("preset:db:ssh")
-                .build()
-                .expect("preset rule should validate"),
+                .build()?,
             RuleSpec::builder(Action::Allow)
                 .direction(Direction::In)
                 .proto(Protocol::Tcp)
                 .to_port(db_port)
                 .comment("preset:db:db-port")
-                .build()
-                .expect("preset rule should validate"),
+                .build()?,
         ],
-    }
+    })
 }
 
 /// Monitoring server preset: SSH + Prometheus (9090) + Grafana (3000) + Node Exporter (9100).
@@ -288,8 +294,13 @@ pub fn wireguard_interface() -> Preset {
 /// Designed for servers behind Cloudflare proxy. Only Cloudflare's IP ranges
 /// are allowed on ports 80/443, and SSH is allowed with rate limiting.
 /// This protects the origin server by only accepting traffic from Cloudflare.
+///
+/// The range list below is a frozen snapshot dated 2024 and covers IPv4
+/// only: on a dual-stack origin with default-deny incoming, IPv6 edge
+/// traffic is not opened by this preset. Refresh the constants (from
+/// <https://www.cloudflare.com/ips/>) before relying on it for IPv6.
 pub fn cloudflare_allowlist() -> Preset {
-    // Cloudflare IPv4 ranges (as of 2024)
+    // Cloudflare IPv4 ranges (frozen snapshot, dated 2024)
     let cf_ranges = [
         "173.245.48.0/20",
         "103.21.244.0/22",
@@ -363,7 +374,7 @@ pub fn cloudflare_allowlist() -> Preset {
 /// Designed for servers running Traefik as reverse proxy (e.g., Dokploy).
 /// Only exposes SSH (rate-limited), HTTP (80), and HTTPS (443) publicly.
 /// Application containers should be bound to Docker internal networks or
-/// localhost — this preset does NOT open application ports.
+/// localhost: this preset does NOT open application ports.
 pub fn traefik_dokploy() -> Preset {
     Preset {
         id: "traefik-dokploy",
@@ -401,12 +412,17 @@ pub fn traefik_dokploy() -> Preset {
 ///
 /// Prometheus (9090), Grafana (3000), and Node Exporter (9100) are restricted
 /// to a trusted CIDR. SSH is rate-limited from anywhere.
-pub fn monitoring_private(trusted_cidr: &str) -> Preset {
+///
+/// # Errors
+///
+/// Returns [`crate::Error::Validation`] when `trusted_cidr` does not parse
+/// as an IP network.
+pub fn monitoring_private(trusted_cidr: &str) -> Result<Preset> {
     let net = trusted_cidr
         .parse::<ipnet::IpNet>()
-        .expect("invalid trusted CIDR");
+        .map_err(|e| Error::Validation(format!("invalid trusted CIDR '{trusted_cidr}': {e}")))?;
 
-    Preset {
+    Ok(Preset {
         id: "monitoring-private",
         name: "Monitoring Server (Private)",
         description: format!(
@@ -419,37 +435,38 @@ pub fn monitoring_private(trusted_cidr: &str) -> Preset {
                 .proto(Protocol::Tcp)
                 .to_port(22)
                 .comment("preset:mon-pvt:ssh")
-                .build()
-                .expect("preset rule should validate"),
+                .build()?,
             RuleSpec::builder(Action::Allow)
                 .direction(Direction::In)
                 .from(Address::Net(net))
                 .proto(Protocol::Tcp)
                 .to_port(3000)
                 .comment("preset:mon-pvt:grafana")
-                .build()
-                .expect("preset rule should validate"),
+                .build()?,
             RuleSpec::builder(Action::Allow)
                 .direction(Direction::In)
                 .from(Address::Net(net))
                 .proto(Protocol::Tcp)
                 .to_port(9090)
                 .comment("preset:mon-pvt:prometheus")
-                .build()
-                .expect("preset rule should validate"),
+                .build()?,
             RuleSpec::builder(Action::Allow)
                 .direction(Direction::In)
                 .from(Address::Net(net))
                 .proto(Protocol::Tcp)
                 .to_port(9100)
                 .comment("preset:mon-pvt:node-exporter")
-                .build()
-                .expect("preset rule should validate"),
+                .build()?,
         ],
-    }
+    })
 }
 
 /// List all available presets with their default parameters.
+///
+/// # Panics
+///
+/// Panics only if a compile-time-constant preset argument fails validation,
+/// which cannot happen without editing this file.
 pub fn all_default_presets() -> Vec<Preset> {
     vec![
         ssh(),
@@ -457,13 +474,13 @@ pub fn all_default_presets() -> Vec<Preset> {
         reverse_proxy(),
         tailscale(),
         wireguard(),
-        database(5432), // PostgreSQL default
+        database(5432).expect("constant PostgreSQL port validates"), // PostgreSQL default
         monitoring(),
         tailscale_interface(),
         wireguard_interface(),
         cloudflare_allowlist(),
         traefik_dokploy(),
-        monitoring_private("10.0.0.0/8"),
+        monitoring_private("10.0.0.0/8").expect("constant trusted CIDR validates"),
     ]
 }
 

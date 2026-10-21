@@ -8,9 +8,7 @@ use toride_apps::backends::homebrew::HomebrewBackend;
 use toride_apps::{AppInstallOptions, Apps, EnsureAppOutcome, command};
 use toride_registry::adapter::Adapter;
 use toride_registry::error::Result;
-use toride_registry::model::{
-    App, Availability, InstallMethod, SourceKind, SourceRef, TorideId,
-};
+use toride_registry::model::{App, Availability, InstallMethod, SourceKind, SourceRef, TorideId};
 use toride_runner::CommandOutput;
 use toride_runner::fake::FakeRunner;
 
@@ -23,13 +21,13 @@ const FLATPAK_APPS: usize = 10;
 const STATUS_BATCH_IDS: usize = 20;
 
 const BREW_INSTALLS_PER_SWEEP: usize = BREW_APPS;
-const BREW_INFO_LISTINGS_PER_SWEEP: usize = BREW_APPS;
-const BREW_VERSION_PROBES_PER_SWEEP: usize = BREW_APPS * 2;
+const BREW_INFO_LISTINGS_PER_SWEEP: usize = 0;
+const BREW_VERSION_PROBES_PER_SWEEP: usize = BREW_APPS * 3;
 const FLATPAK_INSTALLS_PER_SWEEP: usize = FLATPAK_APPS;
-const FLATPAK_USER_LISTINGS_PER_SWEEP: usize = FLATPAK_APPS * 2;
+const FLATPAK_USER_LISTINGS_PER_SWEEP: usize = FLATPAK_APPS;
 const FLATPAK_ALL_LISTINGS_PER_SWEEP: usize = FLATPAK_APPS;
-const FLATPAK_REMOTE_PROBES_PER_SWEEP: usize = FLATPAK_APPS;
-const STATUS_INFO_LISTINGS_PER_BATCH: usize = STATUS_BATCH_IDS;
+const FLATPAK_REMOTE_PROBES_PER_SWEEP: usize = 1;
+const STATUS_INFO_LISTINGS_PER_BATCH: usize = 0;
 
 const FLATPAK_USER_LIST_ARGS: [&str; 4] = [
     "list",
@@ -149,25 +147,25 @@ fn sweep_rig(manifest: &std::path::Path) -> (FakeRunner, Apps) {
     let _ = std::fs::remove_file(manifest);
     let mut fake = FakeRunner::new().strict();
 
-    for _ in 0..BREW_APPS {
-        fake = fake.respond(
-            command("brew", ["info", "--json=v2", "--installed"]),
-            CommandOutput::from_stdout(r#"{"formulae":[],"casks":[]}"#),
-        );
-    }
     for index in 0..BREW_APPS {
         let token = brew_token(index);
-        fake = fake.respond(
-            command("brew", ["install", token.as_str()]),
-            CommandOutput::from_stdout(""),
-        );
-        let probe = command("brew", ["list", "--formula", "--versions", token.as_str()]);
         fake = fake
             .respond(
-                probe.clone(),
-                CommandOutput::from_stdout(format!("{token} 1.2.3\n")),
+                command("brew", ["list", "--formula", "--versions", token.as_str()]),
+                CommandOutput::from_stdout(""),
             )
-            .respond(probe, CommandOutput::from_stdout(format!("{token} 1.2.3\n")));
+            .respond(
+                command("brew", ["list", "--cask", "--versions", token.as_str()]),
+                CommandOutput::from_stdout(""),
+            )
+            .respond(
+                command("brew", ["install", token.as_str()]),
+                CommandOutput::from_stdout(""),
+            )
+            .respond(
+                command("brew", ["list", "--formula", "--versions", token.as_str()]),
+                CommandOutput::from_stdout(format!("{token} 1.2.3\n")),
+            );
     }
 
     for _ in 0..FLATPAK_APPS {
@@ -176,14 +174,13 @@ fn sweep_rig(manifest: &std::path::Path) -> (FakeRunner, Apps) {
             CommandOutput::from_stdout(""),
         );
     }
+    fake = fake.respond(
+        command("flatpak", ["remotes", "--user", "--columns=name"]),
+        CommandOutput::from_stdout("flathub\n"),
+    );
     for index in 0..FLATPAK_APPS {
         let app_id = flatpak_app_id(index);
-        let listing = CommandOutput::from_stdout(flatpak_listing_row(&app_id));
         fake = fake
-            .respond(
-                command("flatpak", ["remotes", "--user", "--columns=name"]),
-                CommandOutput::from_stdout("flathub\n"),
-            )
             .respond(
                 command(
                     "flatpak",
@@ -198,15 +195,15 @@ fn sweep_rig(manifest: &std::path::Path) -> (FakeRunner, Apps) {
                 ),
                 CommandOutput::from_stdout(""),
             )
-            .respond(command("flatpak", FLATPAK_USER_LIST_ARGS), listing.clone())
-            .respond(command("flatpak", FLATPAK_USER_LIST_ARGS), listing);
+            .respond(
+                command("flatpak", FLATPAK_USER_LIST_ARGS),
+                CommandOutput::from_stdout(flatpak_listing_row(&app_id)),
+            );
     }
 
     let runner = toride_apps::CommandRunner::new(Arc::new(fake.clone()));
     let apps = Apps::builder()
-        .manifest_path(
-            camino::Utf8Path::from_path(manifest).expect("temp path is valid UTF-8"),
-        )
+        .manifest_path(camino::Utf8Path::from_path(manifest).expect("temp path is valid UTF-8"))
         .target(toride_apps::plan::Target::new(
             toride_registry::model::Os::Linux,
             toride_registry::model::Arch::X86_64,
@@ -228,14 +225,10 @@ fn sweep_rig(manifest: &std::path::Path) -> (FakeRunner, Apps) {
 
 fn status_rig(manifest: &std::path::Path) -> (FakeRunner, Apps) {
     let _ = std::fs::remove_file(manifest);
-    let fake = FakeRunner::new().push_response(CommandOutput::from_stdout(
-        r#"{"formulae":[],"casks":[]}"#,
-    ));
+    let fake = FakeRunner::new();
     let runner = toride_apps::CommandRunner::new(Arc::new(fake.clone()));
     let apps = Apps::builder()
-        .manifest_path(
-            camino::Utf8Path::from_path(manifest).expect("temp path is valid UTF-8"),
-        )
+        .manifest_path(camino::Utf8Path::from_path(manifest).expect("temp path is valid UTF-8"))
         .target(toride_apps::plan::Target::new(
             toride_registry::model::Os::Linux,
             toride_registry::model::Arch::X86_64,
@@ -250,7 +243,7 @@ fn status_rig(manifest: &std::path::Path) -> (FakeRunner, Apps) {
     (fake, apps)
 }
 
-fn count<'a>(fake: &FakeRunner, program: &str, args: &[&str]) -> usize {
+fn count(fake: &FakeRunner, program: &str, args: &[&str]) -> usize {
     fake.calls()
         .iter()
         .filter(|spec| {
@@ -268,7 +261,9 @@ fn oracle(dir: &std::path::Path) {
     let options = AppInstallOptions::new();
     for index in 0..BREW_APPS {
         let outcome = rt
-            .block_on(apps.ensure_installed(&TorideId::slugify(&brew_token(index)), options.clone()))
+            .block_on(
+                apps.ensure_installed(&TorideId::slugify(&brew_token(index)), options.clone()),
+            )
             .unwrap_or_else(|error| panic!("brew install {index} failed: {error}"));
         assert!(
             matches!(outcome, EnsureAppOutcome::Installed { .. }),
@@ -291,7 +286,8 @@ fn oracle(dir: &std::path::Path) {
     assert_eq!(
         fake.calls()
             .iter()
-            .filter(|spec| spec.program == "brew" && spec.args.first().map(String::as_str) == Some("install"))
+            .filter(|spec| spec.program == "brew"
+                && spec.args.first().map(String::as_str) == Some("install"))
             .count(),
         BREW_INSTALLS_PER_SWEEP,
         "one brew install per app"
@@ -299,7 +295,7 @@ fn oracle(dir: &std::path::Path) {
     assert_eq!(
         count(&fake, "brew", &["info", "--json=v2", "--installed"]),
         BREW_INFO_LISTINGS_PER_SWEEP,
-        "the foreign-presence probe rides the full brew info listing per app"
+        "the foreign-presence probe rides kind-scoped list probes, never the full store listing"
     );
     assert_eq!(
         fake.calls()
@@ -309,7 +305,7 @@ fn oracle(dir: &std::path::Path) {
                 && spec.args.contains(&"--versions".to_owned()))
             .count(),
         BREW_VERSION_PROBES_PER_SWEEP,
-        "two kind-scoped version probes per brew install: the backend's own plus the facade verify"
+        "three kind-scoped probes per brew install: two Foreign-check probes plus the backend post-verify that stands in for the facade's"
     );
     assert_eq!(
         fake.calls()
@@ -323,7 +319,7 @@ fn oracle(dir: &std::path::Path) {
     assert_eq!(
         count(&fake, "flatpak", &FLATPAK_USER_LIST_ARGS),
         FLATPAK_USER_LISTINGS_PER_SWEEP,
-        "two user-scoped listings per install: the backend's post-verify plus the facade verify"
+        "one user-scoped listing per install: the backend's post-verify stands in for the facade's"
     );
     assert_eq!(
         count(&fake, "flatpak", &FLATPAK_ALL_LIST_ARGS),
@@ -333,9 +329,9 @@ fn oracle(dir: &std::path::Path) {
     assert_eq!(
         count(&fake, "flatpak", &["remotes", "--user", "--columns=name"]),
         FLATPAK_REMOTE_PROBES_PER_SWEEP,
-        "the flathub remote probe re-runs per install"
+        "the flathub remote probe runs once per backend instance, then the positive answer is memoized"
     );
-    assert_eq!(fake.calls().len(), 90, "total dispatches across the sweep");
+    assert_eq!(fake.calls().len(), 71, "total dispatches across the sweep");
 
     let (fake, apps) = status_rig(&manifest);
     for index in 0..STATUS_BATCH_IDS {
@@ -347,7 +343,7 @@ fn oracle(dir: &std::path::Path) {
     assert_eq!(
         count(&fake, "brew", &["info", "--json=v2", "--installed"]),
         STATUS_INFO_LISTINGS_PER_BATCH,
-        "one full brew info listing per unrecorded id: the batch's shared-listing target is 1"
+        "zero full store listings: every unrecorded id answers through the kind-scoped probes"
     );
 }
 

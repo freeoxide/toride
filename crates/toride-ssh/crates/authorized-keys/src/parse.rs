@@ -23,29 +23,21 @@ pub struct AuthorizedKeyEntry {
     pub line_number: usize,
     /// The raw original line text.
     pub raw_line: String,
+    /// The parsed key, retained from parse-time validation so
+    /// [`AuthorizedKeyEntry::fingerprint`] never re-parses the line. For
+    /// certificate entries this is the certificate's underlying public key.
+    pub key: ssh_key::PublicKey,
 }
 
 impl AuthorizedKeyEntry {
-    /// Reconstruct the OpenSSH key line (`key-type base64-key`) for re-parsing.
-    fn openssh_key_line(&self) -> String {
-        format!("{} {}", self.key_type, self.public_key)
-    }
-
-    /// Compute the SHA-256 fingerprint of this entry's public key.
+    /// Compute the SHA-256 fingerprint of this entry's key
+    /// (`SHA256:<base64>`).
     ///
-    /// Returns `None` if the stored key data cannot be re-parsed (corrupted entry).
-    pub fn fingerprint(&self) -> Option<String> {
-        let key_line = self.openssh_key_line();
-        match ssh_key::PublicKey::from_openssh(&key_line) {
-            Ok(pk) => Some(pk.fingerprint(ssh_key::HashAlg::Sha256).to_string()),
-            Err(e) => {
-                tracing::warn!(
-                    "failed to re-parse authorized_keys entry at line {}: {e}",
-                    self.line_number
-                );
-                None
-            }
-        }
+    /// The key was parsed once when the entry was built; this hashes the
+    /// retained key and formats the digest.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        self.key.fingerprint(ssh_key::HashAlg::Sha256).to_string()
     }
 }
 
@@ -74,8 +66,21 @@ pub async fn parse_authorized_keys(path: &Path) -> Result<Vec<AuthorizedKeyEntry
         .map_err(|e| Error::AuthorizedKeysParseFailed(e.to_string()))?
 }
 
+/// Parse `authorized_keys` contents already read by the caller.
+///
+/// Same grammar as [`parse_authorized_keys`]; this is the single-read
+/// entry point used by [`remove`](crate::AuthorizedKeysService::remove) so
+/// it does not read the file twice.
+///
+/// # Errors
+///
+/// Returns [`Error::AuthorizedKeysParseFailed`] if a key line fails to parse.
+pub fn parse_authorized_keys_contents(contents: &str) -> Result<Vec<AuthorizedKeyEntry>> {
+    parse_authorized_keys_sync(contents)
+}
+
 /// Synchronous implementation that parses already-read file contents.
-fn parse_authorized_keys_sync(contents: &str) -> Result<Vec<AuthorizedKeyEntry>> {
+pub(crate) fn parse_authorized_keys_sync(contents: &str) -> Result<Vec<AuthorizedKeyEntry>> {
     let mut entries = Vec::new();
 
     for (line_idx, raw_line) in contents.lines().enumerate() {
@@ -95,7 +100,11 @@ fn parse_authorized_keys_sync(contents: &str) -> Result<Vec<AuthorizedKeyEntry>>
     Ok(entries)
 }
 
-/// Known SSH key type prefixes used in `authorized_keys` files.
+/// Suffix shared by every OpenSSH certificate key type.
+const CERT_TYPE_SUFFIX: &str = "-cert-v01@openssh.com";
+
+/// Known SSH key type prefixes used in `authorized_keys` files, including
+/// the `*-cert-v01@openssh.com` certificate types sshd accepts.
 const KEY_TYPE_PREFIXES: &[&str] = &[
     "ssh-rsa",
     "ssh-dss",
@@ -106,6 +115,14 @@ const KEY_TYPE_PREFIXES: &[&str] = &[
     "ecdsa-sha2-nistp521",
     "sk-ssh-ed25519@openssh.com",
     "sk-ecdsa-sha2-nistp256@openssh.com",
+    "ssh-rsa-cert-v01@openssh.com",
+    "ssh-dss-cert-v01@openssh.com",
+    "ssh-ed25519-cert-v01@openssh.com",
+    "ecdsa-sha2-nistp256-cert-v01@openssh.com",
+    "ecdsa-sha2-nistp384-cert-v01@openssh.com",
+    "ecdsa-sha2-nistp521-cert-v01@openssh.com",
+    "sk-ssh-ed25519-cert-v01@openssh.com",
+    "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
 ];
 
 /// Parse a single non-empty, non-comment line from an `authorized_keys` file.
@@ -158,12 +175,19 @@ fn parse_line(raw_line: &str, line_number: usize, original: &str) -> Result<Auth
 
     let comment = parts.next().map(ToString::to_string);
 
-    // Validate by attempting to parse the key portion through ssh-key.
-    if let Err(e) = ssh_key::PublicKey::from_openssh(key_and_comment) {
-        return Err(Error::AuthorizedKeysParseFailed(format!(
-            "line {line_number}: invalid key: {e}"
-        )));
+    // Validate by parsing the key portion through ssh-key and retain the
+    // result. Certificate lines only parse through
+    // `Certificate::from_openssh`; the retained key is the certificate's
+    // underlying public key, whose fingerprint matches `ssh-keygen -lf`.
+    let key = if key_type.ends_with(CERT_TYPE_SUFFIX) {
+        ssh_key::certificate::Certificate::from_openssh(key_and_comment)
+            .map(|cert| ssh_key::PublicKey::from(cert.public_key().clone()))
+    } else {
+        ssh_key::PublicKey::from_openssh(key_and_comment)
     }
+    .map_err(|e| {
+        Error::AuthorizedKeysParseFailed(format!("line {line_number}: invalid key: {e}"))
+    })?;
 
     let options = options_str.map(super::options::parse_options).transpose()?;
 
@@ -174,6 +198,7 @@ fn parse_line(raw_line: &str, line_number: usize, original: &str) -> Result<Auth
         comment,
         line_number,
         raw_line: original.to_string(),
+        key,
     })
 }
 

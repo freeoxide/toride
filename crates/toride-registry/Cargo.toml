@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 readme = "README.md"
 keywords = ["homebrew", "flathub", "appstream", "repology", "package-registry"]
+# The benches are all criterion targets (`harness = false`); the implicit
+# lib bench target rejects criterion flags like `-- --baseline pre`.
+[lib]
+bench = false
+
 categories = ["parser-implementations", "api-bindings"]
 
 [features]
@@ -25,6 +30,9 @@ thiserror = { workspace = true }
 # (DESIGN.md §3, house style per toride-installer's `ReleaseResolver`), so
 # it is needed by the trait itself, not only by the fetch layer.
 async-trait = { workspace = true }
+# `join_all` for the per-adapter fan-out in `Registry::search`/`resolve`
+# (DESIGN.md §3.2): wall clock is the slowest adapter, not the sum.
+futures = "0.3"
 # Async fetch clients (`http` only) + the `#[tokio::test]` suites.
 tokio = { workspace = true, optional = true }
 # Typed UTF-8 cache paths in the appstream fetch client (DESIGN.md §9).

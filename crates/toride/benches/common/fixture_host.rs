@@ -115,11 +115,16 @@ const SSH_CONFIG_FIXTURE: &str = concat!(
     "  Port 2222\n",
 );
 
-const KNOWN_HOSTS_FIXTURE: &str =
-    "203.0.113.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB8Qm0kQx9pN2rBench7vJw4uZ1yT0hKqM5sEdRfGh6L toride-bench\n";
+const KNOWN_HOSTS_FIXTURE: &str = "203.0.113.10 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB8Qm0kQx9pN2rBench7vJw4uZ1yT0hKqM5sEdRfGh6L toride-bench\n";
 
 const COUNTER_ENV: &str = "TORIDE_BENCH_COUNTER";
-const MANAGED_ENV: &[&str] = &["HOME", "PATH", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"];
+const MANAGED_ENV: &[&str] = &[
+    "HOME",
+    "PATH",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+];
 
 /// Installed fixture environment. Keeps every temp dir alive and restores the
 /// process environment on drop.
@@ -190,8 +195,7 @@ impl FixtureHost {
         unsafe {
             for key in MANAGED_ENV {
                 let prior = std::env::var(key).ok();
-                self.saved_env
-                    .push(((*key).to_owned(), prior));
+                self.saved_env.push(((*key).to_owned(), prior));
             }
             std::env::set_var("HOME", self.home.path());
             std::env::set_var("PATH", self.bin.path());

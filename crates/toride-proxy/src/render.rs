@@ -23,6 +23,16 @@ use crate::spec::{ProxySpec, ServerBlock};
 /// assert!(config.contains("proxy_pass http://127.0.0.1:3000"));
 /// ```
 pub fn render_nginx_server_block(block: &ServerBlock) -> String {
+    render_nginx_server_block_inner(block, false)
+}
+
+/// Render a server block, optionally emitting the modern `http2 on;`
+/// directive (nginx 1.25.1+) after the listen lines of TLS blocks.
+///
+/// The `http2` listen parameter has been deprecated since nginx 1.25.1, so
+/// HTTP/2 is expressed as its own directive and only when the caller's spec
+/// asked for it.
+fn render_nginx_server_block_inner(block: &ServerBlock, http2: bool) -> String {
     let mut lines = Vec::new();
 
     // Server block open
@@ -30,8 +40,11 @@ pub fn render_nginx_server_block(block: &ServerBlock) -> String {
 
     // Listen directive
     if block.tls.is_some() {
-        lines.push(format!("    listen {} ssl http2;", block.listen_port));
-        lines.push(format!("    listen [::]:{} ssl http2;", block.listen_port));
+        lines.push(format!("    listen {} ssl;", block.listen_port));
+        lines.push(format!("    listen [::]:{} ssl;", block.listen_port));
+        if http2 {
+            lines.push("    http2 on;".to_string());
+        }
     } else {
         lines.push(format!("    listen {};", block.listen_port));
         lines.push(format!("    listen [::]:{};", block.listen_port));
@@ -206,12 +219,13 @@ pub fn render_security_headers(include_hsts: bool, csp_policy: Option<&str>) -> 
 
 /// Render a complete Nginx configuration from a [`ProxySpec`].
 ///
-/// Produces all server blocks with security headers included.
+/// Produces all server blocks with security headers included. TLS blocks get
+/// the modern `http2 on;` directive when the spec's `http2` flag is set.
 pub fn render_nginx_config(spec: &ProxySpec) -> String {
     let mut blocks = Vec::new();
 
     for block in &spec.server_blocks {
-        let block_config = render_nginx_server_block(block);
+        let block_config = render_nginx_server_block_inner(block, spec.http2);
         blocks.push(block_config);
     }
 
@@ -244,11 +258,62 @@ mod tests {
             ));
         let config = render_nginx_server_block(&block);
 
-        assert!(config.contains("listen 443 ssl http2;"));
+        assert!(
+            config.contains("listen 443 ssl;"),
+            "the http2 listen parameter is deprecated since nginx 1.25.1: {config}"
+        );
+        assert!(
+            !config.contains("http2"),
+            "per-block rendering carries no spec context, so no http2 directive: {config}"
+        );
         assert!(
             config.contains("ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;")
         );
         assert!(config.contains("ssl_stapling on;"));
+    }
+
+    /// The spec-level `http2` flag must render as the modern `http2 on;`
+    /// directive, not the deprecated listen parameter.
+    #[test]
+    fn render_nginx_config_with_http2_flag_uses_the_directive() {
+        let tls_block = ServerBlock::new("example.com", 443, "127.0.0.1:3000")
+            .with_tls(TlsConfig::new("example.com", "/cert.pem", "/key.pem"));
+        let plain_block = ServerBlock::new("plain.example.com", 80, "127.0.0.1:3000");
+
+        let spec = ProxySpec::builder()
+            .block(tls_block)
+            .block(plain_block)
+            .http2()
+            .build();
+        let config = render_nginx_config(&spec);
+
+        assert!(
+            config.contains("listen 443 ssl;") && config.contains("http2 on;"),
+            "TLS blocks get the directive form: {config}"
+        );
+        let plain_start = config
+            .find("server_name plain.example.com")
+            .expect("present");
+        let plain_section = &config[plain_start..];
+        assert!(
+            !plain_section.contains("http2"),
+            "http2 applies to TLS blocks, not the plaintext one: {plain_section}"
+        );
+        assert!(!config.contains("ssl http2;"), "deprecated form: {config}");
+    }
+
+    #[test]
+    fn render_nginx_config_without_http2_flag_omits_the_directive() {
+        let spec =
+            ProxySpec::builder()
+                .block(
+                    ServerBlock::new("example.com", 443, "127.0.0.1:3000")
+                        .with_tls(TlsConfig::new("example.com", "/cert.pem", "/key.pem")),
+                )
+                .build();
+        let config = render_nginx_config(&spec);
+        assert!(config.contains("listen 443 ssl;"));
+        assert!(!config.contains("http2"), "got: {config}");
     }
 
     #[test]

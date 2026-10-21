@@ -1,4 +1,4 @@
-//! Rule rendering — converts typed `RuleSpec` into UFW argument vectors.
+//! Rule rendering: converts typed `RuleSpec` into UFW argument vectors.
 //!
 //! This module never produces shell strings. All output is argument arrays
 //! suitable for passing directly to `duct::cmd` or similar.
@@ -11,44 +11,47 @@ use crate::spec::{
 /// Render a `RuleSpec` into UFW argument vector.
 ///
 /// Returns `(program, args)` where program is always `"ufw"`.
+///
+/// The argv order follows the ufw grammar: an optional `delete` or
+/// position prefix, the action, then the direction / `on <interface>`
+/// clause, then `log` / `log-all`, protocol, source, destination, and
+/// comment. A deleted rule takes no position prefix: ufw rejects
+/// `delete insert N allow ...` at the action check.
 #[must_use]
 pub fn render_rule_args(spec: &RuleSpec) -> Vec<String> {
     let mut args = Vec::new();
 
-    // Position prefix
-    match spec.position {
-        RulePosition::Append => {}
-        RulePosition::Prepend => args.push("prepend".into()),
-        RulePosition::Insert(n) => {
-            args.push("insert".into());
-            args.push(n.to_string());
-        }
-    }
-
-    // Delete prefix
     if spec.delete {
         args.push("delete".into());
+    } else {
+        match spec.position {
+            RulePosition::Append => {}
+            RulePosition::Prepend => args.push("prepend".into()),
+            RulePosition::Insert(n) => {
+                args.push("insert".into());
+                args.push(n.to_string());
+            }
+        }
     }
 
     // Action
     args.push(spec.action.to_string());
 
-    // Logging (before direction for UFW syntax)
-    match spec.logging {
-        RuleLogging::None => {}
-        RuleLogging::Log => args.push("log".into()),
-        RuleLogging::LogAll => args.push("log-all".into()),
-    }
-
-    // Direction
+    // Direction and interface clause precede the logging keyword; ufw
+    // raises "Invalid interface clause" for `allow log in on eth0 ...`.
     if let Some(dir) = spec.direction {
         args.push(dir.to_string());
     }
 
-    // Interface
     if let Some(iface) = &spec.interface {
         args.push("on".into());
         args.push(iface.clone());
+    }
+
+    match spec.logging {
+        RuleLogging::None => {}
+        RuleLogging::Log => args.push("log".into()),
+        RuleLogging::LogAll => args.push("log-all".into()),
     }
 
     // Protocol

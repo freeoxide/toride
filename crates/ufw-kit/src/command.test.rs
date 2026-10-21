@@ -193,7 +193,7 @@ fn fake_runner_should_handle_large_stdout() {
 }
 
 // ---------------------------------------------------------------------------
-// redact_args — secret masking for command-log output
+// redact_args: secret masking for command-log output
 // ---------------------------------------------------------------------------
 
 fn redact(args: &[&str]) -> String {
@@ -317,7 +317,7 @@ fn redact_args_should_mask_two_consecutive_secrets() {
 }
 
 // ---------------------------------------------------------------------------
-// to_shared_spec — redact_logs forwarding
+// to_shared_spec: redact_logs forwarding
 // ---------------------------------------------------------------------------
 
 #[test]

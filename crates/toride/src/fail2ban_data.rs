@@ -117,7 +117,6 @@ impl Fail2banCollector {
     }
 
     /// Invalidate the bundle cache so the next collection re-runs the probes.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_bundle = None;
         self.bundle_fresh_at = None;

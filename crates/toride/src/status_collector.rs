@@ -3,13 +3,15 @@
 //! [`StatusCollector`] manages background collection of [`TorideStatus`]
 //! via a tokio oneshot channel, spawning blocking work on the tokio thread pool.
 
+use std::sync::Arc;
+
 use tokio::sync::oneshot;
 
 use crate::status::TorideStatus;
 
 /// Manages periodic async collection of system status.
 pub struct StatusCollector {
-    rx: Option<oneshot::Receiver<TorideStatus>>,
+    rx: Option<oneshot::Receiver<Arc<TorideStatus>>>,
 }
 
 impl StatusCollector {
@@ -34,9 +36,11 @@ impl StatusCollector {
         let (tx, rx) = oneshot::channel();
         self.rx = Some(rx);
         tokio::spawn(async move {
-            let status = tokio::task::spawn_blocking(TorideStatus::collect)
-                .await
-                .unwrap_or_else(|_| TorideStatus::collect());
+            let status = Arc::new(
+                tokio::task::spawn_blocking(TorideStatus::collect)
+                    .await
+                    .unwrap_or_else(|_| TorideStatus::collect()),
+            );
             let _ = tx.send(status);
         });
     }
@@ -49,7 +53,7 @@ impl StatusCollector {
         let (tx, rx) = oneshot::channel();
         self.rx = Some(rx);
         tokio::spawn(async move {
-            let _ = tx.send(status);
+            let _ = tx.send(Arc::new(status));
         });
     }
 
@@ -57,7 +61,7 @@ impl StatusCollector {
     ///
     /// Returns `Some(status)` if the collection completed, `None` if still
     /// pending or if the collection failed.
-    pub async fn poll(&mut self) -> Option<TorideStatus> {
+    pub async fn poll(&mut self) -> Option<Arc<TorideStatus>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();

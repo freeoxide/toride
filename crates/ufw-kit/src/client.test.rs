@@ -588,6 +588,56 @@ fn ensure_rule_should_replace_when_comment_matches_but_rule_differs() {
 }
 
 #[test]
+fn ensure_rule_should_replace_when_existing_rule_ports_differ_by_prefix() {
+    // Regression: raw substring matching treated Single(22) as present when
+    // 8022/tcp existed, silently keeping rule drift as "already exists".
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status", "numbered"],
+            "Status: active\n\nTo                         Action      From\n--                         ------      ----\n[ 1] 8022/tcp ALLOW IN Anywhere comment managed:ssh\n")
+        .respond_ok("ufw", &["delete", "1"], "Deleting:\n allow 8022/tcp\nRule deleted\n")
+        .respond_ok("ufw", &[], "Rule added\n");
+    let ufw = Ufw::with_runner(runner);
+    let spec = RuleSpec::builder(Action::Allow)
+        .direction(Direction::In)
+        .to_port(22)
+        .proto(Protocol::Tcp)
+        .comment("managed:ssh")
+        .build()
+        .unwrap();
+    let report = ufw.ensure_rule(&spec).unwrap();
+    assert!(
+        report.action.contains("replaced rule"),
+        "8022/tcp must not satisfy a port-22 spec, got: {}",
+        report.action
+    );
+}
+
+#[test]
+fn ensure_rule_should_replace_when_source_address_differs_by_prefix() {
+    // Regression: 10.0.0.10 satisfied a 10.0.0.1 source via substring match.
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status", "numbered"],
+            "Status: active\n\nTo                         Action      From\n--                         ------      ----\n[ 1] 443/tcp ALLOW IN 10.0.0.10 comment managed:web\n")
+        .respond_ok("ufw", &["delete", "1"], "Deleting:\n allow 443/tcp\nRule deleted\n")
+        .respond_ok("ufw", &[], "Rule added\n");
+    let ufw = Ufw::with_runner(runner);
+    let spec = RuleSpec::builder(Action::Allow)
+        .direction(Direction::In)
+        .from(Address::Ip("10.0.0.1".parse().unwrap()))
+        .to_port(443)
+        .proto(Protocol::Tcp)
+        .comment("managed:web")
+        .build()
+        .unwrap();
+    let report = ufw.ensure_rule(&spec).unwrap();
+    assert!(
+        report.action.contains("replaced rule"),
+        "10.0.0.10 must not satisfy a 10.0.0.1 source, got: {}",
+        report.action
+    );
+}
+
+#[test]
 fn delete_rules_by_comment_should_delete_matching_rules_bottom_to_top() {
     let runner = FakeRunner::new()
         .respond_ok("ufw", &["status", "numbered"],
@@ -686,6 +736,48 @@ fn check_ssh_structured_should_return_empty_on_status_failure() {
     assert!(!result.has_incoming_ssh_allow);
     assert_eq!(result.matching_rules, Vec::new());
     assert_eq!(result.checked_ports, vec![22]);
+}
+
+#[test]
+fn check_ssh_structured_should_not_green_light_on_ssh_comment() {
+    // Regression: a comment mentioning ssh used to satisfy the lockout guard.
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n443/tcp                    ALLOW IN    Anywhere comment web not ssh\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    assert!(
+        !result.has_incoming_ssh_allow,
+        "a port-443 rule whose comment says 'web not ssh' must not count as SSH"
+    );
+}
+
+#[test]
+fn check_ssh_structured_should_not_green_light_on_prefix_port() {
+    // Regression: 8022 counted for port 22 via raw substring match.
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n8022/tcp                   ALLOW IN    Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    assert!(!result.has_incoming_ssh_allow);
+}
+
+#[test]
+fn check_ssh_structured_should_match_configured_alternate_port() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n2222/tcp                   ALLOW IN    Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[2222]);
+    assert!(result.has_incoming_ssh_allow);
+}
+
+#[test]
+fn check_ssh_structured_should_not_count_source_port() {
+    // A rule allowing TO port 80 FROM source port 22 must not count.
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n80/tcp                     ALLOW IN    10.0.0.5 port 22\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    assert!(!result.has_incoming_ssh_allow);
 }
 
 #[test]

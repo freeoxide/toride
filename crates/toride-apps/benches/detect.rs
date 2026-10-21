@@ -7,7 +7,7 @@ use toride_apps::backends::flatpak::FlatpakBackend;
 use toride_apps::backends::homebrew::HomebrewBackend;
 use toride_apps::backends::npm::NpmBackend;
 use toride_apps::detect::{Detector as _, MultiSourceDetector};
-use toride_apps::{command, CommandRunner};
+use toride_apps::{CommandRunner, command};
 use toride_runner::CommandOutput;
 use toride_runner::fake::FakeRunner;
 
@@ -42,9 +42,12 @@ fn brew_listing() -> String {
 }
 
 fn flatpak_listing() -> String {
-    (0..NAMES)
-        .map(|index| format!("{}\t1.0.{index}\tflathub\tuser\n", tool_name(index)))
-        .collect()
+    let mut listing = String::new();
+    for index in 0..NAMES {
+        let row = format!("{}\t1.0.{index}\tflathub\tuser\n", tool_name(index));
+        listing.push_str(&row);
+    }
+    listing
 }
 
 fn npm_listing() -> String {
@@ -62,8 +65,10 @@ fn detector(fake: &FakeRunner, path_dir: &std::path::Path) -> MultiSourceDetecto
             toride_registry::model::Arch::X86_64,
         ))
         .runner(runner.clone())
-        .path_dirs(vec![camino::Utf8PathBuf::from_path_buf(path_dir.to_path_buf())
-            .expect("temp path is valid UTF-8")])
+        .path_dirs(vec![
+            camino::Utf8PathBuf::from_path_buf(path_dir.to_path_buf())
+                .expect("temp path is valid UTF-8"),
+        ])
         .homebrew(HomebrewBackend::new(runner.clone()))
         .flatpak(FlatpakBackend::new(runner.clone()))
         .npm(NpmBackend::new(runner))
@@ -121,7 +126,7 @@ fn oracle(path_dir: &std::path::Path) {
     assert_eq!(
         count(&fake, "brew", &BREW_LISTING_ARGS),
         NAMES + 1,
-        "one full brew listing per name probe: the detect-many target is one per backend"
+        "the single-name probe lists once per backend per name"
     );
     assert_eq!(count(&fake, "flatpak", &FLATPAK_LISTING_ARGS), NAMES + 1);
     assert_eq!(count(&fake, "npm", &NPM_LISTING_ARGS), NAMES + 1);
@@ -129,6 +134,29 @@ fn oracle(path_dir: &std::path::Path) {
         fake.calls().len(),
         (NAMES + 1) * 3,
         "no other dispatches: the path dir carries none of the names"
+    );
+
+    let (fake, detector) = rig(path_dir);
+    let names: Vec<String> = (0..NAMES).map(tool_name).collect();
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let many = detector.detect_many(&name_refs);
+    assert_eq!(
+        many.len(),
+        NAMES * 3,
+        "one hit per backend per name: {many:?}"
+    );
+    assert!(many.iter().all(|hit| hit.version.is_some()));
+    assert_eq!(
+        count(&fake, "brew", &BREW_LISTING_ARGS),
+        1,
+        "one brew listing for the whole batch"
+    );
+    assert_eq!(count(&fake, "flatpak", &FLATPAK_LISTING_ARGS), 1);
+    assert_eq!(count(&fake, "npm", &NPM_LISTING_ARGS), 1);
+    assert_eq!(
+        fake.calls().len(),
+        3,
+        "exactly one listing per backend across 25 names"
     );
 }
 
@@ -158,6 +186,16 @@ fn detect_bench(c: &mut Criterion) {
         b.iter(|| {
             let (_fake, detector) = rig(&path_dir);
             let hits = detector.detect(black_box(&tool_name(0))).len();
+            black_box(hits)
+        });
+    });
+
+    group.bench_function("sweep_25_names_detect_many", |b| {
+        b.iter(|| {
+            let (_fake, detector) = rig(&path_dir);
+            let names: Vec<String> = (0..NAMES).map(tool_name).collect();
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            let hits = detector.detect_many(black_box(&name_refs)).len();
             black_box(hits)
         });
     });

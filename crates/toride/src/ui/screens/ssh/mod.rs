@@ -499,8 +499,6 @@ trait SshTab {
     fn has_modal(&self) -> bool {
         false
     }
-    #[allow(dead_code)]
-    fn close_modal(&mut self) {}
     fn drain_ops(&mut self) -> Vec<SshOp> {
         Vec::new()
     }

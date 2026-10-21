@@ -9,9 +9,7 @@ use crate::error::{Error, Result};
 use crate::spec::CommandSpec;
 use std::time::Duration;
 
-// ============================================================================
 // Types
-// ============================================================================
 
 /// A parsed iptables ruleset.
 #[derive(Debug, Clone, Default)]
@@ -87,9 +85,7 @@ pub struct IptablesRuleComponents {
     pub comment: Option<String>,
 }
 
-// ============================================================================
 // Parsing
-// ============================================================================
 
 /// Parse iptables-save output into a structured ruleset.
 pub fn parse_iptables_save(output: &str) -> Result<IptablesRuleset> {
@@ -333,9 +329,7 @@ fn parse_rule_components(spec: &str) -> IptablesRuleComponents {
     components
 }
 
-// ============================================================================
 // Inspection
-// ============================================================================
 
 /// Inspect iptables-save output as structured data.
 pub fn inspect_iptables_structured(runner: &dyn CommandRunner) -> Result<IptablesRuleset> {

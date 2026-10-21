@@ -199,6 +199,10 @@ impl ProxyCli {
                 NginxAction::Enable { domain } => {
                     #[cfg(feature = "config")]
                     {
+                        if client.dry_run() {
+                            tracing::info!("dry-run: would enable site {domain}");
+                            return Ok(format!("enabled site {domain} (dry-run)"));
+                        }
                         client.config().enable_site(domain)?;
                         Ok(format!("enabled site {domain}"))
                     }
@@ -213,6 +217,10 @@ impl ProxyCli {
                 NginxAction::Disable { domain } => {
                     #[cfg(feature = "config")]
                     {
+                        if client.dry_run() {
+                            tracing::info!("dry-run: would disable site {domain}");
+                            return Ok(format!("disabled site {domain} (dry-run)"));
+                        }
                         client.config().disable_site(domain)?;
                         Ok(format!("disabled site {domain}"))
                     }
@@ -241,6 +249,10 @@ impl ProxyCli {
                             Ok("Caddyfile is valid".into())
                         }
                         CaddyAction::Reload => {
+                            if client.dry_run() {
+                                tracing::info!("dry-run: would reload caddy");
+                                return Ok("caddy reloaded (dry-run)".into());
+                            }
                             client.caddy().reload()?;
                             Ok("caddy reloaded".into())
                         }
@@ -315,7 +327,6 @@ mod tests {
         assert_eq!(parse_scope("HEADERS"), DoctorScope::Headers);
         assert_eq!(parse_scope("certs"), DoctorScope::Certificates);
         assert_eq!(parse_scope("config"), DoctorScope::Config);
-        // Unknown -> All (forgiving).
         assert_eq!(parse_scope("nonsense"), DoctorScope::All);
     }
 
@@ -352,6 +363,43 @@ mod tests {
         };
         let out = cli.run(&mut client).expect("dry-run reload");
         assert!(out.contains("reloaded"));
+    }
+
+    /// `nginx enable`/`disable` bypass the dry-run-aware client methods and
+    /// drive the ConfigManager directly, so the dispatch itself must gate on
+    /// `client.dry_run()`: without the gate, `--dry-run nginx enable` would
+    /// mutate the live sites-enabled symlink tree. Against the default
+    /// (system) paths an ungated run would fail here; the gate makes both
+    /// commands succeed without touching the filesystem.
+    #[cfg(feature = "config")]
+    #[test]
+    fn cli_dry_run_enable_and_disable_do_not_execute() {
+        for (action, verb) in [
+            (
+                NginxAction::Enable {
+                    domain: "example.com".into(),
+                },
+                "enabled",
+            ),
+            (
+                NginxAction::Disable {
+                    domain: "example.com".into(),
+                },
+                "disabled",
+            ),
+        ] {
+            let fake = toride_runner::FakeRunner::new().strict();
+            let mut client = ProxyClient::with_runner(Box::new(fake));
+
+            let cli = ProxyCli {
+                command: ProxyCommand::Nginx { action },
+                dry_run: true,
+            };
+            let out = cli
+                .run(&mut client)
+                .expect("dry-run enable/disable must not touch the filesystem");
+            assert!(out.contains("dry-run") && out.contains(verb), "got: {out}");
+        }
     }
 
     /// `nginx test` dispatches to NginxManager::test_config and returns the

@@ -45,7 +45,7 @@ impl std::fmt::Display for IpVersion {
 ///     out_interface: "eth0".into(),
 ///     ip_version: IpVersion::V4,
 /// };
-/// let block = spec.to_framework_block();
+/// let block = spec.to_framework_block().unwrap();
 /// assert_eq!(block.id, "wg-nat");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +71,7 @@ impl MasqueradeSpec {
                 "masquerade out_interface must not be empty".into(),
             ));
         }
-        validate_interface(&self.out_interface)?;
+        crate::spec::validate_interface(&self.out_interface)?;
 
         // Check IP version consistency
         match self.ip_version {
@@ -97,13 +97,19 @@ impl MasqueradeSpec {
     /// Render this spec as a framework block for `before.rules`.
     ///
     /// Produces a `*nat` table with a `POSTROUTING` MASQUERADE rule.
-    #[must_use]
-    pub fn to_framework_block(&self) -> FrameworkRuleBlock {
-        FrameworkRuleBlock {
+    /// Validation runs at this render boundary, so unvalidated interface or
+    /// id text cannot reach a root-parsed framework file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the spec's validation error, if any.
+    pub fn to_framework_block(&self) -> Result<FrameworkRuleBlock> {
+        self.validate()?;
+        Ok(FrameworkRuleBlock {
             id: self.id.clone(),
             content: self.render_iptables_content(),
             ipv6: self.ip_version == IpVersion::V6,
-        }
+        })
     }
 
     /// Render the iptables content for the NAT block.
@@ -191,8 +197,8 @@ impl ForwardSpec {
         if self.id.is_empty() {
             return Err(Error::Validation("forward id must not be empty".into()));
         }
-        validate_interface(&self.in_interface)?;
-        validate_interface(&self.out_interface)?;
+        crate::spec::validate_interface(&self.in_interface)?;
+        crate::spec::validate_interface(&self.out_interface)?;
         if self.in_interface == self.out_interface {
             return Err(Error::Validation(
                 "in_interface and out_interface must not be the same".into(),
@@ -203,14 +209,20 @@ impl ForwardSpec {
 
     /// Render as a framework block for `before.rules`.
     ///
-    /// Produces a FORWARD rule in the filter table.
-    #[must_use]
-    pub fn to_framework_block(&self) -> FrameworkRuleBlock {
-        FrameworkRuleBlock {
+    /// Produces a FORWARD rule in the filter table. Validation runs at this
+    /// render boundary, so unvalidated interface or id text cannot reach a
+    /// root-parsed framework file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the spec's validation error, if any.
+    pub fn to_framework_block(&self) -> Result<FrameworkRuleBlock> {
+        self.validate()?;
+        Ok(FrameworkRuleBlock {
             id: self.id.clone(),
             content: self.render_filter_content(),
             ipv6: self.ip_version == IpVersion::V6,
-        }
+        })
     }
 
     fn render_filter_content(&self) -> String {
@@ -349,24 +361,6 @@ pub struct NatApplyResult {
     pub warnings: Vec<String>,
 }
 
-/// Validate interface name (shared with spec module).
-fn validate_interface(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::InvalidInterface("empty interface name".into()));
-    }
-    if name.len() > 15 {
-        return Err(Error::InvalidInterface(format!(
-            "interface name too long: {name} (max 15 chars)"
-        )));
-    }
-    if name.contains(|c: char| c.is_whitespace() || c == '/' || c == '\0') {
-        return Err(Error::InvalidInterface(format!(
-            "interface name contains invalid character: {name}"
-        )));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,7 +374,7 @@ mod tests {
             ip_version: IpVersion::V4,
         };
         spec.validate().unwrap();
-        let block = spec.to_framework_block();
+        let block = spec.to_framework_block().unwrap();
         assert_eq!(block.id, "wg-nat");
         assert!(!block.ipv6);
         assert!(block.content.contains("*nat"));
@@ -400,7 +394,7 @@ mod tests {
             ip_version: IpVersion::V6,
         };
         spec.validate().unwrap();
-        let block = spec.to_framework_block();
+        let block = spec.to_framework_block().unwrap();
         assert!(block.ipv6);
     }
 
@@ -419,7 +413,7 @@ mod tests {
     fn forward_spec_should_render_filter_block() {
         let spec = ForwardSpec::new("wg-forward", "wg0", "eth0");
         spec.validate().unwrap();
-        let block = spec.to_framework_block();
+        let block = spec.to_framework_block().unwrap();
         assert_eq!(block.id, "wg-forward");
         assert!(block.content.contains("ufw-before-forward"));
         assert!(block.content.contains("-i wg0"));
@@ -431,6 +425,26 @@ mod tests {
     fn forward_spec_should_reject_same_interface() {
         let spec = ForwardSpec::new("bad", "eth0", "eth0");
         assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn to_framework_block_should_reject_shell_metachar_interface() {
+        // Regression: nat.rs carried a weaker local copy of the interface
+        // validator (no shell-metachar rejection), and the render path never
+        // validated at all.
+        let spec = MasqueradeSpec {
+            id: "evil".into(),
+            source: "10.0.0.0/24".parse().unwrap(),
+            out_interface: "eth0; rm -rf /".into(),
+            ip_version: IpVersion::V4,
+        };
+        assert!(
+            spec.to_framework_block().is_err(),
+            "the render boundary must reject a metachar interface name"
+        );
+
+        let forward = ForwardSpec::new("evil", "wg0 | sh", "eth0");
+        assert!(forward.to_framework_block().is_err());
     }
 
     #[test]

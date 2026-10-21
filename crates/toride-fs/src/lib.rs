@@ -51,7 +51,9 @@ pub mod lock;
 pub mod permissions;
 pub mod read;
 
-pub use atomic::{atomic_write, atomic_write_bytes, atomic_write_with_perms};
+pub use atomic::{
+    atomic_write, atomic_write_bytes, atomic_write_bytes_with_perms, atomic_write_with_perms,
+};
 pub use error::{Error, Result};
 pub use expand::{expand_path, expand_tilde};
 pub use lock::{with_lock, with_lock_path, with_lock_timeout};

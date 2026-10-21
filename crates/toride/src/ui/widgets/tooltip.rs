@@ -48,7 +48,7 @@ pub fn title_line(name: &str, p: Palette) -> Line<'static> {
 
 /// Build a tooltip title line with a dimmed detail suffix (e.g. CPU brand, disk name).
 ///
-/// If `detail` is empty, returns just the bold-accent title.
+/// If `detail` is empty, returns only the bold-accent title.
 #[must_use]
 pub fn title_line_with_detail(name: &str, detail: &str, p: Palette) -> Line<'static> {
     if detail.is_empty() {

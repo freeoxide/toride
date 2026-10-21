@@ -6,7 +6,9 @@ use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use toride_registry::adapter::Adapter;
 use toride_registry::model::Arch;
 use toride_registry::sources::appstream::{AppstreamAdapter, parse_dep11_catalog};
-use toride_registry::sources::homebrew::{MAX_SEARCH_HITS, parse_cask_index, search_index};
+use toride_registry::sources::homebrew::{
+    MAX_SEARCH_HITS, SearchIndex, parse_cask_index, search_index,
+};
 
 const DEP11_FIXTURE: &str = include_str!("fixtures/dep11-search-catalog.yml");
 const CASK_INDEX_FIXTURE: &str = include_str!("fixtures/homebrew-cask-index-synthetic.json");
@@ -39,8 +41,8 @@ fn oracle() {
         .expect("broad query answers");
     assert_eq!(
         broad.len(),
-        DEP11_COMPONENTS,
-        "a name-substring query matches every component: appstream search serves no hit cap"
+        50,
+        "appstream search caps at 50 converted rows, matching homebrew's cap"
     );
     let narrow = rt
         .block_on(adapter.search("app 199"))
@@ -67,7 +69,9 @@ fn source_search(c: &mut Criterion) {
     let rt = runtime();
     let adapter =
         AppstreamAdapter::from_text(DEP11_FIXTURE, Some(Arch::X86_64)).expect("adapter parses");
-    let index = parse_cask_index(CASK_INDEX_FIXTURE).expect("synthetic cask index parses");
+    let index = SearchIndex::new(
+        parse_cask_index(CASK_INDEX_FIXTURE).expect("synthetic cask index parses"),
+    );
 
     let mut dep11 = c.benchmark_group("dep11_search");
     dep11.sample_size(SAMPLE_SIZE);
@@ -103,14 +107,14 @@ fn source_search(c: &mut Criterion) {
 
     homebrew.bench_function("broad_query_150_casks", |b| {
         b.iter(|| {
-            let hits = search_index(black_box(&index), black_box("bench app"));
+            let hits = index.search(black_box("bench app"));
             black_box(hits.len())
         });
     });
 
     homebrew.bench_function("narrow_query_150_casks", |b| {
         b.iter(|| {
-            let hits = search_index(black_box(&index), black_box("cask 149"));
+            let hits = index.search(black_box("cask 149"));
             black_box(hits.len())
         });
     });

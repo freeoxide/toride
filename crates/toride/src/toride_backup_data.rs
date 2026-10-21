@@ -48,8 +48,8 @@ pub struct BackupDataBundle {
 ///
 /// A 60s TTL cache covers the whole bundle (doctor + schedule/timer probes).
 pub struct BackupCollector {
-    rx: Option<oneshot::Receiver<(BackupDataBundle, bool)>>,
-    cached_bundle: Option<BackupDataBundle>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<BackupDataBundle>, bool)>>,
+    cached_bundle: Option<std::sync::Arc<BackupDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -99,9 +99,16 @@ impl BackupCollector {
             self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
         let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
+        // TTL hit: re-ship the cached bundle by refcount, no collection task.
+        if use_cache && let Some(bundle) = cached_bundle {
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         tokio::spawn(async move {
-            let (bundle, reused_cache) = collect_real_backup(use_cache, cached_bundle).await;
-            let _ = tx.send((bundle, reused_cache));
+            let (bundle, reused_cache) = collect_real_backup(false, None).await;
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache));
         });
     }
 
@@ -109,14 +116,14 @@ impl BackupCollector {
     ///
     /// Returns `Some(bundle)` on completion, `None` while pending or failed.
     /// A degraded (panic) bundle never populates the cache.
-    pub async fn poll(&mut self) -> Option<BackupDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<BackupDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
                 if let Some((ref bundle, used_cache)) = result {
                     if bundle.available {
                         if !used_cache {
-                            self.cached_bundle = Some(bundle.clone());
+                            self.cached_bundle = Some(std::sync::Arc::clone(bundle));
                             self.bundle_fresh_at = Some(std::time::Instant::now());
                         }
                     } else {
@@ -363,7 +370,7 @@ mod tests {
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = BackupCollector::new();
-        collector.cached_bundle = Some(empty_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(empty_bundle()));
         collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
         assert!(collector.cached_bundle.is_none());
@@ -373,12 +380,15 @@ mod tests {
     #[tokio::test]
     async fn poll_does_not_poison_cache_on_unavailable_bundle() {
         let mut collector = BackupCollector::new();
-        collector.cached_bundle = Some(available_bundle_with_finding());
+        collector.cached_bundle = Some(std::sync::Arc::new(available_bundle_with_finding()));
         collector.bundle_fresh_at = Some(std::time::Instant::now());
 
         let (tx, rx) = oneshot::channel();
-        tx.send((empty_bundle_with_reason("panic".into()), false))
-            .unwrap();
+        tx.send((
+            std::sync::Arc::new(empty_bundle_with_reason("panic".into())),
+            false,
+        ))
+        .unwrap();
         collector.rx = Some(rx);
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll still returns the panicked bundle");
@@ -443,7 +453,7 @@ mod tests {
             }],
             unavailable_reason: None,
         };
-        tx.send((bundle, false)).unwrap();
+        tx.send((std::sync::Arc::new(bundle), false)).unwrap();
         collector.rx = Some(rx);
         let _ = collector.poll().await;
         assert!(collector.cached_bundle.is_some());
@@ -506,7 +516,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn cache_hit_returns_cached_bundle_without_reprobing() {
         let mut collector = BackupCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 
@@ -543,7 +553,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = BackupCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 

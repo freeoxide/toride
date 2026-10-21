@@ -5,9 +5,7 @@ use std::time::Duration;
 use criterion::{Criterion, criterion_group, criterion_main};
 use toride_registry::adapter::{Adapter as _, Registry};
 use toride_registry::error::Result;
-use toride_registry::model::{
-    App, Availability, InstallMethod, SourceKind, SourceRef, TorideId,
-};
+use toride_registry::model::{App, Availability, InstallMethod, SourceKind, SourceRef, TorideId};
 
 const SAMPLE_SIZE: usize = 30;
 const MEASUREMENT_TIME: Duration = Duration::from_secs(2);

@@ -282,12 +282,6 @@ impl SshTab for DiagnosticsTab {
         self.detail_open.is_some() || self.action_modal.is_some()
     }
 
-    fn close_modal(&mut self) {
-        self.detail_open = None;
-        self.detail_modal_rect = None;
-        self.action_modal = None;
-    }
-
     fn drain_ops(&mut self) -> Vec<SshOp> {
         std::mem::take(&mut self.pending_ops)
     }

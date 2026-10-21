@@ -3,7 +3,7 @@
 //! [`CargoBackend`] executes the planner's [`Operation::CargoInstall`] /
 //! [`Operation::CargoUninstall`] / [`Operation::CargoUpdate`] operations
 //! through the shared [`CommandRunner`] seam and answers list queries from
-//! `cargo install --list`. Availability rides `cargo info --color never` —
+//! `cargo install --list`. Availability rides `cargo info --color never`:
 //! the registry-index query answers the exact crate's current version (where
 //! `cargo search` is relevance-ranked over the rate-limited search API), and
 //! the flag keeps the name and `version:` rows parseable under a forced-color
@@ -34,7 +34,7 @@ pub struct CargoBackend {
 }
 
 impl CargoBackend {
-    /// Create the backend over an explicit seam, with no host assumptions —
+    /// Create the backend over an explicit seam, with no host assumptions:
     /// the test-friendly constructor.
     #[must_use]
     pub fn new(runner: CommandRunner) -> Self {

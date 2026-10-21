@@ -61,6 +61,7 @@ pub mod parse;
 pub mod paths;
 pub mod render;
 pub mod report;
+pub mod site_links;
 pub mod spec;
 pub mod validate;
 

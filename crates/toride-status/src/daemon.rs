@@ -182,7 +182,7 @@ fn read_pid_file(path: &Path) -> Option<u32> {
 
 /// Check if a process with the given PID is alive.
 ///
-/// On Unix, uses `kill(pid, 0)`, which sends no signal and just checks existence.
+/// On Unix, uses `kill(pid, 0)`, which sends no signal and only checks existence.
 /// On Windows, uses `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION`.
 #[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {

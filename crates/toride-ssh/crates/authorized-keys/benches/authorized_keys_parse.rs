@@ -57,7 +57,10 @@ fn authorized_keys_pass(c: &mut Criterion) {
 
     group.bench_function("fingerprint_entries", |b| {
         b.iter(|| {
-            let ok = entries.iter().filter_map(Entry::fingerprint).count();
+            let ok = entries
+                .iter()
+                .map(Entry::fingerprint)
+                .fold(0usize, |acc, fp| acc + fp.len());
             black_box(ok)
         });
     });
@@ -67,7 +70,10 @@ fn authorized_keys_pass(c: &mut Criterion) {
             let entries = rt
                 .block_on(parse_authorized_keys(&rig.path))
                 .expect("authorized_keys fixture must parse");
-            let ok = entries.iter().filter_map(Entry::fingerprint).count();
+            let ok = entries
+                .iter()
+                .map(Entry::fingerprint)
+                .fold(0usize, |acc, fp| acc + fp.len());
             black_box(ok)
         });
     });
@@ -76,17 +82,16 @@ fn authorized_keys_pass(c: &mut Criterion) {
 
     let first_fingerprint = entries
         .first()
-        .and_then(Entry::fingerprint)
+        .map(Entry::fingerprint)
         .expect("first entry carries a fingerprint");
 
     let remove_rig = super_rig();
-    let paths: &'static SshPaths =
-        Box::leak(Box::new(SshPaths::with_dir(
-            remove_rig
-                .path
-                .parent()
-                .expect("authorized_keys parent dir"),
-        )));
+    let paths: &'static SshPaths = Box::leak(Box::new(SshPaths::with_dir(
+        remove_rig
+            .path
+            .parent()
+            .expect("authorized_keys parent dir"),
+    )));
     let service = AuthorizedKeysService::new(paths);
 
     let removed = rt

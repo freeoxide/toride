@@ -2,16 +2,16 @@
 //!
 //! [`CommandRunner`] is the single choke point every backend command flows
 //! through: it wraps an `Arc<dyn `[`Runner`]`>` (real [`DuctRunner`] by
-//! default, `FakeRunner` — toride-runner's `fake` feature — in tests),
+//! default, `FakeRunner` (toride-runner's `fake` feature) in tests),
 //! applies the seam's cwd/env policy to every spec, and maps runner
 //! failures into the crate's [`Error::Command`]. Backends never spawn
-//! processes directly — they build specs with [`command`] (or
+//! processes directly: they build specs with [`command`] (or
 //! [`CommandRunner::command`]) and hand them to the seam.
 //!
 //! The seam is dual-mode over one runner handle: [`CommandRunner::run_sync`]
 //! executes on the calling thread (the [`DuctRunner`] path the sync
 //! execution surface rides), while [`CommandRunner::run`] is the async
-//! spelling — offloaded to tokio's blocking pool under the `tokio` feature,
+//! spelling: offloaded to tokio's blocking pool under the `tokio` feature,
 //! and run in-line on the calling thread without it.
 //!
 //! The builder mirrors toride-mise's `MiseBuilder` injection pattern: set an
@@ -30,7 +30,7 @@ use crate::error::Result;
 /// Build a [`CommandSpec`] for `program` with `args`, wired the way every
 /// backend command must be wired.
 ///
-/// This helper — not raw `CommandSpec::new` — is how backends construct
+/// This helper (not raw `CommandSpec::new`) is how backends construct
 /// calls, so that stdio policy stays uniform: captured commands get
 /// `stdin_null(true)` (the child can neither block on nor steal the parent
 /// terminal's stdin; see the `stdin_null` field docs on [`CommandSpec`]).
@@ -72,7 +72,7 @@ pub struct CommandRunner {
     /// process cwd.
     cwd: Option<Utf8PathBuf>,
     /// Extra environment variables applied to every command (`BTreeMap` for
-    /// deterministic ordering — exact-match fake tests depend on it).
+    /// deterministic ordering: exact-match fake tests depend on it).
     env: BTreeMap<String, String>,
 }
 
@@ -127,7 +127,7 @@ impl CommandRunner {
     ///
     /// [`crate::Error::Command`] when the runner fails to spawn, wait, or
     /// otherwise execute the command. A non-zero exit is *not* an error
-    /// here — use [`CommandRunner::run_checked_sync`] for that.
+    /// here: use [`CommandRunner::run_checked_sync`] for that.
     pub fn run_sync(&self, spec: CommandSpec) -> Result<CommandOutput> {
         let spec = self.prepare(spec);
         Ok(self.runner.run(&spec)?)
@@ -156,13 +156,13 @@ impl CommandRunner {
     ///
     /// [`crate::Error::Command`] when the runner fails to spawn, wait, or
     /// otherwise execute the command. A non-zero exit is *not* an error
-    /// here — use [`CommandRunner::run_checked`] for that.
+    /// here: use [`CommandRunner::run_checked`] for that.
     pub async fn run(&self, spec: CommandSpec) -> Result<CommandOutput> {
         let spec = self.prepare(spec);
         self.dispatch(spec).await
     }
 
-    /// Execute a spec and fail on non-zero exits — the async spelling of
+    /// Execute a spec and fail on non-zero exits: the async spelling of
     /// [`CommandRunner::run_checked_sync`], same offloading contract as
     /// [`CommandRunner::run`].
     ///
@@ -226,7 +226,7 @@ fn join(
 /// Builder for constructing [`CommandRunner`] seams, modeled on toride-mise's
 /// `MiseBuilder` runner-injection pattern: consume-and-return setters, with
 /// the runner defaulting to a fresh [`DuctRunner`] when left unset (so,
-/// unlike mise's, [`CommandRunnerBuilder::build`] is infallible — there is
+/// unlike mise's, [`CommandRunnerBuilder::build`] is infallible: there is
 /// no binary discovery to fail).
 #[derive(Default)]
 pub struct CommandRunnerBuilder {
@@ -246,8 +246,8 @@ impl CommandRunnerBuilder {
         Self::default()
     }
 
-    /// Set the command runner (a `FakeRunner` — toride-runner's `fake`
-    /// feature — in tests, a [`DuctRunner`] or wrapper in production).
+    /// Set the command runner (a `FakeRunner`: toride-runner's `fake`
+    /// feature: in tests, a [`DuctRunner`] or wrapper in production).
     #[must_use]
     pub fn runner(mut self, runner: Arc<dyn Runner>) -> Self {
         self.runner = Some(runner);

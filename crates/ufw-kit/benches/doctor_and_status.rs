@@ -1,17 +1,17 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use ufw_kit::Ufw;
 use ufw_kit::command::{CommandLog, CommandRunner, FakeRunner};
 use ufw_kit::diff::diff_status_findings;
 use ufw_kit::doctor::doctor;
 use ufw_kit::spec::{CommandResult, CommandSpec, DoctorScope, ParsedRule};
 use ufw_kit::status;
-use ufw_kit::Ufw;
 
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/fixtures/status/");
 
@@ -165,37 +165,38 @@ fn status_rig() -> (SharedFakeRunner, Ufw) {
 
 fn doctor_repeat_oracle() {
     assert!(run_doctor_all("Status: active\n") > 0);
-    drop(run_doctor_all("Status: active\n"));
-    drop(run_doctor_all("Status: active\n"));
+    let _ = run_doctor_all("Status: active\n");
+    let _ = run_doctor_all("Status: active\n");
 
     let before_first = net_allocated_bytes();
-    drop(run_doctor_all("Status: active\n"));
+    let _ = run_doctor_all("Status: active\n");
     let first_run_delta = net_allocated_bytes() - before_first;
 
     let before_second = net_allocated_bytes();
-    drop(run_doctor_all("Status: active\n"));
+    let _ = run_doctor_all("Status: active\n");
     let second_run_delta = net_allocated_bytes() - before_second;
 
     assert_eq!(
         first_run_delta, second_run_delta,
-        "each doctor(All) run retains the same constant byte count (the leaked finding ids)"
+        "each doctor(All) run retains the same constant byte count"
     );
-    assert!(
-        first_run_delta > 0,
-        "pre-fix pin: every doctor(All) run leaks its formatted finding ids via Box::leak; \
-         the intern-once fix drives this delta to ~0 (currently {first_run_delta} bytes per run)"
+    assert_eq!(
+        first_run_delta, 0,
+        "doctor(All) must not retain bytes per run: formatted finding ids are interned once \
+         (retained {first_run_delta} bytes on a warm run)"
     );
 }
 
 fn app_info_spawn_oracle() {
     let (shared, ufw) = doctor_rig("Status: active\n");
     let findings = doctor(&ufw, DoctorScope::All).expect("doctor(All) answers");
-    assert!(!findings.is_empty());
+    assert!(matches!(findings.as_slice(), [_, ..]));
     for name in PROFILES {
         assert_eq!(
             shared.ufw_calls_with(&["app", "info", name]),
-            2,
-            "`ufw app info {name}` runs twice per profile today (validation loop plus port-conflict pass); the target is 1"
+            1,
+            "`ufw app info {name}` must run exactly once per profile across doctor(All) \
+             (the validation loop and port-conflict pass share one fetch)"
         );
     }
 }

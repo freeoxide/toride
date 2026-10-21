@@ -3,64 +3,64 @@
 //! [`FlatpakBackend`] is the [`Backend`] implementation for Flatpak on
 //! Linux: it executes the planner's [`Operation::FlatpakInstall`] /
 //! [`Operation::FlatpakUninstall`] operations through the shared
-//! [`CommandRunner`] seam — ensuring the flathub remote exists first — and
+//! [`CommandRunner`] seam (ensuring the flathub remote exists first) and
 //! answers list/status queries from `flatpak list` column output.
 //!
 //! ## Real-CLI semantics (verified against flatpak(1) man pages and source)
 //!
-//! - **Version** — `flatpak --version` prints `PACKAGE_STRING`
-//!   (`Flatpak 1.16.0`, capital F — meson.build's quoted `PACKAGE_STRING`).
-//! - **Remote ensure** — `flatpak remotes --user --columns=name` probes the
+//! - **Version**: `flatpak --version` prints `PACKAGE_STRING`
+//!   (`Flatpak 1.16.0`, capital F: meson.build's quoted `PACKAGE_STRING`).
+//! - **Remote ensure**: `flatpak remotes --user --columns=name` probes the
 //!   remotes of one installation (unscoped `remotes` shows *both*
 //!   configurations); a missing flathub is added with `flatpak remote-add
-//!   --user --if-not-exists flathub <url>` — the `NAME LOCATION` operand
+//!   --user --if-not-exists flathub <url>`: the `NAME LOCATION` operand
 //!   order of remote-add(1), with the URL flathub's own setup page tells
 //!   users (the signed `.flatpakrepo` descriptor, see
 //!   [`FLATHUB_REPO_URL`]). `--if-not-exists` makes the add idempotent even
 //!   under a race.
-//! - **Install** — `flatpak install --user --or-update --noninteractive
+//! - **Install**: `flatpak install --user --or-update --noninteractive
 //!   flathub app/<id>/<arch>/stable`. The plan's ref is a full
 //!   `(app|runtime)/ID/ARCH/BRANCH` identifier *containing slashes*, which
 //!   flatpak-install(1) treats as an exact ref (fuzzy matching is disabled
-//!   the moment a REF carries slashes or periods) — so toride installs the
+//!   the moment a REF carries slashes or periods), so toride installs the
 //!   arch it planned, never a fuzzy near-match. `--or-update` is always
 //!   added: bare install would *ignore* an already-installed ref with a
-//!   warning and exit 0, while `--or-update` turns it into an update —
+//!   warning and exit 0, while `--or-update` turns it into an update:
 //!   exactly the ensure-installed semantics the facade (A6) wants.
-//! - **Uninstall** — `flatpak uninstall --user --noninteractive <app-id>`.
+//! - **Uninstall**: `flatpak uninstall --user --noninteractive <app-id>`.
 //!   The plan carries the *bare app id* (a partial ref), which flatpak
-//!   resolves against the **installed** refs — toride never re-derives the
+//!   resolves against the **installed** refs: toride never re-derives the
 //!   ref from the planning target's arch (the manifest is the source of
 //!   truth for what was actually installed).
-//! - **Update** — `flatpak update --user --noninteractive <app-id>`: the
+//! - **Update**: `flatpak update --user --noninteractive <app-id>`: the
 //!   same bare-id resolution against installed refs, with
 //!   `--noninteractive` layered on at execution like install/uninstall.
-//! - **Listing** — `flatpak list --app
+//! - **Listing**: `flatpak list --app
 //!   --columns=application,version,origin,installation`. With captured
 //!   (non-TTY) output, flatpak's table printer emits **tab-separated,
 //!   untruncated** rows and **no header line** (the header prints only in
-//!   fancy/TTY mode — app/flatpak-table-printer.c). Unscoped `list` covers
+//!   fancy/TTY mode: app/flatpak-table-printer.c). Unscoped `list` covers
 //!   **both** the per-user and the system-wide installations
 //!   (flatpak-list(1): "By default, both per-user and system-wide
 //!   installations are shown"), with the `installation` column
 //!   disambiguating; flatpak's own `--all` flag is deliberately **not**
-//!   used — it unhides locale/debug extension refs, it does not select
+//!   used: it unhides locale/debug extension refs, it does not select
 //!   installations. See [`FlatpakListScope`].
 //!
 //! ## Split
 //!
-//! - **Detection surface** — [`FlatpakBackend::detect`] (PATH check via
+//! - **Detection surface**: [`FlatpakBackend::detect`] (PATH check via
 //!   `toride-runner`'s discovery helpers, no command executed),
 //!   [`FlatpakBackend::version`] (`flatpak --version`),
 //!   [`FlatpakBackend::ensure_remote`] (probe + conditional add).
-//! - **Trait operations** — install/uninstall/update/list/status per the
+//! - **Trait operations**: install/uninstall/update/list/status per the
 //!   [`Backend`] contract (guard-first, seam-only execution), plus the
 //!   installation-scoped [`FlatpakBackend::installed_version`] probe, the
 //!   richer [`FlatpakBackend::list_entries`], and the branch listing
 //!   [`FlatpakBackend::available_versions`] (flatpak's installable
-//!   "versions" are the remote's branches — the ref segment a
+//!   "versions" are the remote's branches: the ref segment a
 //!   version-pinned install selects).
-//! - **Column parsing** — the tab-separated listings (`list`, `remote-ls`)
+//! - **Column parsing**: the tab-separated listings (`list`, `remote-ls`)
 //!   parsed into typed rows. Per-row tolerance: a malformed row (wrong cell
 //!   count, empty application cell) is skipped, never fatal to the whole
 //!   listing; a non-empty document where *nothing* parses is treated as
@@ -70,11 +70,11 @@
 //!
 //! - [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] /
 //!   [`ensure_update_allowed`] are the first statement of the trait's
-//!   mutating operations (dry-run refusal + no auto-sudo) — before even
+//!   mutating operations (dry-run refusal + no auto-sudo), before even
 //!   the remote-ensure probe runs.
 //! - Interactivity: flatpak's install/uninstall/update prompt on
 //!   questions, so unlike homebrew the executed argv layers runtime flags
-//!   onto the plan's canonical argv — `--noninteractive` ("produce minimal
+//!   onto the plan's canonical argv: `--noninteractive` ("produce minimal
 //!   output and avoid most questions", flatpak-install(1)) on every
 //!   mutating command, plus `--or-update` on install (see above). These
 //!   are execution-time ergonomics and stay **out** of the plan's argv;
@@ -85,7 +85,7 @@
 //!   [`Error::Command`] carrying flatpak's stderr.
 //!   One classification: a failed uninstall whose stderr carries flatpak's
 //!   own typed not-installed error (exit 1, an `error:` line matching the
-//!   markers — flatpak's `FLATPAK_ERROR_NOT_INSTALLED`, wording "No
+//!   markers: flatpak's `FLATPAK_ERROR_NOT_INSTALLED`, wording "No
 //!   installed refs found for …") becomes a success noting the app was
 //!   already absent, keeping manifest-driven uninstalls idempotent. See
 //!   `NOT_INSTALLED_MARKERS`.
@@ -115,7 +115,7 @@ const FLATPAK: &str = "flatpak";
 /// The remote name toride's registry data uses for Flathub.
 pub const FLATHUB_REMOTE_NAME: &str = "flathub";
 
-/// The Flathub repository descriptor `remote-add` consumes — the signed
+/// The Flathub repository descriptor `remote-add` consumes: the signed
 /// `.flatpakrepo` file (URL + GPG key), not the bare repo URL: flathub's own
 /// setup page remote-adds exactly this URL, and the descriptor's `Url=` key
 /// (verified against the copied fixture `tests/fixtures/flatpak/
@@ -130,21 +130,21 @@ const LIST_COLUMNS_ARG: &str = "--columns=application,version,origin,installatio
 /// number of requested columns).
 const LIST_COLUMN_COUNT: usize = 4;
 
-/// The `flatpak remote-ls` `--columns` argument: the app id and its branch —
+/// The `flatpak remote-ls` `--columns` argument: the app id and its branch:
 /// the branch is flatpak's installable "version" (the ref segment a
 /// version-pinned install selects).
 const REMOTE_LS_COLUMNS_ARG: &str = "--columns=application,branch";
 
 /// Markers whose presence on a flatpak **`error:` line** classifies a failed
-/// uninstall as "the app is simply not installed" rather than a real error.
+/// uninstall as the app being absent rather than a real error.
 /// The current wording (app/flatpak-builtins-uninstall.c) is
-/// `No installed refs found for '<id>'` — typed
+/// `No installed refs found for '<id>'`: typed
 /// `FLATPAK_ERROR_NOT_INSTALLED`, exit code 1, printed as `error: …`; the
 /// quotes in the real message are Unicode curly quotes, so the markers
 /// deliberately stop short of them. The second marker covers older
 /// flatpaks and adjacent paths sharing the "… is not installed" wording.
 /// Matched case-insensitively against `error:`-prefixed lines only, and
-/// gated on exit code 1 — anything unrecognized stays a real error.
+/// gated on exit code 1: anything unrecognized stays a real error.
 const NOT_INSTALLED_MARKERS: [&str; 2] = [
     // `error: No installed refs found for ‘<id>’` (single-REF uninstall,
     // nothing installed matches)
@@ -177,20 +177,26 @@ const NOT_INSTALLED_MARKERS: [&str; 2] = [
 pub struct FlatpakBackend {
     /// The seam every flatpak command flows through.
     runner: CommandRunner,
+    /// Remotes this process has already confirmed present, per
+    /// installation; positive answers only (a miss re-probes).
+    confirmed_remotes: std::sync::Mutex<std::collections::HashSet<(FlatpakInstallation, String)>>,
 }
 
 impl FlatpakBackend {
-    /// Create the backend over an explicit seam, with no host assumptions.
+    /// Create a backend over an explicit seam, with no host assumptions.
     ///
     /// This is the test-friendly constructor: the seam's runner is
     /// injectable, so every command the backend issues is fake-able.
     #[must_use]
     pub fn new(runner: CommandRunner) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            confirmed_remotes: std::sync::Mutex::new(std::collections::HashSet::new()),
+        }
     }
 
     /// Create the backend after verifying `flatpak` is on the host `$PATH`
-    /// (via `toride-runner`'s discovery helpers — no command is executed).
+    /// (via `toride-runner`'s discovery helpers: no command is executed).
     ///
     /// Use this in production entry points; use [`FlatpakBackend::new`]
     /// under a fake runner, where the real PATH is irrelevant.
@@ -226,10 +232,13 @@ impl FlatpakBackend {
     ///
     /// Returns `true` when the remote was added now, `false` when it was
     /// already configured. The probe is scoped to `installation`
-    /// (`flatpak remotes --user|--system --columns=name` — unscoped it
+    /// (`flatpak remotes --user|--system --columns=name`: unscoped it
     /// would mix both configurations' remotes); the add carries
     /// `--if-not-exists`, so a remote added by a concurrent process still
-    /// succeeds.
+    /// succeeds. Confirmed-present answers are memoized for this backend
+    /// instance's lifetime, so repeated installs in one process probe
+    /// `flatpak remotes` at most once per (installation, remote); a
+    /// remote removed by another process mid-session is not re-detected.
     ///
     /// # Errors
     ///
@@ -240,10 +249,14 @@ impl FlatpakBackend {
         name: &str,
         url: &str,
     ) -> Result<bool> {
+        if self.remote_confirmed(installation, name) {
+            return Ok(false);
+        }
         let probe = command(FLATPAK, ["remotes", installation.flag(), "--columns=name"]);
         let output = self.runner.run_checked(probe).await?;
         let remotes = parse_remote_names(&output.stdout);
         if remotes.iter().any(|remote| remote == name) {
+            self.confirm_remote(installation, name);
             return Ok(false);
         }
         let add = command(
@@ -257,10 +270,11 @@ impl FlatpakBackend {
             ],
         );
         self.runner.run_checked(add).await?;
+        self.confirm_remote(installation, name);
         Ok(true)
     }
 
-    /// The sync twin of [`FlatpakBackend::ensure_remote`] — same probe and
+    /// The sync twin of [`FlatpakBackend::ensure_remote`]: same probe and
     /// add, executed on the calling thread.
     ///
     /// # Errors
@@ -272,10 +286,14 @@ impl FlatpakBackend {
         name: &str,
         url: &str,
     ) -> Result<bool> {
+        if self.remote_confirmed(installation, name) {
+            return Ok(false);
+        }
         let probe = command(FLATPAK, ["remotes", installation.flag(), "--columns=name"]);
         let output = self.runner.run_checked_sync(probe)?;
         let remotes = parse_remote_names(&output.stdout);
         if remotes.iter().any(|remote| remote == name) {
+            self.confirm_remote(installation, name);
             return Ok(false);
         }
         let add = command(
@@ -289,7 +307,25 @@ impl FlatpakBackend {
             ],
         );
         self.runner.run_checked_sync(add)?;
+        self.confirm_remote(installation, name);
         Ok(true)
+    }
+
+    /// Whether this process already confirmed `name` present in
+    /// `installation`.
+    fn remote_confirmed(&self, installation: FlatpakInstallation, name: &str) -> bool {
+        self.confirmed_remotes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&(installation, name.to_owned()))
+    }
+
+    /// Record `name` as present in `installation` for this process.
+    fn confirm_remote(&self, installation: FlatpakInstallation, name: &str) {
+        self.confirmed_remotes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((installation, name.to_owned()));
     }
 
     /// The full typed listing for one scope: installed applications with
@@ -311,7 +347,7 @@ impl FlatpakBackend {
         parse_list_output(&output.stdout)
     }
 
-    /// The sync twin of [`FlatpakBackend::list_entries`] — same listing,
+    /// The sync twin of [`FlatpakBackend::list_entries`]: same listing,
     /// same parsing, executed on the calling thread.
     ///
     /// # Errors
@@ -327,7 +363,7 @@ impl FlatpakBackend {
     /// scoped listing.
     ///
     /// `Ok(None)` covers both "not installed there" and "installed without
-    /// a reported version" — installation-scoped, so a user-install answer
+    /// a reported version": installation-scoped, so a user-install answer
     /// is never mistaken for a system one (or vice versa).
     ///
     /// # Errors
@@ -347,7 +383,7 @@ impl FlatpakBackend {
             .and_then(|entry| entry.version))
     }
 
-    /// The sync twin of [`FlatpakBackend::installed_version`] — same scoped
+    /// The sync twin of [`FlatpakBackend::installed_version`]: same scoped
     /// listing, executed on the calling thread.
     ///
     /// # Errors
@@ -365,7 +401,7 @@ impl FlatpakBackend {
             .and_then(|entry| entry.version))
     }
 
-    /// The branches flathub offers for `app_id` — the installable
+    /// The branches flathub offers for `app_id`: the installable
     /// "versions" a version-pinned flatpak install selects between
     /// (`flatpak remote-ls <installation-flag> --app --columns=… flathub`,
     /// the same tab-separated headerless printer the installed listing
@@ -375,13 +411,13 @@ impl FlatpakBackend {
     /// The remote is flathub deliberately: it is the only remote toride
     /// knows by name (see [`FLATHUB_REMOTE_NAME`]), and
     /// [`NativeIds::Flatpak`](crate::NativeIds::Flatpak) records no
-    /// origin, so a record-driven ask cannot name another one — an app
+    /// origin, so a record-driven ask cannot name another one: an app
     /// whose registry method names a different remote lists empty here,
     /// not its own remote's branches. Unlike the install path this query
     /// never configures the remote: a host without flathub in the probed
     /// `installation` fails with flatpak's own remote-not-found error
     /// instead of self-healing the way
-    /// [`FlatpakBackend::ensure_remote`] does — queries stay read-only.
+    /// [`FlatpakBackend::ensure_remote`] does: queries stay read-only.
     ///
     /// # Errors
     ///
@@ -406,7 +442,7 @@ impl FlatpakBackend {
         parse_remote_branches(&output.stdout, app_id)
     }
 
-    /// The sync twin of [`FlatpakBackend::available_versions`] — same
+    /// The sync twin of [`FlatpakBackend::available_versions`]: same
     /// remote listing, executed on the calling thread.
     ///
     /// # Errors
@@ -501,7 +537,7 @@ impl Backend for FlatpakBackend {
         };
         // Remote ensure: toride knows the repo descriptor URL only for
         // flathub (the registry's remote name for Flathub data). A plan
-        // naming any other remote is executed as-is — flatpak itself will
+        // naming any other remote is executed as-is: flatpak itself will
         // fail with "Remote ... not found" if it is genuinely unconfigured,
         // which is the honest error.
         if remote == FLATHUB_REMOTE_NAME {
@@ -632,7 +668,7 @@ impl Backend for FlatpakBackend {
     }
     // `status` keeps the trait's default list-derived implementation: one
     // unscoped listing covers both installations (an app may live in
-    // either), and a not-found id is `NotInstalled`, never an error — the
+    // either), and a not-found id is `NotInstalled`, never an error: the
     // listing command itself failing is the only error path. Callers that
     // know the installation (plan operations, manifest records) should
     // call `installed_version(app_id, installation)` directly.
@@ -642,8 +678,8 @@ impl Backend for FlatpakBackend {
 // ---------------------------------------------------------------------------
 
 /// Which installations a listing covers. `All` is flatpak's *unscoped*
-/// default — "both per-user and system-wide installations are shown"
-/// (flatpak-list(1)) — realized by passing **no** installation flag. It is
+/// default: "both per-user and system-wide installations are shown"
+/// (flatpak-list(1)), realized by passing **no** installation flag. It is
 /// deliberately not flatpak's `--all` flag: that unhides locale/debug
 /// extension refs, it does not select installations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -658,7 +694,7 @@ pub enum FlatpakListScope {
 }
 
 impl FlatpakListScope {
-    /// The `flatpak list` flag selecting this scope (`None` for all — the
+    /// The `flatpak list` flag selecting this scope (`None` for all: the
     /// unscoped command already covers every installation).
     #[must_use]
     pub const fn flag(self) -> Option<&'static str> {
@@ -683,7 +719,7 @@ impl From<FlatpakInstallation> for FlatpakListScope {
 /// view behind the trait's plain [`InstalledApp`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlatpakEntry {
-    /// Dotted reverse-DNS app id (`com.brave.Browser`) — the backend-native
+    /// Dotted reverse-DNS app id (`com.brave.Browser`), the backend-native
     /// id and the join key against plan operations and manifest records.
     pub application: String,
     /// Installed version when the listing reports one (apps without appdata
@@ -741,8 +777,8 @@ fn flatpak_update_spec(
 }
 
 /// Classify a dispatched `flatpak uninstall`: success carries the removal
-/// detail; "not installed" — flatpak's own typed answer for removing an
-/// absent app (exit 1 + an `error:` line matching the markers) — is a
+/// detail; "not installed": flatpak's own typed answer for removing an
+/// absent app (exit 1 + an `error:` line matching the markers), is a
 /// success noting the absence, since the desired end state already holds.
 /// The exit-code gate keeps signal kills and other failures as real errors.
 fn classify_uninstall(
@@ -763,7 +799,7 @@ fn classify_uninstall(
 }
 
 /// Build the `flatpak list` argv for a scope: verb, installation flag,
-/// `--app`, columns — options before the (empty) operand list.
+/// `--app`, columns: options before the (empty) operand list.
 fn list_args(scope: FlatpakListScope) -> Vec<&'static str> {
     let mut args = vec!["list"];
     if let Some(flag) = scope.flag() {
@@ -896,7 +932,7 @@ fn parse_remote_branches(stdout: &str, app_id: &str) -> Result<Vec<Version>> {
 
 /// The app id segment of an install ref (`app/<id>/<arch>/<branch>` → the
 /// id). `None` for refs without the `app/` prefix (runtime refs, bare ids,
-/// garbage) — callers degrade rather than mis-verify.
+/// garbage), callers degrade rather than mis-verify.
 fn app_id_from_ref(app_ref: &str) -> Option<&str> {
     let mut parts = app_ref.split('/');
     if parts.next()? != "app" {
@@ -909,7 +945,7 @@ fn app_id_from_ref(app_ref: &str) -> Option<&str> {
 /// [`NOT_INSTALLED_MARKERS`]): markers are matched only on `error:`-prefixed
 /// lines (flatpak's error prefix; progress/warning lines may mention other
 /// packages' install states), so multi-line stderr does not misclassify.
-/// Callers must additionally gate on the exit code (1) — this helper alone
+/// Callers must additionally gate on the exit code (1), this helper alone
 /// would misread a signal-killed run that had already printed the line.
 fn stderr_says_not_installed(stderr: &str) -> bool {
     stderr
@@ -962,8 +998,8 @@ mod tests {
 
     // --- test helpers ----------------------------------------------------------
 
-    /// Root of this crate's fixture tree (runtime reads, not `include_str!`
-    /// — the house pattern from conventions.md §7).
+    /// Root of this crate's fixture tree (runtime reads, not
+    /// `include_str!`): the house pattern from conventions.md §7).
     fn fixtures_dir() -> &'static Path {
         Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"))
     }
@@ -1136,7 +1172,7 @@ mod tests {
     fn parse_list_output_maps_an_empty_version_cell_to_none() {
         let entries = parse_list_output(&listing_output()).unwrap();
         // The AdwCustomizer row carries an empty version cell (no appdata
-        // version metadata) — installed, version unknown.
+        // version metadata), installed, version unknown.
         let entry = entries
             .iter()
             .find(|entry| entry.application == "io.gitlab.adwcustomizer.AdwCustomizer")
@@ -1175,7 +1211,7 @@ mod tests {
     #[test]
     fn parse_list_output_errors_when_nothing_in_a_non_empty_document_parses() {
         // Every row malformed means the output shape is wrong (a future
-        // flatpak changing columns) — that must not read as "nothing
+        // flatpak changing columns), that must not read as "nothing
         // installed".
         let error = parse_list_output("totally garbage\nnot a listing\n").unwrap_err();
         assert!(
@@ -1473,7 +1509,7 @@ mod tests {
     #[tokio::test]
     async fn install_executes_the_plans_canonical_argv_plus_runtime_flags_only() {
         let plan = install_plan_for();
-        // The plan's own argv stays free of runtime flags (the contract) —
+        // The plan's own argv stays free of runtime flags (the contract),
         // the backend layers them on at execution.
         assert_eq!(
             plan.operation.argv(),
@@ -1573,9 +1609,10 @@ mod tests {
 
     #[tokio::test]
     async fn install_skips_the_remote_ensure_for_non_flathub_remotes() {
-        // A remote toride has no descriptor URL for is used as-is: only the
-        // install and the post-verify listing may run (the strict fake has
-        // no response for any remotes probe, so a probe would fail).
+        // A non-flathub remote has no descriptor URL and is used as-is:
+        // only the install and the post-verify listing may run (the strict
+        // fake has no response for any remotes probe, so a probe would
+        // fail).
         let install_spec = command(
             FLATPAK,
             [
@@ -1859,7 +1896,7 @@ mod tests {
     #[tokio::test]
     async fn uninstall_requires_exit_one_for_the_not_installed_classification() {
         // A signal-killed flatpak (exit 130) that had already printed the
-        // not-installed line is a real error — the silent-signal and
+        // not-installed line is a real error: the silent-signal and
         // marker gates must BOTH hold.
         let spec = command(
             FLATPAK,

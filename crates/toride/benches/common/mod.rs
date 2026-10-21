@@ -57,7 +57,7 @@ pub fn fixed_capabilities() -> Capabilities {
             },
             gpu: GpuCapabilities {
                 identity: true,
-                nvidia_nvml: true,
+                nvidia_smi: true,
                 utilization: true,
                 temperature: true,
                 memory: true,
@@ -329,11 +329,11 @@ pub fn fixed_dashboard() -> DashboardScreen {
     let mut screen = DashboardScreen::new();
     screen.set_active_theme(Theme::Charm);
     let mut status = fixed_status();
-    screen.set_status(status.clone());
+    screen.set_status(std::sync::Arc::new(status.clone()));
     status.system.network.bytes_received = 1_050_000_000;
     status.system.network.bytes_transmitted = 520_000_000;
     status.collected_at += Duration::from_secs(2);
-    screen.set_status(status);
+    screen.set_status(std::sync::Arc::new(status));
     screen
 }
 

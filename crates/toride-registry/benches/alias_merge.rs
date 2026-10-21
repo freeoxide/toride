@@ -5,9 +5,7 @@ use std::time::Duration;
 use criterion::{Criterion, criterion_group, criterion_main};
 use toride_registry::adapter::Registry;
 use toride_registry::error::Result;
-use toride_registry::model::{
-    App, Availability, InstallMethod, SourceKind, SourceRef, TorideId,
-};
+use toride_registry::model::{App, Availability, InstallMethod, SourceKind, SourceRef, TorideId};
 
 const SAMPLE_SIZE: usize = 30;
 const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
@@ -22,7 +20,6 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 
 struct BucketAdapter {
     source: SourceKind,
-    extra: SourceKind,
     apps: Vec<App>,
 }
 
@@ -100,12 +97,10 @@ fn registry(size: usize) -> Registry {
     Registry::new(vec![
         Arc::new(BucketAdapter {
             source: SourceKind::HomebrewCask,
-            extra: SourceKind::HomebrewFormula,
             apps: left,
         }) as Arc<dyn toride_registry::adapter::Adapter>,
         Arc::new(BucketAdapter {
             source: SourceKind::Flathub,
-            extra: SourceKind::Distro,
             apps: right,
         }) as Arc<dyn toride_registry::adapter::Adapter>,
     ])
@@ -115,7 +110,9 @@ fn oracle() {
     let rt = runtime();
 
     let small = registry(SIZES[0]);
-    let outcome = rt.block_on(small.search("bench app")).expect("merge answers");
+    let outcome = rt
+        .block_on(small.search("bench app"))
+        .expect("merge answers");
     assert_eq!(
         outcome.apps.len(),
         SIZES[0],

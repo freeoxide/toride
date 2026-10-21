@@ -125,7 +125,6 @@ impl ToolsCollector {
     }
 
     /// Invalidate the sweep cache so the next collection re-runs the scan.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_bundle = None;
         self.bundle_fresh_at = None;

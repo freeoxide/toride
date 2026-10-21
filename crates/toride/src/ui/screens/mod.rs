@@ -394,11 +394,11 @@ mod tests {
         };
 
         let mut screen = super::dashboard::DashboardScreen::new();
-        screen.set_status(status.clone());
+        screen.set_status(std::sync::Arc::new(status.clone()));
         status.system.network.bytes_received = 1_050_000_000;
         status.system.network.bytes_transmitted = 520_000_000;
         status.collected_at = now + Duration::from_secs(2);
-        screen.set_status(status);
+        screen.set_status(std::sync::Arc::new(status));
 
         screen.fail2ban_set_available_for_test(true);
         screen.toride_updates_set_available_for_test(true, 7, 2);
@@ -578,7 +578,7 @@ mod tests {
         };
 
         let mut screen = super::dashboard::DashboardScreen::new();
-        screen.set_status(status);
+        screen.set_status(std::sync::Arc::new(status));
         let output = render_to_string(&mut screen, 160, 44);
         assert!(
             output.contains("no storage/network data"),

@@ -64,7 +64,7 @@ fn check_binaries_should_check_ip6tables() {
 fn check_binaries_should_check_nft() {
     let ufw = make_ufw_for_doctor("Status: active\n");
     let findings = check_binaries(&ufw);
-    // FakeRunner says nft exists — should be Info severity
+    // FakeRunner says nft exists: should be Info severity
     let nft_finding = findings.iter().find(|f| f.id == "bin:nft:exists");
     assert!(nft_finding.is_some());
     assert_eq!(nft_finding.unwrap().severity, Severity::Info);
@@ -323,6 +323,135 @@ fn check_rules_should_warn_on_dangerous_ports_alt() {
 }
 
 #[test]
+fn check_rules_should_not_flag_prefix_ports_as_dangerous() {
+    // Regression: 8022 matched port 22 and 19000 matched port 9000 via raw
+    // substring matching.
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n8022/tcp                   ALLOW IN    Anywhere\n19000/tcp                  ALLOW IN    Anywhere\n",
+    );
+    let findings = check_rules(&ufw);
+    assert!(
+        !findings.iter().any(|f| f.id == "rule:dangerous:22"),
+        "8022/tcp must not be flagged as exposing port 22"
+    );
+    assert!(
+        !findings.iter().any(|f| f.id == "rule:dangerous:9000"),
+        "19000/tcp must not be flagged as exposing port 9000"
+    );
+}
+
+#[test]
+fn check_rules_should_not_flag_outbound_or_restricted_rules() {
+    // Regression: 'allow out 22/tcp' was flagged as exposing SSH inbound.
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW OUT   Anywhere\n5432/tcp                   ALLOW IN    10.0.0.5\n",
+    );
+    let findings = check_rules(&ufw);
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.id == "rule:dangerous:22" && f.severity > Severity::Info),
+        "an outbound 22 rule must not be flagged as exposing SSH inbound"
+    );
+    assert!(
+        !findings.iter().any(|f| f.id == "rule:dangerous:5432"),
+        "a 5432 rule restricted to 10.0.0.5 is not exposed to any source"
+    );
+}
+
+#[test]
+fn check_rules_should_report_port_22_as_info() {
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n",
+    );
+    let findings = check_rules(&ufw);
+    let ssh = findings
+        .iter()
+        .find(|f| f.id == "rule:dangerous:22")
+        .expect("port 22 still reported, at Info severity");
+    assert_eq!(ssh.severity, Severity::Info);
+}
+
+#[test]
+fn check_policy_should_not_be_silenced_by_mdns_rule() {
+    // Regression: 'allow out 5353/udp' used to suppress the no-DNS warning
+    // because "5353" contains "53".
+    let output = "Status: active\nDefault: deny (incoming), deny (outgoing)\nLogging: on\n";
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n5353/udp                   ALLOW OUT   Anywhere\n")
+        .respond_ok("ufw", &["status", "verbose"], output)
+        .respond_ok("ufw", &["app", "list"], "");
+    let ufw = Ufw::with_runner(runner);
+    let findings = check_policy(&ufw);
+    assert!(
+        findings.iter().any(|f| f.id == "pol:outgoing:no-dns"),
+        "an mDNS (5353/udp) rule must not satisfy the DNS check"
+    );
+}
+
+#[test]
+fn check_policy_should_accept_dns_rule_by_token() {
+    let output = "Status: active\nDefault: deny (incoming), deny (outgoing)\nLogging: on\n";
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n53/udp                     ALLOW OUT   Anywhere\n123/udp                    ALLOW OUT   Anywhere\n443/tcp                    ALLOW OUT   Anywhere\n")
+        .respond_ok("ufw", &["status", "verbose"], output)
+        .respond_ok("ufw", &["app", "list"], "");
+    let ufw = Ufw::with_runner(runner);
+    let findings = check_policy(&ufw);
+    assert!(!findings.iter().any(|f| f.id == "pol:outgoing:no-dns"));
+    assert!(!findings.iter().any(|f| f.id == "pol:outgoing:no-ntp"));
+    assert!(!findings.iter().any(|f| f.id == "pol:outgoing:no-https"));
+}
+
+#[test]
+fn check_app_profile_references_should_not_flood_port_rules() {
+    // Regression: the skip guard tested "22/tcp".parse::<u16>(), which never
+    // parses, so every plain port rule was reported as an unknown profile.
+    // The rig's installed profile is OpenSSH.
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n80/tcp                     ALLOW IN    Anywhere\nOpenSSH                    ALLOW IN    Anywhere\n",
+    );
+    let findings = doctor(&ufw, DoctorScope::AppProfiles).unwrap();
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.id == "app:rule:unknown-profile-ref"),
+        "port targets and the installed 'OpenSSH' profile must not be reported unknown: {findings:?}"
+    );
+}
+
+#[test]
+fn check_app_profile_references_should_flag_unknown_profile_name() {
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\nGhostApp                   ALLOW IN    Anywhere\n",
+    );
+    let findings = doctor(&ufw, DoctorScope::AppProfiles).unwrap();
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.id == "app:rule:unknown-profile-ref"),
+        "a non-numeric, non-keyword To column absent from the profile list must be reported"
+    );
+}
+
+#[test]
+fn check_permissions_should_not_emit_duplicate_findings() {
+    let ufw = make_ufw_for_doctor("Status: active\n");
+    let findings = check_permissions(&ufw);
+    let mut ids: Vec<&str> = findings.iter().map(|f| f.id).collect();
+    let total = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        total,
+        "permission findings must be unique: {findings:?}"
+    );
+}
+
+#[test]
 fn doctor_should_handle_empty_rules() {
     let ufw = make_ufw_for_doctor(
         "Status: active\n\nTo                         Action      From\n--                         ------      ----\n",
@@ -385,7 +514,7 @@ fn check_ipv6_without_config_file_should_be_graceful() {
         .ok()
         .map(|c| crate::config::parse_default_ufw(&c))
         .unwrap_or_default();
-    // On macOS/CI this file likely doesn't exist — should return default (ipv6 = None)
+    // On macOS/CI this file likely doesn't exist: should return default (ipv6 = None)
     // On Linux with ufw installed it may return Some(true/false)
     assert!(config.ipv6.is_none() || config.ipv6 == Some(true) || config.ipv6 == Some(false));
 }
@@ -476,7 +605,7 @@ fn check_config_should_parse_enabled_consistency() {
 
     assert_eq!(default_config.enabled, Some(true));
     assert_eq!(conf.enabled, Some(false));
-    // They differ — doctor would emit cfg:enabled:inconsistent
+    // They differ: doctor would emit cfg:enabled:inconsistent
 }
 
 #[test]
@@ -493,7 +622,7 @@ fn check_config_should_parse_loglevel_validity() {
 
 #[test]
 fn check_rules_should_detect_shadowed_deny() {
-    // allow 22, then deny 22 — the deny is shadowed
+    // allow 22, then deny 22: the deny is shadowed
     let ufw = make_ufw_for_doctor(
         "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n22/tcp                     DENY        Anywhere\n",
     );
@@ -503,7 +632,7 @@ fn check_rules_should_detect_shadowed_deny() {
 
 #[test]
 fn check_rules_should_not_flag_non_shadowed() {
-    // deny 22, then allow 22 — not shadowed (deny first, allow after — normal)
+    // deny 22, then allow 22: not shadowed (deny first, allow after: normal)
     let ufw = make_ufw_for_doctor(
         "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     DENY        Anywhere\n22/tcp                     ALLOW       Anywhere\n",
     );
@@ -636,7 +765,7 @@ fn framework_findings(content: &str) -> Vec<Finding> {
 #[test]
 fn framework_should_flag_nat_table_missing_commit() {
     // A *nat table present but only a single COMMIT line (the filter table's)
-    // must be flagged — the NAT table needs its own COMMIT. Previously this was
+    // must be flagged: the NAT table needs its own COMMIT. Previously this was
     // masked by `!content.matches("COMMIT").count() >= 2`, where the `!` bound
     // to the usize count (bitwise NOT) before `>=`, making the guard always
     // true whenever a *nat table existed.
@@ -660,7 +789,7 @@ COMMIT
 #[cfg(feature = "framework")]
 #[test]
 fn framework_should_not_flag_nat_table_with_both_commits() {
-    // Both tables have their own COMMIT line — no NAT finding should appear.
+    // Both tables have their own COMMIT line: no NAT finding should appear.
     let content = "\
 *filter
 :INPUT ACCEPT [0:0]

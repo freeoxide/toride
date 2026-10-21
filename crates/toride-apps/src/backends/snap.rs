@@ -8,25 +8,25 @@
 //!
 //! ## Real-CLI semantics (verified against snapd 2.66.1 source)
 //!
-//! - **Version** — `snap version` prints one space-aligned `key  value`
+//! - **Version**: `snap version` prints one space-aligned `key  value`
 //!   row each for `snap` (the client), `snapd`, `series`, the OS, and the
 //!   kernel; the client `snap` row is the version this backend reports.
-//! - **Install** — `snap install <name> [--channel=<track>/<risk>[/branch]]`.
+//! - **Install**: `snap install <name> [--channel=<track>/<risk>[/branch]]`.
 //!   A snap already installed is *not* an error: snapd's
 //!   snap-already-installed notice prints bare (no `error:` prefix) and the
 //!   command exits 0 (cmd/snap/error.go prints it without the error
 //!   prefix), so a repeat install is a successful no-op for the
 //!   ensure-installed semantics the facade wants. An unknown snap fails
 //!   with exit 1 and `error: snap "<name>" not found`.
-//! - **Uninstall** — `snap remove <name>`: snap's own verb. Removing a
+//! - **Uninstall**: `snap remove <name>`: snap's own verb. Removing a
 //!   snap that is not installed is likewise an exit-0 success carrying
 //!   snapd's bare `snap "<name>" is not installed` notice (the CLI maps
 //!   the daemon's snap-not-installed kind to a non-error for remove), so
 //!   manifest-driven uninstalls stay idempotent.
-//! - **Update** — `snap refresh <name>`: an up-to-date snap refreshes to
+//! - **Update**: `snap refresh <name>`: an up-to-date snap refreshes to
 //!   an exit-0 success with a bare `snap "<name>" has no updates
 //!   available` notice.
-//! - **Listing** — `snap list` renders through Go's tabwriter (minwidth 5,
+//! - **Listing**: `snap list` renders through Go's tabwriter (minwidth 5,
 //!   padding 2) as a **header row plus one row per snap**, space-aligned:
 //!   every column separator is two or more spaces, and single spaces stay
 //!   inside cells (publisher display names carry them). The six columns
@@ -34,29 +34,29 @@
 //!   or tracking channel renders as `-`, and Notes renders `-` when
 //!   nothing applies. A host with zero snaps prints the notice to stderr
 //!   and nothing at all to stdout, still exiting 0.
-//! - **Per-snap listing** — `snap list <name>`: the same table for one
+//! - **Per-snap listing**: `snap list <name>`: the same table for one
 //!   snap; a name nothing matches fails with exit 1 and
 //!   `error: no matching snaps installed` (the CLI's `ErrNoMatchingSnaps`).
-//! - **Outdated** — `snap refresh --list`: the same tabwriter shape with
+//! - **Outdated**: `snap refresh --list`: the same tabwriter shape with
 //!   columns Name, Version, Rev, Size, Publisher, Notes, where Version is
 //!   the revision snapd would move *to* (the rows come from the store's
 //!   refresh listing, so the installed version is not in the table). With
 //!   no refreshes pending, `All snaps up to date.` rides stderr with an
 //!   empty stdout and exit 0.
-//! - **Errors** — every real failure prints `error: <message>` to stderr
+//! - **Errors**: every real failure prints `error: <message>` to stderr
 //!   and exits 1; snapd being down surfaces as
 //!   `error: cannot communicate with server: <reason>` on every command.
 //!
 //! ## Split
 //!
-//! - **Detection surface** — [`SnapBackend::detect`] (PATH check via
+//! - **Detection surface**: [`SnapBackend::detect`] (PATH check via
 //!   `toride-runner`'s discovery helpers, no command executed) and
 //!   [`SnapBackend::version`] (`snap version`).
-//! - **Trait operations** — install/uninstall/update/list/status per the
+//! - **Trait operations**: install/uninstall/update/list/status per the
 //!   [`Backend`] contract (guard-first, seam-only execution), plus the
 //!   status override riding the cheaper per-snap listing and the outdated
 //!   override parsing `snap refresh --list`.
-//! - **Table parsing** — the space-aligned listings parsed into typed
+//! - **Table parsing**: the space-aligned listings parsed into typed
 //!   rows. Per-row tolerance: a malformed row (wrong cell count) is
 //!   skipped, never fatal to the whole listing; a non-empty document where
 //!   nothing parses is treated as unparseable output, not as an empty
@@ -68,15 +68,15 @@
 //!   [`ensure_update_allowed`] are the first statement of the trait's
 //!   mutating operations.
 //! - Interactivity: unlike flatpak, snap never prompts, so the executed
-//!   argv is **exactly** the plan's canonical argv — no runtime flags are
+//!   argv is **exactly** the plan's canonical argv: no runtime flags are
 //!   layered on (there is nothing to suppress).
 //! - Error mapping: non-zero exits surface as [`Error::Command`] carrying
 //!   snapd's stderr. Two classifications: a `snap remove` whose stderr
 //!   carries snapd's not-installed wording (exit 0 bare notice, or exit 1
 //!   under an `error:` prefix) becomes a success noting the snap was
 //!   already absent; an install whose stderr carries the already-installed
-//!   notice is annotated in the outcome detail. Everything else — snapd
-//!   unreachable, unknown snap, permission failures — stays a real error.
+//!   notice is annotated in the outcome detail. Everything else: snapd
+//!   unreachable, unknown snap, permission failures: stays a real error.
 //!   See `NOT_INSTALLED_MARKER` / `ALREADY_INSTALLED_MARKER`.
 //!
 //! [`Operation::SnapInstall`]: crate::Operation::SnapInstall
@@ -108,11 +108,11 @@ const SNAP: &str = "snap";
 const TABLE_COLUMN_COUNT: usize = 6;
 
 /// Marker whose presence in a `snap remove`'s stderr classifies the outcome
-/// as "the snap is simply not installed" rather than a real error.
+/// as the snap being absent rather than a real error.
 /// snapd's wording (snap/errors.go, `NotInstalledError`) is
 /// `snap "<name>" is not installed`, printed bare (no `error:` prefix) with
-/// exit 0 on the remove path — cmd/snap/error.go downgrades the
-/// snap-not-installed kind to a notice for remove — so the marker cannot
+/// exit 0 on the remove path: cmd/snap/error.go downgrades the
+/// snap-not-installed kind to a notice for remove, so the marker cannot
 /// require an `error:` prefix the way flatpak's does. Matched
 /// case-insensitively against any stderr line.
 const NOT_INSTALLED_MARKER: &str = "is not installed";
@@ -122,8 +122,8 @@ const NOT_INSTALLED_MARKER: &str = "is not installed";
 /// `error:` prefix with exit 1.
 const NO_MATCHING_SNAPS_MARKER: &str = "no matching snaps installed";
 
-/// Marker for snapd's already-installed notice on an exit-0 install —
-/// `snap "<name>" is already installed, see 'snap help refresh'` — which
+/// Marker for snapd's already-installed notice on an exit-0 install:
+/// `snap "<name>" is already installed, see 'snap help refresh'`, which
 /// annotates the install outcome rather than failing it.
 const ALREADY_INSTALLED_MARKER: &str = "already installed";
 // ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ impl SnapBackend {
     }
 
     /// Create the backend after verifying `snap` is on the host `$PATH`
-    /// (via `toride-runner`'s discovery helpers — no command is executed).
+    /// (via `toride-runner`'s discovery helpers: no command is executed).
     ///
     /// Use this in production entry points; use [`SnapBackend::new`] under
     /// a fake runner, where the real PATH is irrelevant.
@@ -209,7 +209,7 @@ impl SnapBackend {
         parse_list_output(&output.stdout)
     }
 
-    /// The sync twin of [`SnapBackend::list_entries`] — same listing, same
+    /// The sync twin of [`SnapBackend::list_entries`]: same listing, same
     /// parsing, executed on the calling thread.
     ///
     /// # Errors
@@ -432,7 +432,7 @@ impl Backend for SnapBackend {
 /// trait's plain [`InstalledApp`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapEntry {
-    /// Snap name (`firefox`) — the backend-native id and the join key
+    /// Snap name (`firefox`), the backend-native id and the join key
     /// against plan operations and manifest records.
     pub name: String,
     /// Installed version when the listing reports one (a snap without
@@ -449,7 +449,7 @@ pub struct SnapEntry {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-/// The canonical `snap install` spec the plan's operation executes —
+/// The canonical `snap install` spec the plan's operation executes:
 /// identical to the plan's argv: snap never prompts, so there are no
 /// runtime flags to layer on.
 fn snap_install_spec(name: &str, channel: Option<&str>) -> toride_runner::CommandSpec {
@@ -470,8 +470,8 @@ fn snap_refresh_spec(name: &str) -> toride_runner::CommandSpec {
 }
 
 /// Classify a dispatched `snap remove`: success carries the removal
-/// detail; snapd's own not-installed answer — the bare exit-0 notice, or
-/// the `error:`-prefixed exit 1 — is a success noting the absence, since
+/// detail; snapd's own not-installed answer: the bare exit-0 notice, or
+/// the `error:`-prefixed exit 1: is a success noting the absence, since
 /// the desired end state already holds. The exit-code gate on the error
 /// path keeps signal kills and other failures as real errors.
 fn classify_uninstall(
@@ -563,7 +563,7 @@ fn parse_list_output(stdout: &str) -> Result<Vec<SnapEntry>> {
 /// Parse the space-aligned `snap refresh --list` table into stale-item
 /// records. The table's Version column is the revision snapd would move
 /// *to*, so it fills `current_version` and `installed_versions` stays
-/// empty — the refresh listing does not carry the installed revision.
+/// empty: the refresh listing does not carry the installed revision.
 /// Same tolerance shape as [`parse_list_output`].
 ///
 /// # Errors
@@ -601,7 +601,7 @@ fn parse_refresh_list(stdout: &str) -> Result<Vec<OutdatedEntry>> {
 }
 
 /// Parse `snap version` output: the first whitespace-split row whose key
-/// is exactly `snap` (the client — `snapd` is the daemon's row) contributes
+/// is exactly `snap` (the client: `snapd` is the daemon's row) contributes
 /// its value.
 ///
 /// # Errors
@@ -870,7 +870,7 @@ mod tests {
 
     #[test]
     fn parse_list_output_errors_when_nothing_in_a_non_empty_document_parses() {
-        // Every row malformed means the output shape is wrong — that must
+        // Every row malformed means the output shape is wrong: that must
         // not read as "nothing installed".
         let error = parse_list_output("totally garbage\nnot a listing\n").unwrap_err();
         assert!(
@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn stderr_classification_matches_the_not_installed_notice_bare_and_prefixed() {
         // The exit-0 path prints the notice bare; an error-path rendering
-        // carries the `error:` prefix — both classify.
+        // carries the `error:` prefix: both classify.
         for stderr in [
             "snap \"firefox\" is not installed\n",
             "error: snap \"firefox\" is not installed\n",
@@ -1031,7 +1031,7 @@ mod tests {
     async fn install_executes_the_plans_canonical_argv_exactly() {
         let plan = default_install_plan();
         // Snap never prompts, so the executed argv IS the plan's canonical
-        // argv — nothing is layered on at execution.
+        // argv: nothing is layered on at execution.
         assert_eq!(plan.operation.argv(), ["snap", "install", "firefox"]);
         let fake = FakeRunner::new()
             .strict()

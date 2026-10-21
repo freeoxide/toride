@@ -43,6 +43,8 @@ pub struct FirewallCollector {
     rx: Option<oneshot::Receiver<(FirewallDataBundle, bool)>>,
     cached_findings: Option<Vec<FindingEntry>>,
     findings_fresh_at: Option<std::time::Instant>,
+    cached_bundle: Option<FirewallDataBundle>,
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
@@ -61,6 +63,8 @@ impl FirewallCollector {
             rx: None,
             cached_findings: None,
             findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -77,6 +81,16 @@ impl FirewallCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
+        if let (Some(bundle), Some(at)) = (&self.cached_bundle, self.bundle_fresh_at)
+            && at.elapsed() < FINDINGS_TTL
+        {
+            self.rx = Some(rx);
+            let bundle = bundle.clone();
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
@@ -104,6 +118,8 @@ impl FirewallCollector {
                     self.cached_findings = Some(bundle.findings.clone());
                     if !used_cache {
                         self.findings_fresh_at = Some(std::time::Instant::now());
+                        self.cached_bundle = Some(bundle.clone());
+                        self.bundle_fresh_at = Some(std::time::Instant::now());
                     }
                 }
                 self.rx = None;
@@ -114,10 +130,11 @@ impl FirewallCollector {
     }
 
     /// Invalidate the findings cache so the next collection re-runs the doctor.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 

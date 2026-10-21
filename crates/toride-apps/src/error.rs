@@ -10,7 +10,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// A backend command failed — spawn failure, non-zero exit, timeout, or
+    /// A backend command failed: spawn failure, non-zero exit, timeout, or
     /// unparseable output. Raised at the **execute** stage by the runner
     /// seam; wraps the shared runner error verbatim.
     #[error("backend command failed: {0}")]
@@ -18,7 +18,7 @@ pub enum Error {
 
     /// The registry source marked the app `disabled`, so it cannot be
     /// installed. Raised at the **plan** stage by [`plan_install`]
-    /// ([`Availability::Disabled`] on the model; deprecated apps still plan —
+    /// ([`Availability::Disabled`] on the model; deprecated apps still plan:
     /// warning about them is the caller's/UI's job, not an error).
     ///
     /// [`plan_install`]: crate::plan_install
@@ -42,7 +42,7 @@ pub enum Error {
         claims: Vec<Platform>,
     },
 
-    /// The install method has no applicable backend on the host target —
+    /// The install method has no applicable backend on the host target:
     /// wrong OS, wrong distro family, a `Direct` method without the
     /// `direct` feature enabled, or an install technology this crate does
     /// not route yet. Raised at the **plan** stage.
@@ -62,7 +62,7 @@ pub enum Error {
 
     /// An operation needs root privileges but the caller did not grant
     /// elevation. Raised at the **execute** stage: distro managers require
-    /// root to install/remove, and toride never runs `sudo` itself — the
+    /// root to install/remove, and toride never runs `sudo` itself: the
     /// caller arranges elevation and asserts it via the request's
     /// `elevated` flag, or the backend refuses.
     #[error(
@@ -78,7 +78,7 @@ pub enum Error {
     /// A plan marked `dry_run` was handed to an executing backend. Mutating
     /// backends refuse dry-run plans instead of executing them; render the
     /// plan's argv instead of executing it.
-    #[error("plan for `{app}` is marked dry-run; refusing to execute — render the plan instead")]
+    #[error("plan for `{app}` is marked dry-run; refusing to execute: render the plan instead")]
     DryRun {
         /// Canonical toride id of the app whose plan was refused.
         app: String,
@@ -95,7 +95,7 @@ pub enum Error {
     /// managers take no per-version install operand in this crate's argv
     /// model, so the refusal happens before any backend is selected.
     #[error(
-        "cannot install `{app}` at version {version} via {method}: the method takes no version operand — pass version: None"
+        "cannot install `{app}` at version {version} via {method}: the method takes no version operand: pass version: None"
     )]
     VersionNotSelectable {
         /// Canonical toride id of the app.
@@ -112,7 +112,7 @@ pub enum Error {
     /// The requested install version cannot be spelled into the method's
     /// native addressing (an empty version, a brew token that already
     /// names a versioned track, a flatpak version carrying the ref
-    /// separator). Raised at the **plan** stage — the malformed address
+    /// separator). Raised at the **plan** stage: the malformed address
     /// (`token@`, `app/<id>/<arch>/`) is refused here rather than deferred
     /// to a confusing execute-time error.
     #[error("cannot install `{app}` at version {version}: {reason}")]
@@ -139,7 +139,7 @@ pub enum Error {
         reason: String,
     },
 
-    /// The toride-installer pipeline failed for a direct download —
+    /// The toride-installer pipeline failed for a direct download:
     /// resolve, download, digest, verify, extract, or the atomic install
     /// write (gated with the `direct` feature).
     #[cfg(feature = "direct")]

@@ -10,9 +10,7 @@ use crate::error::{Error, Result};
 use crate::spec::CommandSpec;
 use std::time::Duration;
 
-// ============================================================================
 // Types
-// ============================================================================
 
 /// A parsed nftables ruleset.
 #[derive(Debug, Clone, Default)]
@@ -76,9 +74,7 @@ pub struct NftSet {
     pub size: Option<usize>,
 }
 
-// ============================================================================
 // JSON parsing (lightweight, no serde_json dependency)
-// ============================================================================
 
 /// Parse nftables JSON output from `nft -j list ruleset`.
 ///
@@ -347,6 +343,10 @@ fn parse_sets(content: &str) -> Vec<NftSet> {
 }
 
 /// Extract a JSON string value for a key.
+///
+/// Bytes are accumulated and decoded with [`String::from_utf8_lossy`] at
+/// the closing quote, so non-ASCII UTF-8 in table, chain, or comment names
+/// survives instead of decoding as Latin-1 mojibake.
 fn extract_json_string(json: &str, key: &str) -> Option<String> {
     let pos = json.find(key)?;
     let after_key = &json[pos + key.len()..];
@@ -360,24 +360,24 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
     // Find the closing quote (handle escaped quotes)
     let bytes = after_colon.as_bytes();
     let mut i = 1; // skip opening quote
-    let mut result = String::new();
+    let mut result: Vec<u8> = Vec::new();
 
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => {
                 // Escaped character
                 if i + 1 < bytes.len() {
-                    result.push(bytes[i + 1] as char);
+                    result.push(bytes[i + 1]);
                     i += 2;
                 } else {
                     break;
                 }
             }
             b'"' => {
-                return Some(result);
+                return Some(String::from_utf8_lossy(&result).into_owned());
             }
             b => {
-                result.push(b as char);
+                result.push(b);
                 i += 1;
             }
         }
@@ -456,7 +456,7 @@ fn extract_json_array_content<'a>(json: &'a str, key: &str) -> Option<&'a str> {
             }
         }
     } else if after_colon.starts_with('{') {
-        // Single object — return it
+        // Single object: return it
         let mut depth = 0;
         for (i, ch) in after_colon.char_indices() {
             match ch {
@@ -475,9 +475,7 @@ fn extract_json_array_content<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-// ============================================================================
 // Inspection functions
-// ============================================================================
 
 /// Inspect nftables ruleset as structured JSON.
 ///
@@ -693,6 +691,19 @@ mod tests {
             summary.ends_with("..."),
             "truncated summary should end with ..., got: {summary:?}"
         );
+    }
+
+    #[test]
+    fn extract_json_string_decodes_multibyte_utf8() {
+        // Regression: pushing each byte as a char decoded non-ASCII bytes as
+        // Latin-1 mojibake ("u\u{301}"-style garbage instead of "ü").
+        let json = "{\"name\": \"düpen-ft\"}";
+        let name = extract_json_string(json, "\"name\"").expect("name extracts");
+        assert_eq!(name, "düpen-ft");
+
+        let comment_json = "{\"comment\": \"fléchée → règle\"}";
+        let comment = extract_json_string(comment_json, "\"comment\"").expect("comment extracts");
+        assert_eq!(comment, "fléchée → règle");
     }
 
     #[test]

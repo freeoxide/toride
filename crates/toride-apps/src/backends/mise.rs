@@ -37,7 +37,7 @@ pub struct MiseBackend {
 
 impl MiseBackend {
     /// Create the backend over a toride-mise client (the async surface) and
-    /// a command seam (the sync twins) — the test-friendly constructor.
+    /// a command seam (the sync twins), the test-friendly constructor.
     #[must_use]
     pub fn new(mise: Mise, runner: CommandRunner) -> Self {
         Self { mise, runner }
@@ -46,7 +46,7 @@ impl MiseBackend {
     /// Create the backend after discovering a mise binary offline
     /// ([`MiseBinary::discover_offline`]: `MISE_BIN` override, `$PATH`,
     /// the managed install location, the system-wide fallback, the
-    /// app-bundled path — file checks only). No command executes here;
+    /// app-bundled path: file checks only). No command executes here;
     /// the toride-mise client defaults to a tokio-backed async runner and
     /// carries no version until a verb asks mise for one.
     ///

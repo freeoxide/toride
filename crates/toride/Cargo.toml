@@ -27,7 +27,12 @@ futures = "0.3"
 color-eyre = "0.6"
 ratatui-interact = "0.5.3"
 
-toride-ssh = { path = "../toride-ssh", version = "0.2.0", features = ["full"] }
+# Everything SshManager drives from the SSH screens (keys, config, agent,
+# known-hosts, authorized-keys, doctor, forward, certificate); exec and
+# upload stay off until the app-layer execution wiring lands.
+toride-ssh = { path = "../toride-ssh", version = "0.2.0", features = [
+    "agent", "known-hosts", "authorized-keys", "doctor", "forward", "certificate",
+] }
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

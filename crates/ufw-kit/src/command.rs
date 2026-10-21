@@ -17,9 +17,7 @@ use toride_runner::Runner as _;
 use crate::error::{Error, Result};
 use crate::spec::{CommandResult, CommandSpec};
 
-// ────────────────────────────────────────────────────────────────────────────
 // Trait
-// ────────────────────────────────────────────────────────────────────────────
 
 /// Trait for executing commands.
 ///
@@ -32,9 +30,7 @@ pub trait CommandRunner: Send + Sync {
     fn binary_exists(&self, name: &str) -> bool;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
 // Shared-spec conversion
-// ────────────────────────────────────────────────────────────────────────────
 
 /// Convert a local [`CommandSpec`] into a [`toride_runner::CommandSpec`].
 ///
@@ -69,9 +65,7 @@ fn to_local_result(output: &toride_runner::CommandOutput) -> CommandResult {
     }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
 // DuctRunner (wraps toride_runner::DuctRunner)
-// ────────────────────────────────────────────────────────────────────────────
 
 /// Real command runner using `duct`.
 pub struct DuctRunner;
@@ -92,7 +86,7 @@ impl Default for DuctRunner {
 impl CommandRunner for DuctRunner {
     fn run(&self, spec: &CommandSpec) -> Result<CommandResult> {
         // Build the display form of the arguments up front so any trace/log
-        // emission in this function — including the failure branch — uses the
+        // emission in this function: including the failure branch: uses the
         // redacted form when the caller opted into it. The executing runner
         // additionally honours `redact_logs` via `to_shared_spec`.
         let display_args = if spec.redact_logs {
@@ -137,9 +131,7 @@ impl CommandRunner for DuctRunner {
     }
 }
 
-// ============================================================================
 // Fake runner for tests
-// ============================================================================
 
 /// A fake command runner for testing.
 ///
@@ -353,9 +345,7 @@ pub fn redact_args(args: &[String]) -> String {
     result.join(" ")
 }
 
-// ============================================================================
 // Tests
-// ============================================================================
 
 #[cfg(test)]
 #[path = "command.test.rs"]

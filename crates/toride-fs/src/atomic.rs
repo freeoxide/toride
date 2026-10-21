@@ -149,6 +149,34 @@ fn real_chmod(path: &Path, perms: u32) -> std::io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(perms))
 }
 
+/// Write raw bytes to `path` atomically, then set file permissions.
+///
+/// Byte-level twin of [`atomic_write_with_perms`]: same write-rename-chmod
+/// sequence and rollback-on-chmod-failure contract, but the payload is not
+/// required to be valid UTF-8. Use it to restore arbitrary file contents
+/// while preserving the original mode.
+///
+/// # Errors
+///
+/// Returns [`Error::AtomicWriteFailed`] if the write or persist fails.
+/// Returns [`Error::Io`] if the permission change fails (Unix only); the
+/// rollback restore itself is best-effort and its failure, if any, is traced.
+pub fn atomic_write_bytes_with_perms(path: &Path, content: &[u8], perms: u32) -> Result<()> {
+    #[cfg(unix)]
+    let before = snapshot_pre_rename(path);
+    atomic_write_bytes_with_mode(path, content, perms)?;
+
+    #[cfg(unix)]
+    enforce_mode_with_rollback(path, perms, before, real_chmod)?;
+
+    tracing::debug!(
+        path = %path.display(),
+        mode = format!("{perms:o}"),
+        "atomic byte write with permissions complete"
+    );
+    Ok(())
+}
+
 /// Content and mode of an existing regular file at the target path, captured
 /// before the rename so a failed post-rename `chmod` can restore it.
 #[cfg(unix)]

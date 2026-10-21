@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::hint::black_box;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -36,6 +37,10 @@ fn rig() -> Rig {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one bench group per fixture; splitting adds no clarity"
+)]
 fn known_hosts_fingerprint_pass(c: &mut Criterion) {
     let rig = rig();
     let rt = runtime();
@@ -63,9 +68,11 @@ fn known_hosts_fingerprint_pass(c: &mut Criterion) {
         if index == CONFIG_LINES / 2 + 2 {
             config.push_str("UpdateHostKeys yes\n");
         }
-        config.push_str(&format!(
-            "Host filler-{index:03}\n    ServerAliveInterval 60\n    Compression no\n"
-        ));
+        writeln!(
+            config,
+            "Host filler-{index:03}\n    ServerAliveInterval 60\n    Compression no"
+        )
+        .expect("write to String cannot fail");
     }
     std::fs::write(&config_path, config).expect("write ssh config fixture");
 
@@ -93,7 +100,9 @@ fn known_hosts_fingerprint_pass(c: &mut Criterion) {
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);
     group.throughput(Throughput::Bytes(
-        std::fs::metadata(&config_path).expect("config fixture present").len(),
+        std::fs::metadata(&config_path)
+            .expect("config fixture present")
+            .len(),
     ));
 
     group.bench_function("update_host_keys_scan", |b| {
@@ -110,7 +119,10 @@ fn known_hosts_fingerprint_pass(c: &mut Criterion) {
             let status = rt
                 .block_on(config_service.verify_host_key_dns_status())
                 .expect("config scan answers");
-            black_box(matches!(status, toride_ssh_known_hosts::DnsVerifyStatus::Enabled))
+            black_box(matches!(
+                status,
+                toride_ssh_known_hosts::DnsVerifyStatus::Enabled
+            ))
         });
     });
 

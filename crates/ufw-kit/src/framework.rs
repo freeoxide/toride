@@ -36,36 +36,62 @@ fn end_marker(id: &str) -> String {
     format!("<<< ufw-kit {id}")
 }
 
-/// Insert or replace a managed block in a file's content.
-pub fn upsert_block(content: &str, block: &FrameworkRuleBlock) -> Result<String> {
-    let start = start_marker(&block.id);
-    let end = end_marker(&block.id);
+/// Locate a managed block's byte range (start line through end line,
+/// including the end line's trailing newline).
+///
+/// Markers match only as whole lines (`# >>> ufw-kit <id>` exactly to
+/// end-of-line), so id `foo` never matches block `foo-bar`. A start marker
+/// without a closing end marker is an error, not an append candidate.
+fn block_range(content: &str, id: &str) -> Result<Option<(usize, usize)>> {
+    let start_line = format!("# {}", start_marker(id));
+    let end_line = format!("# {}", end_marker(id));
 
-    let block_text = format!("# {start}\n{}\n# {end}\n", block.content.trim_end());
-
-    // Find existing block
-    if let Some(start_idx) = content.find(&start) {
-        // Find the end marker after the start
-        let after_start = &content[start_idx..];
-        if let Some(end_rel) = after_start.find(&end) {
-            let end_idx = start_idx + end_rel + end.len();
-            // Find the newline after end marker
-            let after_end = if content[end_idx..].starts_with('\n') {
-                &content[end_idx + 1..]
-            } else {
-                &content[end_idx..]
-            };
-
-            // Replace: everything before start + new block + everything after end
-            let mut result = String::new();
-            result.push_str(&content[..start_idx]);
-            result.push_str(&block_text);
-            result.push_str(after_end);
-            return Ok(result);
+    let mut offset = 0usize;
+    let mut start_at: Option<usize> = None;
+    for line in content.split_inclusive('\n') {
+        let line_end = offset + line.len();
+        let trimmed = line.trim();
+        if start_at.is_none() {
+            if trimmed == start_line {
+                start_at = Some(offset);
+            }
+        } else if trimmed == end_line {
+            return Ok(Some((start_at.unwrap_or(0), line_end)));
         }
+        offset = line_end;
     }
 
-    // Block doesn't exist — append
+    if start_at.is_some() {
+        Err(Error::FrameworkBlockError(format!(
+            "managed block '{id}' has a start marker without an end marker"
+        )))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Insert or replace a managed block in a file's content.
+///
+/// # Errors
+///
+/// Returns [`Error::FrameworkBlockError`] when an orphan start marker for
+/// the block id exists.
+pub fn upsert_block(content: &str, block: &FrameworkRuleBlock) -> Result<String> {
+    let block_text = format!(
+        "# {}\n{}\n# {}\n",
+        start_marker(&block.id),
+        block.content.trim_end(),
+        end_marker(&block.id)
+    );
+
+    if let Some((start, end)) = block_range(content, &block.id)? {
+        let mut result = String::with_capacity(content.len());
+        result.push_str(&content[..start]);
+        result.push_str(&block_text);
+        result.push_str(&content[end..]);
+        return Ok(result);
+    }
+
     let mut result = content.to_string();
     if !result.ends_with('\n') {
         result.push('\n');
@@ -75,29 +101,21 @@ pub fn upsert_block(content: &str, block: &FrameworkRuleBlock) -> Result<String>
 }
 
 /// Remove a managed block from a file's content.
+///
+/// # Errors
+///
+/// Returns [`Error::FrameworkBlockError`] when an orphan start marker for
+/// the block id exists; content is then left untouched.
 pub fn remove_block(content: &str, id: &str) -> Result<String> {
-    let start = start_marker(id);
-    let end = end_marker(id);
-
-    if let Some(start_idx) = content.find(&start) {
-        let after_start = &content[start_idx..];
-        if let Some(end_rel) = after_start.find(&end) {
-            let end_idx = start_idx + end_rel + end.len();
-            let after_end = if content[end_idx..].starts_with('\n') {
-                &content[end_idx + 1..]
-            } else {
-                &content[end_idx..]
-            };
-
-            let mut result = String::new();
-            result.push_str(&content[..start_idx]);
-            result.push_str(after_end);
-            return Ok(result);
+    match block_range(content, id)? {
+        Some((start, end)) => {
+            let mut result = String::with_capacity(content.len());
+            result.push_str(&content[..start]);
+            result.push_str(&content[end..]);
+            Ok(result)
         }
+        None => Ok(content.to_string()),
     }
-
-    // Block not found — return content unchanged
-    Ok(content.to_string())
 }
 
 /// List all managed block IDs in content.
@@ -207,9 +225,7 @@ pub fn rollback_framework_file(path: &Path, previous: Option<&str>) -> Result<()
     Ok(())
 }
 
-// ============================================================================
 // Rollback manager
-// ============================================================================
 
 /// A recorded framework operation for rollback purposes.
 #[derive(Debug, Clone)]
@@ -289,7 +305,7 @@ impl RollbackManager {
         let new_content = remove_block(&content, id)?;
 
         if is_identical(&content, &new_content) {
-            // Nothing changed — no rollback entry needed
+            // Nothing changed: no rollback entry needed
             return Ok(());
         }
 

@@ -30,7 +30,7 @@ pub struct UvBackend {
 }
 
 impl UvBackend {
-    /// Create the backend over an explicit seam, with no host assumptions —
+    /// Create the backend over an explicit seam, with no host assumptions:
     /// the test-friendly constructor.
     #[must_use]
     pub fn new(runner: CommandRunner) -> Self {

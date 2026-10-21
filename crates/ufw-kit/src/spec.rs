@@ -8,9 +8,7 @@ use std::net::IpAddr;
 
 use crate::error::{Error, Result};
 
-// ============================================================================
 // Enums
-// ============================================================================
 
 /// Firewall rule action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -122,10 +120,10 @@ impl Protocol {
     }
 }
 
-/// Protocol filter — either any protocol or a specific one.
+/// Protocol filter: either any protocol or a specific one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProtocolFilter {
-    /// Match any protocol (renders as empty — never `proto any`).
+    /// Match any protocol (renders as empty: never `proto any`).
     Any,
     /// Match a specific protocol.
     Specific(Protocol),
@@ -315,7 +313,7 @@ impl PortSpec {
     }
 }
 
-/// Rule target — what the rule matches on.
+/// Rule target: what the rule matches on.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RuleTarget {
     /// Match any traffic.
@@ -390,9 +388,7 @@ impl fmt::Display for UfwReport {
 /// uses `Important` where earlier versions of ufw-kit used `Error`.
 pub use toride_diagnostic_types::Severity;
 
-// ============================================================================
-// Structs — Rule Specs
-// ============================================================================
+// Structs: Rule Specs
 
 /// A typed firewall rule specification.
 ///
@@ -413,7 +409,7 @@ pub use toride_diagnostic_types::Severity;
 pub struct RuleSpec {
     /// Rule action.
     pub action: Action,
-    /// Traffic direction (optional — omit for simple rules).
+    /// Traffic direction (optional: omit for simple rules).
     pub direction: Option<Direction>,
     /// Network interface (optional).
     pub interface: Option<String>,
@@ -703,9 +699,7 @@ impl RuleSpecBuilder {
     }
 }
 
-// ============================================================================
-// Structs — Route Rule Spec
-// ============================================================================
+// Structs: Route Rule Spec
 
 /// A typed route rule specification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -828,9 +822,7 @@ impl RouteRuleSpecBuilder {
     }
 }
 
-// ============================================================================
-// Structs — Status
-// ============================================================================
+// Structs: Status
 
 /// Parsed UFW status.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -864,10 +856,10 @@ pub struct ParsedRule {
     pub direction: Option<Direction>,
     /// Protocol (if present).
     pub protocol: Option<Protocol>,
-    /// Source (raw string).
-    pub from: Option<String>,
-    /// Destination (raw string).
-    pub to: Option<String>,
+    /// Source column text (shared, so cloning a rule is cheap).
+    pub from: Option<std::sync::Arc<str>>,
+    /// Destination column text (shared, so cloning a rule is cheap).
+    pub to: Option<std::sync::Arc<str>>,
     /// Comment (if present).
     pub comment: Option<String>,
     /// Whether this is an IPv6 rule.
@@ -876,9 +868,7 @@ pub struct ParsedRule {
     pub is_route: bool,
 }
 
-// ============================================================================
-// Structs — Command
-// ============================================================================
+// Structs: Command
 
 /// Specification for a command to execute.
 #[derive(Debug, Clone)]
@@ -889,7 +879,12 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     /// Timeout duration.
     pub timeout: Option<std::time::Duration>,
-    /// Whether this command requires root privileges.
+    /// Whether this command requires root privileges to succeed.
+    ///
+    /// Advisory metadata only: the default [`crate::command::DuctRunner`]
+    /// performs no elevation, so a spec with `requires_root: true` must
+    /// already run under a root process (or through an injected runner that
+    /// elevates itself) or the command will fail with a permissions error.
     pub requires_root: bool,
     /// Force `LC_ALL=C` for stable output parsing.
     pub force_c_locale: bool,
@@ -933,9 +928,7 @@ pub struct CommandResult {
     pub exit_code: Option<i32>,
 }
 
-// ============================================================================
-// Structs — Doctor
-// ============================================================================
+// Structs: Doctor
 
 /// A single finding from a doctor check.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -981,9 +974,7 @@ pub enum DoctorScope {
     Routing,
 }
 
-// ============================================================================
-// Structs — App Profile
-// ============================================================================
+// Structs: App Profile
 
 /// A typed application profile specification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1036,6 +1027,10 @@ impl AppProfileSpec {
     }
 
     /// Validate the profile.
+    ///
+    /// Titles and descriptions must be single-line (the INI file is parsed
+    /// as root by ufw), and each port entry must be
+    /// `<digits>|<digits>:<digits>` over tcp or udp.
     pub fn validate(&self) -> Result<()> {
         validate_app_name(&self.name)?;
         if self.ports.is_empty() {
@@ -1043,13 +1038,46 @@ impl AppProfileSpec {
                 "app profile must have at least one port".into(),
             ));
         }
+        for port in &self.ports {
+            validate_app_port(port)?;
+        }
+        for text in [&self.title, &self.description] {
+            if text.chars().any(char::is_control) {
+                return Err(Error::Validation(
+                    "app profile title and description must be single-line".into(),
+                ));
+            }
+        }
         Ok(())
     }
 }
 
-// ============================================================================
-// Structs — Config
-// ============================================================================
+/// Validate one app-profile port entry (`80/tcp`, `8000:9000/udp`).
+fn validate_app_port(port: &AppPort) -> Result<()> {
+    let port_ok = match port.port.split_once(':') {
+        Some((start, end)) => {
+            let start = start.parse::<u16>();
+            let end = end.parse::<u16>();
+            matches!((start, end), (Ok(s), Ok(e)) if s > 0 && e > 0 && s <= e)
+        }
+        None => port.port.parse::<u16>().is_ok_and(|p| p > 0),
+    };
+    if !port_ok {
+        return Err(Error::Validation(format!(
+            "app port must be <digits> or <digits>:<digits> (1..=65535): {}",
+            port.port
+        )));
+    }
+    if port.protocol != "tcp" && port.protocol != "udp" {
+        return Err(Error::Validation(format!(
+            "app port protocol must be tcp or udp: {}",
+            port.protocol
+        )));
+    }
+    Ok(())
+}
+
+// Structs: Config
 
 /// UFW configuration from `/etc/default/ufw`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1100,9 +1128,7 @@ pub struct SshCheckResult {
     pub checked_ports: Vec<u16>,
 }
 
-// ============================================================================
-// Structs — Options
-// ============================================================================
+// Structs: Options
 
 /// Options for enabling UFW.
 #[derive(Debug, Clone)]
@@ -1156,13 +1182,11 @@ impl Default for ResetOptions {
 /// Options for deleting rules.
 #[derive(Debug, Clone, Default)]
 pub struct DeleteOptions {
-    /// Allow deletion by rule number (dangerous — numbers shift).
+    /// Allow deletion by rule number (dangerous: numbers shift).
     pub allow_numbered_delete: bool,
 }
 
-// ============================================================================
-// Structs — Framework
-// ============================================================================
+// Structs: Framework
 
 /// A managed block within a UFW framework file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1175,9 +1199,7 @@ pub struct FrameworkRuleBlock {
     pub ipv6: bool,
 }
 
-// ============================================================================
-// Structs — Backup
-// ============================================================================
+// Structs: Backup
 
 /// A backup bundle of UFW configuration.
 #[derive(Debug, Clone)]
@@ -1196,9 +1218,7 @@ pub struct BackupBundle {
     pub framework_files: Vec<(String, String)>,
 }
 
-// ============================================================================
-// Structs — Apply Report
-// ============================================================================
+// Structs: Apply Report
 
 /// Result of applying a change.
 #[derive(Debug, Clone)]
@@ -1215,12 +1235,10 @@ pub struct ApplyReport {
     pub warnings: Vec<String>,
 }
 
-// ============================================================================
 // Validation helpers
-// ============================================================================
 
 /// Validate an interface name.
-fn validate_interface(name: &str) -> Result<()> {
+pub(crate) fn validate_interface(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::InvalidInterface("empty interface name".into()));
     }
@@ -1249,10 +1267,19 @@ fn validate_interface(name: &str) -> Result<()> {
 }
 
 /// Validate a comment string.
+///
+/// The single-quote character is rejected because ufw 0.36.2 itself
+/// refuses comments containing one, so a natural comment like "Molly's
+/// rule" must fail at spec-build time rather than at the real ufw.
 fn validate_comment(comment: &str) -> Result<()> {
     if comment.contains('\n') {
         return Err(Error::InvalidComment(
             "comment must not contain newline".into(),
+        ));
+    }
+    if comment.contains('\'') {
+        return Err(Error::InvalidComment(
+            "comment must not contain a single quote (rejected by ufw)".into(),
         ));
     }
     check_comment_for_secrets(comment)?;
@@ -1353,9 +1380,7 @@ pub fn validate_comment_for_secrets_doctor(comment: &str) -> bool {
     check_comment_for_secrets(comment).is_err()
 }
 
-// ============================================================================
-// Structs — Show Reports
-// ============================================================================
+// Structs: Show Reports
 
 /// A listening port entry from `ufw show listening`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1375,9 +1400,7 @@ pub struct AddedRule {
     pub raw: String,
 }
 
-// ============================================================================
 // Conversions
-// ============================================================================
 
 impl From<u16> for PortSpec {
     fn from(port: u16) -> Self {

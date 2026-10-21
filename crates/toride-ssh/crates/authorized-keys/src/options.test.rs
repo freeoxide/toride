@@ -85,9 +85,29 @@ fn parse_options_should_parse_expiry_time_value() {
 }
 
 #[test]
-fn parse_options_should_recognize_perferrp_flag() {
-    let opts = parse_options("perferrp").unwrap();
-    assert!(opts.perferrp);
+fn parse_options_should_recognize_fido_flags() {
+    let opts = parse_options("no-touch-required,verify-required").unwrap();
+    assert!(opts.no_touch_required);
+    assert!(opts.verify_required);
+}
+
+#[test]
+fn parse_options_should_parse_permitlisten_value() {
+    let opts = parse_options("permitlisten=\"localhost:8080\"").unwrap();
+    assert_eq!(opts.permit_listen, vec!["localhost:8080"]);
+}
+
+#[test]
+fn parse_options_preserves_unknown_options_for_round_trip() {
+    let opts = parse_options("perferrp,port-forwarding").unwrap();
+    assert_eq!(
+        opts.custom,
+        vec![
+            ("perferrp".to_string(), None),
+            ("port-forwarding".to_string(), None)
+        ],
+        "unrecognized options must survive in custom"
+    );
 }
 
 #[test]
@@ -135,10 +155,6 @@ fn unescape_should_convert_escaped_backslash_to_literal() {
 fn unescape_should_preserve_trailing_backslash() {
     assert_eq!(unescape("hello\\"), "hello\\");
 }
-
-// ---------------------------------------------------------------------------
-// Edge-case tests for comma-separated from/permit-open
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_options_from_comma_separated() {
@@ -215,10 +231,6 @@ fn parse_options_leading_comma() {
     let opts = parse_options(",no-pty").unwrap();
     assert!(opts.no_pty);
 }
-
-// ---------------------------------------------------------------------------
-// Weird edge-case tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_options_from_only_commas() {
@@ -313,7 +325,7 @@ fn parse_options_all_options_combined() {
          no-X11-forwarding,no-agent-forwarding,no-user-rc,restrict,\
          permit-open=\"host:22\",environment=\"FOO=bar\",tunnel=\"eth0\",\
          cert-authority,principals=\"admin\",expiry-time=\"20250101T000000\",\
-         perferrp",
+         no-touch-required,verify-required",
     )
     .unwrap();
     assert_eq!(opts.command.as_deref(), Some("/bin/bash"));
@@ -333,16 +345,13 @@ fn parse_options_all_options_combined() {
     assert!(opts.cert_authority);
     assert_eq!(opts.principals, vec!["admin"]);
     assert_eq!(opts.expiry_time.as_deref(), Some("20250101T000000"));
-    assert!(opts.perferrp);
+    assert!(opts.no_touch_required);
+    assert!(opts.verify_required);
 }
-
-// ---------------------------------------------------------------------------
-// Production-grade weird edge cases
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_options_unmatched_quote_at_end() {
-    // Missing closing quote — should not panic
+    // Missing closing quote, should not panic
     let result = parse_options("command=\"test");
     // May error or return partial result
     let _ = result;
@@ -350,7 +359,7 @@ fn parse_options_unmatched_quote_at_end() {
 
 #[test]
 fn parse_options_unmatched_quote_at_start() {
-    // Missing opening quote — should not panic
+    // Missing opening quote, should not panic
     let result = parse_options("command=test\"");
     let _ = result;
 }
@@ -426,7 +435,7 @@ fn parse_options_very_many_options() {
 
 #[test]
 fn parse_options_command_with_newline_in_value() {
-    // Newline inside quoted value — should be preserved or handled
+    // Newline inside quoted value, should be preserved or handled
     let opts = parse_options("command=\"line1\\nline2\"").unwrap();
     // The \n is literal backslash-n, not a newline
     assert!(opts.command.is_some());
@@ -445,10 +454,6 @@ fn parse_options_restrict_with_multiple_permits() {
     // permit-pty and permit-port-forwarding go to custom
     assert_eq!(opts.custom.len(), 2);
 }
-
-// ---------------------------------------------------------------------------
-// Workflow-discovered edge cases
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_options_newline_injection_in_command() {
