@@ -144,7 +144,7 @@ impl RestoreManager {
 
         // Restore owns `dir`; the TempDir is removed on drop, so cleanup runs
         // whether restore succeeded or failed. The restore itself is allowed
-        // to fail — the report/error is surfaced and the temp tree is dropped.
+        // to fail: the report/error is surfaced and the temp tree is dropped.
         Self::restore(spec, &options)
     }
 
@@ -192,7 +192,7 @@ pub fn restore_with_runner<R: Runner + ?Sized>(
     binary_override: Option<&str>,
 ) -> Result<RestoreReport> {
     // Validate the spec up front (name allowlist, cron, retention, and that an
-    // encrypted repo actually has a password_command) — mirrors backup()/prune().
+    // encrypted repo actually has a password_command): mirrors backup()/prune().
     spec.validate()?;
     let snapshot_id = resolve_snapshot_id(spec, options)?;
     tracing::info!(
@@ -304,7 +304,7 @@ fn run_restic_restore<R: Runner + ?Sized>(
 
     let (files_restored, bytes_restored) = parse_restic_restore_output(&output.stdout);
     // Surface the backend's stderr diagnostic (warnings) as advisory messages.
-    // The condition tests stderr, so the payload must be stderr too — emitting
+    // The condition tests stderr, so the payload must be stderr too: emitting
     // stdout here (backend progress) was a copy-paste bug.
     let messages = if output.stderr.trim().is_empty() {
         Vec::new()
@@ -332,7 +332,7 @@ fn run_restic_restore<R: Runner + ?Sized>(
 ///
 /// When the repository is encrypted but no `password_command` is configured we
 /// return a clear error instead of silently authenticating with the job *label*
-/// (the spec's `name`) as the passphrase — that fallback could never unlock a
+/// (the spec's `name`) as the passphrase: that fallback could never unlock a
 /// real repo and only masked misconfiguration. An unencrypted repo (`Encryption
 /// ::None`) needs no password, so no env is attached in that case.
 fn apply_restic_password(spec: &BackupSpec, cmd: CommandSpec) -> Result<CommandSpec> {
@@ -378,7 +378,7 @@ fn run_borg_extract<R: Runner + ?Sized>(
     runner: &R,
     binary_override: Option<&str>,
 ) -> Result<RestoreReport> {
-    // borg resolves "latest" itself? No — borg has no "latest" keyword for
+    // borg resolves "latest" itself? No: borg has no "latest" keyword for
     // extract. We treat the literal "latest" as a caller-side placeholder and
     // require an explicit archive name. If the user passed nothing, error out
     // with a helpful message rather than silently extracting the wrong thing.
@@ -398,7 +398,7 @@ fn run_borg_extract<R: Runner + ?Sized>(
         .arg("--list")
         .arg(&archive_arg)
         .args(&options.paths)
-        // borg extract writes into cwd — there is no --destination flag.
+        // borg extract writes into cwd: there is no --destination flag.
         .cwd(&options.target);
 
     cmd = apply_borg_passphrase(spec, cmd)?;
@@ -410,7 +410,7 @@ fn run_borg_extract<R: Runner + ?Sized>(
 
     let (files_restored, bytes_restored) = parse_borg_extract_output(&output.stdout);
     // Surface the backend's stderr diagnostic (warnings) as advisory messages.
-    // The condition tests stderr, so the payload must be stderr too — emitting
+    // The condition tests stderr, so the payload must be stderr too: emitting
     // stdout here (backend progress) was a copy-paste bug.
     let messages = if output.stderr.trim().is_empty() {
         Vec::new()
@@ -436,7 +436,7 @@ fn run_borg_extract<R: Runner + ?Sized>(
 ///
 /// When the repository is encrypted but no `password_command` is configured we
 /// return a clear error instead of falling back to the job *label* (the spec's
-/// `name`) as the passphrase — that could never unlock a real repo and only
+/// `name`) as the passphrase: that could never unlock a real repo and only
 /// masked misconfiguration. An unencrypted repo (`Encryption::None`) needs no
 /// passphrase.
 fn apply_borg_passphrase(spec: &BackupSpec, cmd: CommandSpec) -> Result<CommandSpec> {
@@ -460,7 +460,7 @@ fn apply_borg_passphrase(spec: &BackupSpec, cmd: CommandSpec) -> Result<CommandS
 /// documented shape (restic 0.19+, see
 /// <https://restic.readthedocs.io/en/stable/075_scripting.html>) is the
 /// *restore* summary: `message_type: "summary"` with `files_restored`,
-/// `total_files`, `bytes_restored`, and `total_bytes` — NOT the backup-summary
+/// `total_files`, `bytes_restored`, and `total_bytes`: NOT the backup-summary
 /// fields (`files_new`/`files_modified`/`dirs_new`). We scan the stdout line by
 /// line for the last JSON object with a `summary` `message_type` and read the
 /// restored file and byte counts from it.
@@ -967,7 +967,7 @@ restored  /work/qux
     fn borg_extract_builds_exact_command_with_cwd() {
         // Asserts the EXACT borg extract command shape documented at
         // https://borgbackup.readthedocs.io/en/stable/usage/extract.html.
-        // CRITICAL: borg extract has NO --destination flag — it extracts into
+        // CRITICAL: borg extract has NO --destination flag: it extracts into
         // the current working directory, so the target is set via cwd.
         let spec = spec_borg("/path/to/repo");
         let options = RestoreOptions::new("/tmp/restore").with_snapshot("my-files");

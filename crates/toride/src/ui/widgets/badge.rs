@@ -17,14 +17,14 @@ pub fn badge(label: &str, fg: Color, bg: Color) -> Span<'static> {
     Span::styled(format!(" {label} "), Style::new().fg(fg).bg(bg))
 }
 
-/// A muted/neutral badge using the palette's selection background — used for
+/// A muted/neutral badge using the palette's selection background: used for
 /// counts and version chips (e.g. `12`, `v0.18`).
 #[must_use]
 pub fn neutral_badge(label: &str, p: Palette) -> Span<'static> {
     badge(label, p.text_dim, p.sel_bg)
 }
 
-/// An accent badge filled with `accent` — used for primary tags / buttons
+/// An accent badge filled with `accent`: used for primary tags / buttons
 /// (e.g. `install all`).
 #[must_use]
 pub fn accent_badge(label: &str, p: Palette) -> Span<'static> {
@@ -32,7 +32,7 @@ pub fn accent_badge(label: &str, p: Palette) -> Span<'static> {
 }
 
 /// An outlined-style tag badge that tints the foreground with `color` over the
-/// selection background — used for update source tags (`apt`, `curl`).
+/// selection background: used for update source tags (`apt`, `curl`).
 #[must_use]
 pub fn tag_badge(label: &str, color: Color, p: Palette) -> Span<'static> {
     badge(label, color, p.sel_bg)

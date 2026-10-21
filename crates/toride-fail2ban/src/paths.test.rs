@@ -122,7 +122,7 @@ fn resolve_data_dir_has_three_components() {
 }
 
 // On macOS `dirs::config_dir()` and `dirs::data_dir()` both return
-// ~/Library/Application Support (docs.rs/dirs) — never assert the two differ.
+// ~/Library/Application Support (docs.rs/dirs): never assert the two differ.
 
 #[test]
 fn ensure_directories_creates_all_dirs() {

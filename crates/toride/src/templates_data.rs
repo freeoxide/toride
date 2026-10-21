@@ -15,7 +15,7 @@
 //! ## What is "live" here
 //!
 //! The recipe DEFINITIONS are the app feature manifest (a constant menu of
-//! toride capabilities) — legitimate static app data, NOT fake user data. Each
+//! toride capabilities): legitimate static app data, NOT fake user data. Each
 //! recipe's per-recipe LIVE status is whether the underlying tool is present on
 //! THIS host, probed via [`which::which`]. The catalogue itself never changes
 //! at runtime; only the readiness column is live.
@@ -24,13 +24,13 @@
 //!
 //! [`which::which`] does a synchronous PATH walk. All probes for the whole
 //! catalogue run in a SINGLE [`tokio::task::spawn_blocking`] so the tokio
-//! worker is never stalled — exactly mirroring how `toride_harden_data` keeps
+//! worker is never stalled: exactly mirroring how `toride_harden_data` keeps
 //! every shell-out off the worker in one blocking closure.
 //!
 //! ## Findings cache
 //!
 //! The `which` sweep is cheap, but the per-recipe readiness (and the derived
-//! INFO findings for missing targets) changes slowly — tools are not
+//! INFO findings for missing targets) changes slowly: tools are not
 //! installed/uninstalled moment-to-moment. Findings are therefore cached for
 //! 60s, exactly like the harden / fail2ban / ufw-kit / tailscale caches: the
 //! 2s refresh tick reuses the cached findings instead of re-running the whole
@@ -43,7 +43,7 @@
 //! The catalogue is constant app data and the `which` sweep cannot fail at
 //! construction, so the section is `available == true` on every host after a
 //! successful collection. Only a `spawn_blocking` task panic (`JoinError`) flips
-//! `available` to `false`, surfacing the degraded panel — mirroring the
+//! `available` to `false`, surfacing the degraded panel: mirroring the
 //! harden / fail2ban / cloud collectors' panic path.
 
 use std::time::Duration;
@@ -57,7 +57,7 @@ use crate::ui::screens::templates::{FindingEntry, RecipeEntry};
 #[derive(Clone, Debug)]
 pub struct TemplatesDataBundle {
     /// Whether the catalogue could be collected at all. `false` is reserved
-    /// for the panic case (a `spawn_blocking` `JoinError`) — the catalogue is
+    /// for the panic case (a `spawn_blocking` `JoinError`): the catalogue is
     /// constant app data and the `which` sweep cannot fail at construction, so
     /// every successful collection yields `true`. `false` renders the degraded
     /// "unavailable" panel.
@@ -72,7 +72,7 @@ pub struct TemplatesDataBundle {
     /// (cached for 60s between collections).
     pub findings: Vec<FindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` (collection-task panic). `None` otherwise —
+    /// `available == false` (collection-task panic). `None` otherwise:
     /// notably also `None` for a freshly-constructed empty bundle before any
     /// collection has run. Surfaced to the UI so the degraded panel can show
     /// what actually went wrong instead of guessing.
@@ -152,7 +152,7 @@ impl TemplatesCollector {
     /// pending or if the collection failed. On success the cached findings are
     /// updated to the freshly-returned findings, but the freshness timestamp
     /// is only advanced when the sweep was actually re-run (not on a cache-hit
-    /// poll) — otherwise the 60s TTL would be re-armed forever with the same
+    /// poll): otherwise the 60s TTL would be re-armed forever with the same
     /// cached data on every 2s refresh.
     pub async fn poll(&mut self) -> Option<TemplatesDataBundle> {
         match &mut self.rx {
@@ -172,7 +172,6 @@ impl TemplatesCollector {
     }
 
     /// Invalidate the findings cache so the next collection re-runs the sweep.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
@@ -199,7 +198,7 @@ impl Default for TemplatesCollector {
 ///
 /// `use_cache` / `cached_findings` mirror the harden / fail2ban findings cache:
 /// when the cache is fresh the `which` sweep is skipped entirely (the catalogue
-/// definitions are re-derived for free — they are a `const` slice — but the
+/// definitions are re-derived for free: they are a `const` slice, but the
 /// readiness booleans and derived findings are reused).
 ///
 /// Returns `(bundle, used_cache)` where `used_cache` records whether the
@@ -214,8 +213,8 @@ async fn collect_real_templates(
     use_cache: bool,
     cached_findings: Option<Vec<FindingEntry>>,
 ) -> (TemplatesDataBundle, bool) {
-    // The catalogue definitions are pure static data (a `const` slice) — no
-    // backend, no I/O — so total_count is known without any probe.
+    // The catalogue definitions are pure static data (a `const` slice): no
+    // backend, no I/O: so total_count is known without any probe.
     let defs = templates_convert::catalogue();
     let total_count = defs.len();
 
@@ -294,7 +293,7 @@ async fn collect_real_templates(
 }
 
 /// Empty bundle used when the collection task panicked (`spawn_blocking`
-/// `JoinError`) — mirrors [`harden_data::empty_bundle`] and the sibling
+/// `JoinError`): mirrors [`harden_data::empty_bundle`] and the sibling
 /// collectors. `available = false` signals the UI to render the degraded
 /// panel; no reason is attached because none is known at this point (the
 /// `JoinError` reason is added by [`empty_bundle_with_reason`]).
@@ -312,7 +311,7 @@ fn empty_bundle() -> TemplatesDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when the spawned
-/// collection task panicked (`JoinError`) — the reason string is rendered by the
+/// collection task panicked (`JoinError`): the reason string is rendered by the
 /// UI's degraded panel so the operator sees what actually went wrong, mirroring
 /// the `spawn_blocking` `JoinError` path in harden / fail2ban / cloud / etc.
 fn empty_bundle_with_reason(reason: String) -> TemplatesDataBundle {

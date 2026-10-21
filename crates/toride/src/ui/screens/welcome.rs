@@ -19,7 +19,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-// ANSI Shadow figlet — matches screens.jsx LOGO constant exactly
+// ANSI Shadow figlet: matches screens.jsx LOGO constant exactly
 const LOGO: &[&str] = &[
     "████████╗ ██████╗ ██████╗ ██╗██████╗ ███████╗",
     "╚══██╔══╝██╔═══██╗██╔══██╗██║██╔══██╗██╔════╝",

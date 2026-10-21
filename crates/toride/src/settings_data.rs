@@ -4,7 +4,7 @@
 //! configuration + runtime environment via a tokio oneshot channel, following
 //! the same SIMPLE pattern as
 //! [`StatusCollector`](crate::status_collector::StatusCollector) and the other
-//! read-only collectors MINUS their 60s findings cache — the Settings section
+//! read-only collectors MINUS their 60s findings cache: the Settings section
 //! has no doctor/findings concept, so there is nothing expensive to throttle.
 //!
 //! This is a read-only integration: there are no write operations, no
@@ -49,7 +49,7 @@ pub struct SettingsDataBundle {
     pub runtime: SettingsRuntime,
     /// Human-readable reason collection failed, populated ONLY when
     /// `available == false` because the collection task panicked (`JoinError`).
-    /// `None` otherwise — notably also `None` for a freshly-constructed empty
+    /// `None` otherwise: notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
     pub unavailable_reason: Option<String>,
@@ -140,7 +140,7 @@ impl Default for SettingsCollector {
 /// via a single [`tokio::task::spawn_blocking`]. Every sub-probe degrades
 /// gracefully: an unreadable / absent config file sets `config.exists = false`
 /// and empties `raw_keys` but keeps `available == true`; a missing env var
-/// just yields `None` for its slot. Only a collection-task panic (caught as a
+/// yields `None` for its slot. Only a collection-task panic (caught as a
 /// `JoinError` in `start()`) flips `available` to `false`.
 async fn collect_real_settings() -> SettingsDataBundle {
     let result = tokio::task::spawn_blocking(settings_convert::collect_local).await;
@@ -167,7 +167,7 @@ fn empty_bundle() -> SettingsDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when the spawned
-/// collection task panicked (`JoinError`) — the reason string is rendered by the
+/// collection task panicked (`JoinError`): the reason string is rendered by the
 /// UI's degraded panel so the operator sees what actually went wrong, mirroring
 /// every sibling collector's panic path.
 fn empty_bundle_with_reason(reason: String) -> SettingsDataBundle {

@@ -2,7 +2,7 @@
 //! presentation types.
 //!
 //! This is the ONLY module that maps the live status / env readout into the
-//! About presentation structs — mirroring `toride_harden_convert.rs`'s role as
+//! About presentation structs: mirroring `toride_harden_convert.rs`'s role as
 //! the single boundary between backend and presentation. Each field degrades
 //! gracefully: an unreadable probe yields a placeholder
 //! (`"(unknown)"` / `"(none)"`) rather than an empty string, and the functions
@@ -24,7 +24,7 @@ use crate::version;
 /// Every field degrades to a placeholder when its source probe returned `None`
 /// / empty (e.g. `load_average` is `None` on Windows; `cpu_brand` may be empty
 /// on a minimal kernel). The function never returns `Err` and never leaves a
-/// field blank — a blank row would be ambiguous in the rendered output.
+/// field blank: a blank row would be ambiguous in the rendered output.
 pub fn convert_system(status: &TorideStatus) -> AboutSystem {
     let sys = &status.system;
 
@@ -277,17 +277,12 @@ mod tests {
     };
     use std::time::{Duration, SystemTime};
 
-    /// Process-global env vars are mutated by several tests below. Acquire this
-    /// lock at the top of every env-mutating test so they cannot run
-    /// concurrently and race each other (cargo runs `#[test]`s in parallel
-    /// threads within the binary). Mirrors the `HOME_LOCK` pattern in
-    /// `ssh_data.rs`. Poisoning is tolerated: a prior panic still releases the
-    /// mutex, and we take the guard regardless so the suite doesn't deadlock.
-    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// Process-global env vars are mutated by several tests below. Acquire the
+    /// shared crate env lock (`crate::test_env`) at the top of every
+    /// env-mutating test so no test in this binary can run concurrently with
+    /// another one's env state.
+    fn env_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::test_env::lock_blocking()
     }
 
     /// Build a minimal-but-populated [`TorideStatus`] for the convert tests.
@@ -608,8 +603,7 @@ mod tests {
 
     #[test]
     fn convert_runtime_log_path_respects_env_override() {
-        // Process-global env mutation: hold ENV_LOCK so this cannot run
-        // concurrently with the other env-touching tests below.
+        // SAFETY: test-only; the shared crate env lock serializes this.
         let _env = env_test_lock();
         unsafe {
             std::env::set_var("TORIDE_LOG_FILE", "/tmp/toride-convert-test.log");

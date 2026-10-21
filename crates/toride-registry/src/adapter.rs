@@ -1,8 +1,8 @@
 //! # Adapter boundary
 //!
 //! The [`Adapter`] trait is the seam between the external world and the
-//! normalized model (DESIGN.md §3): every source-specific concern — wire
-//! structs, endpoints, quirk handling, fetch clients — lives behind it, in
+//! normalized model (DESIGN.md §3): every source-specific concern: wire
+//! structs, endpoints, quirk handling, fetch clients: lives behind it, in
 //! the per-source modules under [`sources`](crate::sources). Callers see
 //! only [`App`] and [`SourceRef`].
 //!
@@ -21,7 +21,7 @@ use crate::model::{
 /// Normalizes one external repository into [`App`]s.
 ///
 /// Contract: ALL source-specific knowledge lives in the implementing
-/// module — wire structs, endpoints, quirk handling. Callers see only
+/// module: wire structs, endpoints, quirk handling. Callers see only
 /// `App` and [`SourceRef`]. Each adapter additionally keeps its parse and
 /// fetch halves strictly separated (DESIGN.md §3.1): only the fetch half
 /// touches the network; only the parse half is fixture-tested offline.
@@ -41,7 +41,7 @@ pub trait Adapter: Send + Sync {
     /// ([`Error::Http`], [`Error::Parse`]).
     async fn lookup(&self, id: &SourceRef) -> Result<Option<App>>;
 
-    /// Free-text search. Returns normalized stubs — enough for a result
+    /// Free-text search. Returns normalized stubs: enough for a result
     /// list (`id`, `name`, `summary`, `install`, `platforms`); heavy
     /// fields (`artifacts`, full `description`) may require
     /// [`Adapter::lookup`].
@@ -71,7 +71,7 @@ pub struct SearchOutcome {
     pub failures: Vec<SourceFailure>,
 }
 
-/// Builds a [`Registry`] — consume-and-return adapter registration.
+/// Builds a [`Registry`]: consume-and-return adapter registration.
 #[derive(Default)]
 pub struct RegistryBuilder {
     adapters: Vec<Arc<dyn Adapter>>,
@@ -86,7 +86,7 @@ impl RegistryBuilder {
     }
 
     /// Register one adapter (an owned `Arc` or `Box`; a box is converted)
-    /// — consume-and-return.
+    ///: consume-and-return.
     #[must_use]
     pub fn with_adapter(mut self, adapter: impl Into<Arc<dyn Adapter>>) -> Self {
         self.adapters.push(adapter.into());
@@ -122,7 +122,7 @@ impl Registry {
         }
     }
 
-    /// Start building a facade — see [`RegistryBuilder`].
+    /// Start building a facade: see [`RegistryBuilder`].
     #[must_use]
     pub fn builder() -> RegistryBuilder {
         RegistryBuilder::new()
@@ -134,7 +134,7 @@ impl Registry {
         &self.adapters
     }
 
-    /// A snapshot of the alias index as it stands — every search-merged
+    /// A snapshot of the alias index as it stands: every search-merged
     /// row and resolve hit recorded so far, plus anything preloaded
     /// through [`RegistryBuilder::with_alias_index`].
     #[must_use]
@@ -142,19 +142,24 @@ impl Registry {
         self.locked_aliases().clone()
     }
 
-    /// Fan `query` out to every adapter; failures land in
-    /// [`SearchOutcome::failures`], same-app hits across adapters merge
+    /// Fan `query` out to every adapter concurrently (wall clock is the
+    /// slowest adapter, not the sum; DESIGN.md §3.2); results reassemble in
+    /// registration order before merging, failures land in
+    /// [`SearchOutcome::failures`], and same-app hits across adapters merge
     /// into one row. Errors: [`Error::AllSourcesFailed`] on total failure.
     pub async fn search(&self, query: &str) -> Result<SearchOutcome> {
+        let outcomes = futures::future::join_all(
+            self.adapters
+                .iter()
+                .map(|adapter| async move { (adapter.source(), adapter.search(query).await) }),
+        )
+        .await;
         let mut buckets: Vec<Vec<App>> = Vec::new();
         let mut failures = Vec::new();
-        for adapter in &self.adapters {
-            match adapter.search(query).await {
+        for (source, outcome) in outcomes {
+            match outcome {
                 Ok(hits) => buckets.push(hits),
-                Err(error) => failures.push(SourceFailure {
-                    source: adapter.source(),
-                    error,
-                }),
+                Err(error) => failures.push(SourceFailure { source, error }),
             }
         }
         let failures = all_failed(self.adapters.len(), query.to_owned(), failures)?;
@@ -163,13 +168,12 @@ impl Registry {
         Ok(SearchOutcome { apps, failures })
     }
 
-    /// Resolve `id` per adapter keyed on the slug, merging `sources` rows
-    /// deduped; a total miss consults the alias index (DESIGN.md §5).
-    /// Errors: [`Error::AllSourcesFailed`] when every source fails.
+    /// Resolve `id` per adapter concurrently, reassembled in registration
+    /// order; rows are keyed on the slug, merging `sources` deduped; a total
+    /// miss consults the alias index (DESIGN.md §5). Errors:
+    /// [`Error::AllSourcesFailed`] when every source fails.
     pub async fn resolve(&self, id: &crate::model::TorideId) -> Result<Vec<SourceRef>> {
-        let mut rows: Vec<SourceRef> = Vec::new();
-        let mut failures = Vec::new();
-        for adapter in &self.adapters {
+        let outcomes = futures::future::join_all(self.adapters.iter().map(|adapter| {
             let reference = SourceRef {
                 source: adapter.source(),
                 id: id.as_str().to_owned(),
@@ -177,13 +181,16 @@ impl Registry {
                 version: None,
                 provisional: false,
             };
-            match adapter.lookup(&reference).await {
+            async move { (adapter.source(), adapter.lookup(&reference).await) }
+        }))
+        .await;
+        let mut rows: Vec<SourceRef> = Vec::new();
+        let mut failures = Vec::new();
+        for (source, outcome) in outcomes {
+            match outcome {
                 Ok(Some(app)) => alias::union_rows(&mut rows, app.sources),
                 Ok(None) => {}
-                Err(error) => failures.push(SourceFailure {
-                    source: adapter.source(),
-                    error,
-                }),
+                Err(error) => failures.push(SourceFailure { source, error }),
             }
         }
         let _ = all_failed(self.adapters.len(), id.as_str().to_owned(), failures)?;
@@ -237,7 +244,7 @@ impl Registry {
     }
 
     /// Render `app`'s uninstall argv for `host`: only the manager's OS
-    /// coverage gates — claims are install-only. Direct methods
+    /// coverage gates: claims are install-only. Direct methods
     /// uninstall by replaying a manifest record, never registry data.
     #[must_use]
     pub fn plan_uninstall(app: &App, host: &Platform) -> PlannedOp {
@@ -253,7 +260,7 @@ impl Registry {
 /// platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlannedOp {
-    /// argv for the native manager (`brew`, `flatpak`, `apt`, …) —
+    /// argv for the native manager (`brew`, `flatpak`, `apt`, …):
     /// program first, the lifecycle argv only: no suppression flags or
     /// one-time setup; the executor layers those.
     Command {
@@ -263,7 +270,7 @@ pub enum PlannedOp {
         args: Vec<String>,
     },
     /// The native method cannot serve the host, but a checksummed
-    /// artifact matched it — hand the url+checksum to a direct
+    /// artifact matched it: hand the url+checksum to a direct
     /// downloader (toride-installer's shape).
     DirectDownload {
         /// The matched artifact's download URL.
@@ -1285,7 +1292,7 @@ mod tests {
                 program: "mise".to_owned(),
                 args: vec!["install".to_owned(), "node@latest".to_owned()],
             },
-            "the language managers cover every OS — no platform gate applies"
+            "the language managers cover every OS: no platform gate applies"
         );
     }
 
@@ -1463,17 +1470,17 @@ mod tests {
         assert_eq!(
             Registry::plan(&app, &host_below_the_floor),
             native,
-            "a host below the claim floor still plans — min_release is the toride-apps-planner-aligned not-yet-enforced claim"
+            "a host below the claim floor still plans: min_release is the toride-apps-planner-aligned not-yet-enforced claim"
         );
         assert_eq!(
             Registry::plan(&app, &host_above_the_floor),
             native.clone(),
-            "the host's release slot never gates either — comparison is not implemented, matching the apps planner's documented punt"
+            "the host's release slot never gates either: comparison is not implemented, matching the apps planner's documented punt"
         );
         assert_eq!(
             Registry::plan(&app, &host(Os::MacOs, Some(Arch::Aarch64))),
             native,
-            "a host that declares no release at all — today's every caller — plans the native method"
+            "a host that declares no release at all (today's every caller) plans the native method"
         );
     }
 
@@ -1579,7 +1586,7 @@ mod tests {
                     "typescript".to_owned()
                 ],
             },
-            "the update verb takes the bare package — the pin is an install-only spelling"
+            "the update verb takes the bare package: the pin is an install-only spelling"
         );
 
         let mut cargo = stub_app("ripgrep", SourceKind::Distro);
@@ -1597,7 +1604,7 @@ mod tests {
                     "ripgrep".to_owned(),
                 ],
             },
-            "cargo has no upgrade verb — re-install at latest under --force"
+            "cargo has no upgrade verb: re-install at latest under --force"
         );
 
         let mut pipx = stub_app("black", SourceKind::Distro);
@@ -1636,7 +1643,7 @@ mod tests {
                 program: "mise".to_owned(),
                 args: vec!["upgrade".to_owned(), "node".to_owned()],
             },
-            "mise's own upgrade verb — not the install-time @latest spec"
+            "mise's own upgrade verb: not the install-time @latest spec"
         );
     }
 
@@ -1859,7 +1866,7 @@ mod tests {
                 program: "brew".to_owned(),
                 args: vec!["uninstall".to_owned(), "ripgrep".to_owned()],
             },
-            "claims gate installs, not removals — Linuxbrew serves formulae"
+            "claims gate installs, not removals: Linuxbrew serves formulae"
         );
         assert_eq!(
             Registry::plan(&macos_only, &host(Os::Linux, Some(Arch::X86_64))),
@@ -1875,7 +1882,7 @@ mod tests {
         assert_eq!(
             Registry::plan_uninstall(&flatpak, &host(Os::MacOs, Some(Arch::Aarch64))),
             PlannedOp::Unsupported,
-            "only the manager's OS coverage gates — flatpak has none on macOS"
+            "only the manager's OS coverage gates: flatpak has none on macOS"
         );
     }
 
@@ -1890,7 +1897,7 @@ mod tests {
         assert_eq!(
             Registry::plan_update(&cask, &linux_host),
             PlannedOp::Unsupported,
-            "casks are macOS-only — Linuxbrew serves formulae only"
+            "casks are macOS-only: Linuxbrew serves formulae only"
         );
         assert_eq!(
             Registry::plan_uninstall(&cask, &linux_host),

@@ -30,7 +30,7 @@ impl AnimatedFloats {
 
     /// Advance every value toward its corresponding `targets` entry.
     ///
-    /// `duration_secs` controls the speed — a full 0-to-1 transition takes
+    /// `duration_secs` controls the speed: a full 0-to-1 transition takes
     /// exactly `duration_secs` seconds of wall-clock time. Values that are
     /// already within one step of their target are snapped exactly.
     ///
@@ -57,7 +57,7 @@ impl AnimatedFloats {
     /// Snap every value exactly to its corresponding `targets` entry in one
     /// step (no interpolation). Used under reduced motion so a highlight lands
     /// on the selected item immediately on the single redraw a keypress
-    /// triggers — otherwise the value would be frozen mid-transition.
+    /// triggers: otherwise the value would be frozen mid-transition.
     ///
     /// A render path must never panic on data, so a `targets` slice shorter
     /// than `self.values` is tolerated: each value is snapped to its matching
@@ -66,7 +66,7 @@ impl AnimatedFloats {
     /// rather than asserting equal length.
     pub fn snap_to_targets(&mut self, targets: &[f32]) {
         if targets.len() != self.values.len() {
-            // Degrade gracefully instead of panicking inside a render path —
+            // Degrade gracefully instead of panicking inside a render path:
             // a transient length mismatch (e.g. a sidebar resized between
             // frames) must never crash the TUI.
             tracing::debug!(
@@ -110,7 +110,7 @@ impl AnimatedFloats {
 
     /// Whether all values have settled within `eps` of their `targets`.
     ///
-    /// Useful for `needs_animation()` — returns `true` when nothing left to animate.
+    /// Useful for `needs_animation()`: returns `true` when nothing left to animate.
     ///
     /// # Panics
     ///
@@ -207,7 +207,7 @@ mod tests {
         // longer than the values must degrade gracefully (snap the overlap,
         // leave the rest untouched) rather than aborting the TUI.
         let mut af = AnimatedFloats::new(3, 0.2);
-        // Shorter targets — index 2 has no target, must stay at its old value.
+        // Shorter targets: index 2 has no target, must stay at its old value.
         af.snap_to_targets(&[0.0, 1.0]);
         assert!((af.get(0) - 0.0).abs() < f32::EPSILON);
         assert!((af.get(1) - 1.0).abs() < f32::EPSILON);
@@ -216,7 +216,7 @@ mod tests {
             "value with no target must be untouched"
         );
 
-        // Longer targets — extras are simply ignored (no panic, no growth).
+        // Longer targets: extras are simply ignored (no panic, no growth).
         af.snap_to_targets(&[0.5, 0.5, 0.5, 9.0, 9.0]);
         assert_eq!(af.len(), 3, "values vec must not grow");
         assert!((af.get(0) - 0.5).abs() < f32::EPSILON);

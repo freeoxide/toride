@@ -2,15 +2,15 @@
 //!
 //! Renders inside the dashboard's content region when
 //! [`Section::Proxy`](crate::data::Section) is the active sidebar section.
-//! Mirrors the fail2ban / backup reference MINUS the write path — every line
+//! Mirrors the fail2ban / backup reference MINUS the write path: every line
 //! is read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Status panel — backend name + running/stopped status.
-//! 2. Server blocks — virtual hosts (name, port, upstream, TLS flag).
-//! 3. TLS certificates — domain, issuer, expiry, days remaining.
-//! 4. WAF card — Web Application Firewall status.
-//! 5. Doctor findings — grouped by severity (Critical > Error > Warning > Info).
+//! 1. Status panel: backend name + running/stopped status.
+//! 2. Server blocks: virtual hosts (name, port, upstream, TLS flag).
+//! 3. TLS certificates: domain, issuer, expiry, days remaining.
+//! 4. WAF card: Web Application Firewall status.
+//! 5. Doctor findings: grouped by severity (Critical > Error > Warning > Info).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -226,7 +226,7 @@ impl ProxyContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -249,7 +249,7 @@ impl ProxyContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -453,7 +453,7 @@ impl ProxyContent {
         for cert in &self.certificates {
             let domain = truncate_str(&cert.domain, 30);
             // Branch on not_after first so an unknown-expiry cert (empty
-            // not_after — the certs-feature-off certbot-dir-scan case) NEVER
+            // not_after: the certs-feature-off certbot-dir-scan case) NEVER
             // renders as a green ✓. Overloading is_valid for these would show
             // an actually-expired cert as healthy. The '?' icon + warn color
             // signal that expiry is UNVERIFIED, which is the honest state.
@@ -701,7 +701,7 @@ mod tests {
         assert!(out.contains("expired.com"), "expired cert: {out}");
     }
 
-    /// A scan-derived cert (empty `not_after` — the certs-feature-off certbot-
+    /// A scan-derived cert (empty `not_after`: the certs-feature-off certbot-
     /// dir-scan case) must NOT render as a green ✓. The honest state is that
     /// expiry is UNVERIFIED, so the row shows '?' + "expiry unknown" + the
     /// `has_expired_certs` header warning is absent (unknown != expired).
@@ -813,7 +813,7 @@ mod tests {
         c.set_server_blocks(sample_server_blocks());
         c.set_certificates(sample_certs(), true);
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 
@@ -823,10 +823,10 @@ mod tests {
     /// saturating ops + Rect clipping) at extreme small sizes.
     #[test]
     fn tiny_terminal_unavailable_does_not_panic() {
-        // 20x3 — even tighter than the available-path test.
+        // 20x3: even tighter than the available-path test.
         let mut c = ProxyContent::new();
         let _ = render_to_string(&mut c, 20, 3);
-        // 20x5 — matches the available-path test's height.
+        // 20x5: matches the available-path test's height.
         let mut c2 = ProxyContent::new();
         let _ = render_to_string(&mut c2, 20, 5);
     }

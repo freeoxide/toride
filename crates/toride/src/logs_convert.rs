@@ -1,7 +1,7 @@
 //! Convert `logs_data` tail results to UI presentation types.
 //!
 //! This is the single boundary between the `logs_data` collection layer and
-//! the `ui::screens::logs` presentation layer — mirroring
+//! the `ui::screens::logs` presentation layer: mirroring
 //! `toride_harden_convert.rs`'s role for harden. The logs section is the one
 //! read-only screen whose "backend" is already plain owned strings (decoded
 //! UTF-8 file tails + journalctl output), so there is almost nothing to map:
@@ -39,10 +39,10 @@ const MAX_VIEW_LINES: usize = 200;
 /// * `lines` longer than `MAX_VIEW_LINES` is trimmed to its tail and
 ///   `line_count` is recomputed to match;
 /// * sources are kept in input order (the data layer lists toride's own log
-///   first, then platform logs, then journalctl — that order is the viewer's
+///   first, then platform logs, then journalctl: that order is the viewer's
 ///   default Left/Right cycle and must not be reshuffled here).
 ///
-/// The function never returns `Err` and never skips a source — even a
+/// The function never returns `Err` and never skips a source: even a
 /// malformed/empty source is emitted so the operator can see that it was
 /// probed. This mirrors the graceful-degradation contract of every other
 /// convert module.
@@ -53,7 +53,7 @@ pub fn convert_sources(sources: Vec<LogSource>) -> Vec<LogSource> {
 /// Convert a single source: normalize placeholders + clamp the line list.
 ///
 /// See [`convert_sources`] for the per-field rules. `exists == false` sources
-/// (permission-denied / absent-on-this-OS) pass through unchanged — the viewer
+/// (permission-denied / absent-on-this-OS) pass through unchanged: the viewer
 /// surfaces them with a dim row so the operator can see WHY a file is
 /// missing, rather than silently dropping it.
 pub fn convert_source(mut src: LogSource) -> LogSource {
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn convert_source_passes_through_unreadable_source() {
-        // An exists==false / permission-denied source must NOT be dropped —
+        // An exists==false / permission-denied source must NOT be dropped:
         // the viewer surfaces it so the operator sees WHY a file is missing.
         let src = LogSource {
             name: "secure (permission denied)".into(),

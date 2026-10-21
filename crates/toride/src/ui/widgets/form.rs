@@ -221,7 +221,7 @@ impl FormModal {
         }
     }
 
-    /// Get the current focus index (field only — returns 0 if buttons focused).
+    /// Get the current focus index (field only: returns 0 if buttons focused).
     #[must_use]
     pub fn focus(&self) -> usize {
         match self.focus {
@@ -360,7 +360,7 @@ impl FormModal {
         }
     }
 
-    /// Handle a key event but never submit — only cycle fields.
+    /// Handle a key event but never submit: only cycle fields.
     /// Returns `true` if the key was consumed.
     pub fn handle_key_cycle(&mut self, code: KeyCode) -> bool {
         if self.fields.is_empty() {

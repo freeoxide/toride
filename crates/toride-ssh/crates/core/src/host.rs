@@ -24,6 +24,11 @@ pub const MAX_HOST_INPUT_LEN: usize = 255;
 /// characters, leading dashes, empty or overlong input: is a typed
 /// [`Error::InvalidHost`] rejection and can never be constructed as a
 /// `HostSpec`.
+///
+/// Single-label names (`web`, `db1`) are accepted and passed through: ssh
+/// resolves them through the user's `~/.ssh/config` `Host` aliases and the
+/// resolver's search domains, so the effective peer is whatever that config
+/// defines for the alias, not necessarily a DNS name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HostSpec {
     user: Option<String>,

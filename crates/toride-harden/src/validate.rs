@@ -9,11 +9,11 @@ use crate::spec::HardenSpec;
 /// Severity of a validation finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ValidationSeverity {
-    /// Informational — no action needed.
+    /// Informational: no action needed.
     Info,
-    /// Warning — may indicate a misconfiguration.
+    /// Warning: may indicate a misconfiguration.
     Warning,
-    /// Error — invalid configuration.
+    /// Error: invalid configuration.
     Error,
 }
 
@@ -156,16 +156,20 @@ pub fn validate_spec(spec: &HardenSpec) -> Result<Vec<ValidationFinding>> {
 }
 
 /// Return expected values for well-known boolean-like sysctl keys.
+///
+/// `kernel.dmesg_restrict` is a 0/1 key in the kernel; `2` and `3` are
+/// rejected here so validation never green-lights a value `sysctl -w`
+/// refuses.
 fn expected_values(key: &str) -> Option<Vec<&'static str>> {
     match key {
-        "kernel.kptr_restrict" | "kernel.dmesg_restrict" | "kernel.yama.ptrace_scope" => {
-            Some(vec!["0", "1", "2", "3"])
-        }
-        "net.ipv4.ip_forward"
+        "kernel.kptr_restrict" | "kernel.yama.ptrace_scope" => Some(vec!["0", "1", "2", "3"]),
+        "kernel.dmesg_restrict"
+        | "net.ipv4.ip_forward"
         | "net.ipv6.conf.all.forwarding"
         | "net.ipv4.conf.all.accept_redirects"
         | "net.ipv4.conf.default.accept_redirects"
         | "net.ipv6.conf.all.accept_redirects"
+        | "net.ipv6.conf.default.accept_redirects"
         | "net.ipv4.conf.all.send_redirects"
         | "net.ipv4.conf.default.send_redirects"
         | "net.ipv4.conf.all.accept_source_route"
@@ -189,9 +193,9 @@ fn numeric_range(key: &str) -> Option<(i64, i64)> {
     match key {
         // expected_values lists ["0","1","2","3"] for each of these; the cap
         // must cover the same set so the allowlist and range checks agree.
-        "kernel.kptr_restrict" | "kernel.dmesg_restrict" | "kernel.yama.ptrace_scope" => {
-            Some((0, 3))
-        }
+        "kernel.kptr_restrict" | "kernel.yama.ptrace_scope" => Some((0, 3)),
+        // expected_values lists ["0","1"]; the kernel rejects 2 and 3.
+        "kernel.dmesg_restrict" => Some((0, 1)),
         "kernel.randomize_va_space" => Some((0, 2)),
         "vm.swappiness" => Some((0, 100)),
         "net.core.somaxconn" => Some((1, 4_294_967_295)),
@@ -243,16 +247,15 @@ mod tests {
                 "kptr_restrict={v} should be accepted (matches expected_values + numeric_range)"
             );
         }
-        // Sibling key with the same mismatch (expected 0..=3, was capped 0..=1).
-        for v in ["0", "1", "2", "3"] {
-            assert!(
-                validate_sysctl_value("kernel.dmesg_restrict", v).is_ok(),
-                "dmesg_restrict={v} should be accepted (matches expected_values + numeric_range)"
-            );
-        }
+        // dmesg_restrict is a 0/1 key in the kernel: 2 and 3 must be
+        // rejected so validation never green-lights a value sysctl -w
+        // refuses.
+        assert!(validate_sysctl_value("kernel.dmesg_restrict", "0").is_ok());
+        assert!(validate_sysctl_value("kernel.dmesg_restrict", "1").is_ok());
+        assert!(validate_sysctl_value("kernel.dmesg_restrict", "2").is_err());
+        assert!(validate_sysctl_value("kernel.dmesg_restrict", "3").is_err());
         // Out-of-range must still be rejected (range upper bound is real).
         assert!(validate_sysctl_value("kernel.kptr_restrict", "4").is_err());
-        assert!(validate_sysctl_value("kernel.dmesg_restrict", "4").is_err());
     }
 
     #[test]

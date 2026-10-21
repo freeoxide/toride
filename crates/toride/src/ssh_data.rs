@@ -91,10 +91,24 @@ pub(crate) struct SshStateCache {
     authorized_keys: Mutex<Option<Stamped<FileStamp, Vec<AuthorizedKeyEntry>>>>,
     certificates: Mutex<Option<CertCacheSlot>>,
     user_ssh_scans: Mutex<HashMap<PathBuf, Stamped<UserSshStamp, UserSshScan>>>,
+    keys: Mutex<Option<KeysCacheSlot>>,
+    config_hosts: Mutex<Option<Stamped<FileStamp, Vec<ConfigHostEntry>>>>,
+    forwarding: Mutex<Option<ForwardingCacheSlot>>,
+    sshd: Mutex<Option<Stamped<FileStamp, SshdSnapshot>>>,
 }
 
 type CertCacheSlot =
     Stamped<Vec<(PathBuf, FileStamp)>, Vec<(PathBuf, toride_ssh::certificate::CertificateInfo)>>;
+
+type KeysCacheSlot = Stamped<Vec<(PathBuf, Option<FileStamp>)>, Vec<SshKeyEntry>>;
+
+type ForwardingCacheSlot = Stamped<Vec<(PathBuf, Option<FileStamp>)>, Vec<ForwardSessionEntry>>;
+
+/// Parsed `sshd_config` state shared by the grading map and the access card.
+struct SshdSnapshot {
+    map: HashMap<String, String>,
+    access: SshAccessInfo,
+}
 
 impl SshStateCache {
     pub(crate) fn new() -> Self {
@@ -103,6 +117,10 @@ impl SshStateCache {
             authorized_keys: Mutex::new(None),
             certificates: Mutex::new(None),
             user_ssh_scans: Mutex::new(HashMap::new()),
+            keys: Mutex::new(None),
+            config_hosts: Mutex::new(None),
+            forwarding: Mutex::new(None),
+            sshd: Mutex::new(None),
         }
     }
 }
@@ -302,8 +320,8 @@ pub enum SshOp {
     ForwardCancel {
         /// Control master socket path.
         control_path: String,
-        /// Local port of the forward to cancel.
-        local_port: u16,
+        /// Spec of the forward to cancel, as created.
+        forward: toride_ssh::forward::PortForward,
     },
     /// Exit (terminate) a control master session.
     ForwardExitSession {
@@ -354,7 +372,7 @@ pub enum SshOp {
 /// A typed error from a write operation.
 ///
 /// `revert_optimistic`: revert the optimistic UI update immediately (refresh)
-/// rather than waiting out the write cooldown — disk truth is known to differ.
+/// rather than waiting out the write cooldown: disk truth is known to differ.
 #[derive(Debug, Clone)]
 pub struct SshOpError {
     /// Human-readable error message (also surfaced to the user as a toast).
@@ -365,7 +383,6 @@ pub struct SshOpError {
 }
 
 impl SshOpError {
-    #[allow(dead_code)]
     fn transient(message: String) -> Self {
         Self {
             message,
@@ -399,7 +416,6 @@ fn map_sshd_error(verb: &str, who: &str, e: &toride_ssh::Error) -> SshOpError {
     }
 }
 
-#[allow(dead_code)]
 fn would_lock_out(verb: &str, username: &str) -> Option<SshOpError> {
     if username == "root" {
         return Some(SshOpError::reverting(format!(
@@ -419,41 +435,20 @@ fn would_lock_out(verb: &str, username: &str) -> Option<SshOpError> {
 }
 
 async fn would_lock_out_async(verb: &str, username: &str) -> Option<SshOpError> {
-    if username == "root" {
-        return Some(SshOpError::reverting(format!(
-            "refusing to {verb} '{username}': would lock out root / your own account"
-        )));
-    }
     let verb = verb.to_string();
     let username = username.to_string();
     let verb_fallback = verb.clone();
     let username_fallback = username.clone();
-    tokio::task::spawn_blocking(move || {
-        if username == "root" {
-            return Some(SshOpError::reverting(format!(
-                "refusing to {verb} '{username}': would lock out root / your own account"
-            )));
-        }
-        if let Some(current) = current_username()
-            && current == username
-        {
-            return Some(SshOpError::reverting(format!(
-                "refusing to {verb} '{username}': would lock out root / your own account"
-            )));
-        }
-        let euid = current_euid();
-        let resolved_uid = uid_for_username(&username);
-        would_lock_out_with_uid(&verb, &username, euid, resolved_uid)
-    })
-    .await
-    .unwrap_or_else(move |e| {
-        tracing::error!(
-            "would_lock_out blocking task panicked for '{username_fallback}': {e}; refusing"
-        );
-        Some(SshOpError::reverting(format!(
-            "refusing to {verb_fallback} '{username_fallback}': lockout check failed ({e})"
-        )))
-    })
+    tokio::task::spawn_blocking(move || would_lock_out(&verb, &username))
+        .await
+        .unwrap_or_else(move |e| {
+            tracing::error!(
+                "would_lock_out blocking task panicked for '{username_fallback}': {e}; refusing"
+            );
+            Some(SshOpError::reverting(format!(
+                "refusing to {verb_fallback} '{username_fallback}': lockout check failed ({e})"
+            )))
+        })
 }
 
 fn would_lock_out_with_uid(
@@ -528,7 +523,7 @@ async fn would_lock_out_authorized_key(
     }
     let matching = entries
         .iter()
-        .filter(|e| e.fingerprint().as_deref() == Some(fingerprint))
+        .filter(|e| e.fingerprint() == fingerprint)
         .count();
     if matching >= total {
         Some(SshOpError::reverting(format!(
@@ -1044,15 +1039,15 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
         }
         SshOp::ForwardCancel {
             control_path,
-            local_port,
+            forward,
         } => {
             let svc = mgr.forward();
             let path = std::path::Path::new(&control_path);
             finish_outcome(
                 "forward",
-                format!("cancelled forward on port {local_port}"),
-                &format!("failed to cancel forward on port {local_port}"),
-                svc.cancel(path, local_port).await,
+                format!("cancelled forward on port {}", forward.local_port),
+                &format!("failed to cancel forward on port {}", forward.local_port),
+                svc.cancel_known(path, &forward).await,
             )
         }
         SshOp::ForwardExitSession { control_path } => {
@@ -1233,10 +1228,10 @@ async fn collect_real_data(
     let paths = toride_ssh::SshPaths::new().ok();
 
     let (keys_r, known_hosts_r, auth_keys_r, config_r, diag_r, agent_r, forward_r, cert_r) = tokio::join!(
-        collect_keys(&mgr),
+        collect_keys_cached(&mgr, paths.as_ref(), cache),
         collect_known_hosts_cached(&mgr, paths.as_ref(), cache),
         collect_authorized_keys_cached(&mgr, paths.as_ref(), cache),
-        collect_config_hosts(&mgr),
+        collect_config_hosts_cached(&mgr, paths.as_ref(), cache),
         async {
             if use_cache {
                 None
@@ -1245,7 +1240,7 @@ async fn collect_real_data(
             }
         },
         collect_agent(&mgr),
-        collect_forwarding(&mgr),
+        collect_forwarding_cached(&mgr, paths.as_ref(), cache),
         collect_certificates_cached(&mgr, cache),
     );
 
@@ -1485,6 +1480,45 @@ async fn collect_keys(mgr: &toride_ssh::SshManager) -> Result<Vec<SshKeyEntry>, 
     }
 }
 
+async fn collect_keys_cached(
+    mgr: &toride_ssh::SshManager,
+    paths: Option<&toride_ssh::SshPaths>,
+    cache: &SshStateCache,
+) -> Result<Vec<SshKeyEntry>, ()> {
+    let Some(paths) = paths else {
+        return collect_keys(mgr).await;
+    };
+    let ssh_dir = paths.ssh_dir().to_path_buf();
+    let listing = user_key_listing(&ssh_dir);
+    let stamp: Vec<(PathBuf, Option<FileStamp>)> = listing
+        .iter()
+        .map(|(name, s)| (ssh_dir.join(name), *s))
+        .collect();
+    let cacheable = listing.iter().all(|(_, s)| s.is_some());
+
+    if cacheable {
+        let hit = {
+            let slot = cache.keys.lock().expect("keys cache mutex poisoned");
+            slot.as_ref()
+                .filter(|cached| cached.stamp == stamp)
+                .map(|cached| Arc::clone(&cached.value))
+        };
+        if let Some(entries) = hit {
+            return Ok((*entries).clone());
+        }
+    }
+
+    let entries = collect_keys(mgr).await?;
+
+    if cacheable {
+        *cache.keys.lock().expect("keys cache mutex poisoned") = Some(Stamped {
+            stamp,
+            value: Arc::new(entries.clone()),
+        });
+    }
+    Ok(entries)
+}
+
 async fn collect_config_hosts(mgr: &toride_ssh::SshManager) -> Result<Vec<ConfigHostEntry>, ()> {
     let svc = mgr.config();
     match svc.load().await {
@@ -1494,6 +1528,43 @@ async fn collect_config_hosts(mgr: &toride_ssh::SshManager) -> Result<Vec<Config
             Err(())
         }
     }
+}
+
+async fn collect_config_hosts_cached(
+    mgr: &toride_ssh::SshManager,
+    paths: Option<&toride_ssh::SshPaths>,
+    cache: &SshStateCache,
+) -> Result<Vec<ConfigHostEntry>, ()> {
+    let stamp = paths
+        .map(|p| p.ssh_dir().join("config"))
+        .and_then(|p| stamp_path(&p));
+    if let Some(stamp) = stamp {
+        let hit = {
+            let slot = cache
+                .config_hosts
+                .lock()
+                .expect("config_hosts cache mutex poisoned");
+            slot.as_ref()
+                .filter(|cached| cached.stamp == stamp)
+                .map(|cached| Arc::clone(&cached.value))
+        };
+        if let Some(entries) = hit {
+            return Ok((*entries).clone());
+        }
+    }
+
+    let entries = collect_config_hosts(mgr).await?;
+
+    if let Some(stamp) = stamp {
+        *cache
+            .config_hosts
+            .lock()
+            .expect("config_hosts cache mutex poisoned") = Some(Stamped {
+            stamp,
+            value: Arc::new(entries.clone()),
+        });
+    }
+    Ok(entries)
 }
 
 async fn collect_diagnostics(mgr: &toride_ssh::SshManager) -> Result<Vec<DiagnosticEntry>, ()> {
@@ -1550,13 +1621,82 @@ async fn collect_agent(
 
 async fn collect_forwarding(mgr: &toride_ssh::SshManager) -> Result<Vec<ForwardSessionEntry>, ()> {
     let svc = mgr.forward();
-    match svc.list().await {
+    match svc.list_sessions().await {
         Ok(sessions) => Ok(ssh_convert::convert_forwarding(sessions)),
         Err(e) => {
             tracing::debug!("forwarding: {e}");
             Err(())
         }
     }
+}
+
+/// Stamp the candidate control-socket set the forward service would probe:
+/// the `~/.ssh` `cm-`/`control-`/`mux-`/`ctrl-` entries with per-file stamps,
+/// plus ONE directory stamp for `/tmp` (whose `ssh-` entries live directly in
+/// the directory, so its mtime covers create/remove of candidates without a
+/// per-entry scan; /tmp can hold tens of thousands of unrelated files).
+fn forwarding_stamp(paths: Option<&toride_ssh::SshPaths>) -> Vec<(PathBuf, Option<FileStamp>)> {
+    forwarding_stamp_raw(paths.map(toride_ssh::SshPaths::ssh_dir))
+}
+
+fn forwarding_stamp_raw(ssh_dir: Option<&Path>) -> Vec<(PathBuf, Option<FileStamp>)> {
+    let mut out = Vec::new();
+    if let Some(ssh_dir) = ssh_dir
+        && let Ok(entries) = std::fs::read_dir(ssh_dir)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let matches_prefix = ["cm-", "control-", "mux-", "ctrl-"]
+                .iter()
+                .any(|p| name.starts_with(p));
+            if matches_prefix {
+                let path = entry.path();
+                out.push((path.clone(), stamp_path(&path)));
+            }
+        }
+    }
+    let tmp = Path::new("/tmp");
+    out.push((tmp.to_path_buf(), stamp_path(tmp)));
+    out.sort();
+    out
+}
+
+async fn collect_forwarding_cached(
+    mgr: &toride_ssh::SshManager,
+    paths: Option<&toride_ssh::SshPaths>,
+    cache: &SshStateCache,
+) -> Result<Vec<ForwardSessionEntry>, ()> {
+    let stamp = forwarding_stamp(paths);
+    let cacheable = stamp.iter().all(|(_, s)| s.is_some());
+
+    if cacheable {
+        let hit = {
+            let slot = cache
+                .forwarding
+                .lock()
+                .expect("forwarding cache mutex poisoned");
+            slot.as_ref()
+                .filter(|cached| cached.stamp == stamp)
+                .map(|cached| Arc::clone(&cached.value))
+        };
+        if let Some(entries) = hit {
+            return Ok((*entries).clone());
+        }
+    }
+
+    let entries = collect_forwarding(mgr).await?;
+
+    if cacheable {
+        *cache
+            .forwarding
+            .lock()
+            .expect("forwarding cache mutex poisoned") = Some(Stamped {
+            stamp,
+            value: Arc::new(entries.clone()),
+        });
+    }
+    Ok(entries)
 }
 
 async fn collect_certificates_cached(
@@ -1638,6 +1778,41 @@ async fn collect_certificates_cached(
     Ok(ssh_convert::convert_certificates(raw))
 }
 
+fn cached_sshd_snapshot(cache: &SshStateCache) -> Arc<SshdSnapshot> {
+    let sshd_path = Path::new("/etc/ssh/sshd_config");
+    if let Some(stamp) = stamp_path(sshd_path) {
+        let hit = {
+            let slot = cache.sshd.lock().expect("sshd cache mutex poisoned");
+            slot.as_ref()
+                .filter(|cached| cached.stamp == stamp)
+                .map(|cached| Arc::clone(&cached.value))
+        };
+        if let Some(snapshot) = hit {
+            return snapshot;
+        }
+        let snapshot = Arc::new(sshd_snapshot_from(sshd_path));
+        *cache.sshd.lock().expect("sshd cache mutex poisoned") = Some(Stamped {
+            stamp,
+            value: Arc::clone(&snapshot),
+        });
+        return snapshot;
+    }
+    Arc::new(sshd_snapshot_from(sshd_path))
+}
+
+fn sshd_snapshot_from(path: &Path) -> SshdSnapshot {
+    let contents = std::fs::read_to_string(path).unwrap_or_default();
+    let MergedSshdDirectives {
+        map,
+        allow_users,
+        deny_users,
+        allow_groups,
+        deny_groups,
+    } = merge_sshd_directives(&contents, Path::new("/etc/ssh"));
+    let access = access_info_from_parts(&map, allow_users, deny_users, allow_groups, deny_groups);
+    SshdSnapshot { map, access }
+}
+
 fn build_security_data(
     known_hosts: &[KnownHostEntry],
     authorized_keys: &[AuthorizedKeyEntry],
@@ -1646,10 +1821,8 @@ fn build_security_data(
     current_entries: Option<&[AuthorizedKeyEntry]>,
     cache: &SshStateCache,
 ) -> SshSecurityData {
-    let sshd_contents =
-        std::fs::read_to_string(Path::new("/etc/ssh/sshd_config")).unwrap_or_default();
-
-    let sshd_config = parse_sshd_config_from(&sshd_contents);
+    let snapshot = cached_sshd_snapshot(cache);
+    let sshd_config = snapshot.map.clone();
 
     let known_hosts_hashed_count = known_hosts.iter().filter(|h| h.is_hashed).count();
 
@@ -1671,7 +1844,7 @@ fn build_security_data(
         known_hosts_count: known_hosts.len(),
         known_hosts_hashed_count,
         security_diagnostics,
-        access_info: parse_sshd_access_info_from(&sshd_contents),
+        access_info: snapshot.access.clone(),
         system_users: parse_system_users(current_ssh_dir, current_entries, cache),
         is_root: toride_ssh::is_root(),
     }
@@ -1887,65 +2060,88 @@ impl SshSecurityData {
     }
 }
 
-#[allow(dead_code)]
-fn parse_sshd_config() -> HashMap<String, String> {
-    let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config")).unwrap_or_default();
-    parse_sshd_config_from(&contents)
-}
-
+#[cfg(test)]
 fn parse_sshd_config_from(contents: &str) -> HashMap<String, String> {
     parse_sshd_config_from_dir(contents, Path::new("/etc/ssh"))
 }
 
+#[cfg(test)]
 fn parse_sshd_config_from_dir(contents: &str, base_dir: &Path) -> HashMap<String, String> {
+    merge_sshd_directives(contents, base_dir).map
+}
+
+/// Include-expanded `sshd_config` state shared by the config map and the
+/// access card, so both report from one directive stream.
+///
+/// `map` is first-obtained-wins over global (non-`Match`-scoped) directives
+/// from the main file and every expanded `Include`, matching `sshd_config(5)`
+/// first-value semantics. The user/group lists follow the additive semantics
+/// of `AllowUsers`/`DenyUsers`/`AllowGroups`/`DenyGroups`.
+#[derive(Default)]
+struct MergedSshdDirectives {
+    map: HashMap<String, String>,
+    allow_users: Vec<String>,
+    deny_users: Vec<String>,
+    allow_groups: Vec<String>,
+    deny_groups: Vec<String>,
+}
+
+fn merge_sshd_directives(contents: &str, base_dir: &Path) -> MergedSshdDirectives {
+    let mut merged = MergedSshdDirectives::default();
+    let mut seen = std::collections::HashSet::new();
+    merge_sshd_file(contents, base_dir, &mut merged, &mut seen);
+    merged
+}
+
+fn merge_sshd_file(
+    contents: &str,
+    base_dir: &Path,
+    merged: &mut MergedSshdDirectives,
+    seen: &mut std::collections::HashSet<std::path::PathBuf>,
+) {
     use toride_ssh::config::ast::{ConfigNode, parse};
-
-    fn walk(
-        ast_nodes: &[ConfigNode],
-        base_dir: &Path,
-        config: &mut HashMap<String, String>,
-        seen: &mut std::collections::HashSet<std::path::PathBuf>,
-    ) {
-        for node in ast_nodes {
-            let ConfigNode::Directive(d) = node else {
-                continue;
-            };
-            let key = d.keyword.to_lowercase();
-            if key == "include" {
-                expand_include(&d.value, base_dir, config, seen);
-                continue;
-            }
-            config.entry(key).or_insert_with(|| d.value.clone());
-        }
-    }
-
-    fn expand_include(
-        args: &str,
-        base_dir: &Path,
-        config: &mut HashMap<String, String>,
-        seen: &mut std::collections::HashSet<std::path::PathBuf>,
-    ) {
-        for pattern in args.split_whitespace() {
-            let resolved = resolve_include_path(pattern, base_dir);
-            for file in glob_include(&resolved) {
-                let canon = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
-                if !seen.insert(canon.clone()) {
-                    continue;
-                }
-                let Ok(contents) = std::fs::read_to_string(&file) else {
-                    continue;
-                };
-                let child_ast = parse(&contents);
-                walk(&child_ast.nodes, base_dir, config, seen);
-            }
-        }
-    }
+    use toride_ssh::config::sshd::{
+        get_allow_groups, get_allow_users, get_deny_groups, get_deny_users,
+    };
 
     let ast = parse(contents);
-    let mut config: HashMap<String, String> = HashMap::new();
-    let mut seen = std::collections::HashSet::new();
-    walk(&ast.nodes, base_dir, &mut config, &mut seen);
-    config
+    merged.allow_users.extend(get_allow_users(&ast));
+    merged.deny_users.extend(get_deny_users(&ast));
+    merged.allow_groups.extend(get_allow_groups(&ast));
+    merged.deny_groups.extend(get_deny_groups(&ast));
+
+    for node in &ast.nodes {
+        let ConfigNode::Directive(d) = node else {
+            continue;
+        };
+        let key = d.keyword.to_lowercase();
+        if key == "include" {
+            expand_include(&d.value, base_dir, merged, seen);
+            continue;
+        }
+        merged.map.entry(key).or_insert_with(|| d.value.clone());
+    }
+}
+
+fn expand_include(
+    args: &str,
+    base_dir: &Path,
+    merged: &mut MergedSshdDirectives,
+    seen: &mut std::collections::HashSet<std::path::PathBuf>,
+) {
+    for pattern in args.split_whitespace() {
+        let resolved = resolve_include_path(pattern, base_dir);
+        for file in glob_include(&resolved) {
+            let canon = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+            if !seen.insert(canon.clone()) {
+                continue;
+            }
+            let Ok(contents) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            merge_sshd_file(&contents, base_dir, merged, seen);
+        }
+    }
 }
 
 fn resolve_include_path(pattern: &str, base_dir: &Path) -> std::path::PathBuf {
@@ -2049,70 +2245,58 @@ fn glob_match_inner(text: &[u8], pattern: &[u8]) -> bool {
     pi == pattern.len()
 }
 
-#[allow(dead_code)]
-fn parse_sshd_access_info() -> SshAccessInfo {
-    let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config")).unwrap_or_default();
-    parse_sshd_access_info_from(&contents)
+#[cfg(test)]
+fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
+    let MergedSshdDirectives {
+        map,
+        allow_users,
+        deny_users,
+        allow_groups,
+        deny_groups,
+    } = merge_sshd_directives(contents, Path::new("/etc/ssh"));
+    access_info_from_parts(&map, allow_users, deny_users, allow_groups, deny_groups)
 }
 
-fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
-    use toride_ssh::config::ast::{ConfigNode, parse};
-    use toride_ssh::config::sshd::{
-        get_allow_groups, get_allow_users, get_deny_groups, get_deny_users,
+#[cfg(test)]
+fn access_info_from_merged(merged: MergedSshdDirectives) -> SshAccessInfo {
+    let MergedSshdDirectives {
+        map,
+        allow_users,
+        deny_users,
+        allow_groups,
+        deny_groups,
+    } = merged;
+    access_info_from_parts(&map, allow_users, deny_users, allow_groups, deny_groups)
+}
+
+fn access_info_from_parts(
+    map: &HashMap<String, String>,
+    allow_users: Vec<String>,
+    deny_users: Vec<String>,
+    allow_groups: Vec<String>,
+    deny_groups: Vec<String>,
+) -> SshAccessInfo {
+    let flag = |key: &str, default: bool| {
+        map.get(key)
+            .map_or(default, |v| v.trim().eq_ignore_ascii_case("yes"))
     };
 
-    let ast = parse(contents);
-
-    let mut info = SshAccessInfo {
+    SshAccessInfo {
         available: true,
-        ..SshAccessInfo::default()
-    };
-
-    info.allowed_users = get_allow_users(&ast);
-    info.denied_users = get_deny_users(&ast);
-    info.allowed_groups = get_allow_groups(&ast);
-    info.denied_groups = get_deny_groups(&ast);
-
-    let mut seen_pubkey = false;
-    let mut seen_password = false;
-    let mut seen_permit_root = false;
-
-    for node in &ast.nodes {
-        let ConfigNode::Directive(d) = node else {
-            continue;
-        };
-        let value = d.value.trim();
-        match d.keyword.to_lowercase().as_str() {
-            "authenticationmethods" => {
-                info.auth_methods = value.split(',').map(|s| s.trim().to_string()).collect();
-            }
-            "passwordauthentication" => {
-                info.password_auth = value.eq_ignore_ascii_case("yes");
-                seen_password = true;
-            }
-            "pubkeyauthentication" => {
-                info.pubkey_auth = value.eq_ignore_ascii_case("yes");
-                seen_pubkey = true;
-            }
-            "permitrootlogin" => {
-                info.permit_root_login = value.to_string();
-                seen_permit_root = true;
-            }
-            _ => {}
-        }
+        allowed_users: allow_users,
+        denied_users: deny_users,
+        allowed_groups: allow_groups,
+        denied_groups: deny_groups,
+        auth_methods: map
+            .get("authenticationmethods")
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_default(),
+        password_auth: flag("passwordauthentication", true),
+        pubkey_auth: flag("pubkeyauthentication", true),
+        permit_root_login: map
+            .get("permitrootlogin")
+            .map_or_else(|| "prohibit-password".to_string(), |v| v.trim().to_string()),
     }
-
-    if !seen_pubkey {
-        info.pubkey_auth = true;
-    }
-    if !seen_password {
-        info.password_auth = true;
-    }
-    if !seen_permit_root {
-        info.permit_root_login = "prohibit-password".to_string();
-    }
-
-    info
 }
 
 fn parse_system_users(
@@ -2390,7 +2574,15 @@ fn parse_system_users_linux(
     let Ok(contents) = std::fs::read_to_string("/etc/passwd") else {
         return vec![];
     };
+    parse_system_users_linux_from(&contents, current_ssh_dir, current_entries, cache)
+}
 
+fn parse_system_users_linux_from(
+    contents: &str,
+    current_ssh_dir: Option<&Path>,
+    current_entries: Option<&[AuthorizedKeyEntry]>,
+    cache: &SshStateCache,
+) -> Vec<SystemUserInfo> {
     let invalid_shells = [
         "/bin/false",
         "/sbin/nologin",
@@ -2417,7 +2609,9 @@ fn parse_system_users_linux(
         let home_dir = parts[5];
         let shell = parts[6];
 
-        if uid < 500 {
+        // Sub-500 keeps system service accounts out; uid 0 (root) is always
+        // kept so the view reflects /root/.ssh when toride runs as root.
+        if uid != 0 && uid < 500 {
             continue;
         }
 
@@ -3385,6 +3579,137 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
     }
 
     #[test]
+    fn sshd_snapshot_cache_shares_one_arc_while_stamp_unchanged() {
+        if !Path::new("/etc/ssh/sshd_config").exists() {
+            return;
+        }
+        let cache = SshStateCache::new();
+        let first = cached_sshd_snapshot(&cache);
+        let second = cached_sshd_snapshot(&cache);
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "an unchanged sshd_config must be served from the stamp cache"
+        );
+    }
+
+    #[test]
+    fn forwarding_stamp_tracks_ssh_dir_candidates_and_tmp_dir() {
+        struct FixturePaths {
+            dir: tempfile::TempDir,
+        }
+        impl FixturePaths {
+            fn ssh_dir(&self) -> &Path {
+                self.dir.path()
+            }
+        }
+        let fixture = FixturePaths {
+            dir: tempfile::tempdir().expect("tempdir"),
+        };
+        std::fs::write(fixture.ssh_dir().join("cm-one"), b"x").expect("write socket candidate");
+        let stamp = forwarding_stamp_raw(Some(fixture.ssh_dir()));
+        assert!(
+            stamp
+                .iter()
+                .any(|(p, s)| p.ends_with("cm-one") && s.is_some()),
+            "ssh_dir candidates carry per-file stamps: {stamp:?}"
+        );
+        assert!(
+            stamp
+                .iter()
+                .any(|(p, s)| p == Path::new("/tmp") && s.is_some()),
+            "/tmp is stamped by directory metadata, not a per-entry scan"
+        );
+
+        std::fs::write(fixture.ssh_dir().join("cm-two"), b"x").expect("write second candidate");
+        let changed = forwarding_stamp_raw(Some(fixture.ssh_dir()));
+        assert_ne!(
+            stamp, changed,
+            "a new socket candidate must change the stamp"
+        );
+    }
+
+    #[test]
+    fn parse_sshd_access_info_from_expands_dropin_include() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dropdir = dir.path().join("sshd_config.d");
+        std::fs::create_dir_all(&dropdir).expect("mkdir dropin");
+        std::fs::write(dropdir.join("50-cloud.conf"), "PasswordAuthentication no\n")
+            .expect("write dropin");
+
+        let main = "Include sshd_config.d/*.conf\nPasswordAuthentication yes\n";
+        let merged = merge_sshd_directives(main, dir.path());
+        assert_eq!(
+            merged.map.get("passwordauthentication"),
+            Some(&"no".to_string()),
+            "drop-in before the main directive must win (first-obtained-wins)"
+        );
+        let info = access_info_from_merged(merged);
+        assert!(
+            !info.password_auth,
+            "access card must agree with the graded config map on the drop-in value"
+        );
+    }
+
+    #[test]
+    fn parse_sshd_access_info_first_occurrence_wins() {
+        let info =
+            parse_sshd_access_info_from("PasswordAuthentication no\nPasswordAuthentication yes\n");
+        assert!(
+            !info.password_auth,
+            "first-obtained value must win, matching sshd_config(5) semantics"
+        );
+    }
+
+    #[test]
+    fn parse_sshd_access_info_accumulates_dropin_allow_users() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dropdir = dir.path().join("sshd_config.d");
+        std::fs::create_dir_all(&dropdir).expect("mkdir dropin");
+        std::fs::write(dropdir.join("10-users.conf"), "AllowUsers bob\n").expect("write dropin");
+
+        let main = "AllowUsers alice\nInclude sshd_config.d/*.conf\n";
+        let info = access_info_from_merged(merge_sshd_directives(main, dir.path()));
+        assert_eq!(
+            info.allowed_users,
+            vec!["alice".to_string(), "bob".to_string()],
+            "AllowUsers must stay additive across expanded includes"
+        );
+    }
+
+    #[test]
+    fn parse_system_users_linux_from_keeps_root_and_filters_service_accounts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in ["root", "daemon", "alice"] {
+            let home = dir.path().join(name);
+            std::fs::create_dir_all(home.join(".ssh")).expect("mkdir home/.ssh");
+        }
+        let contents = format!(
+            "root:x:0:0:root:{}:/bin/bash\n\
+             daemon:x:1:1:daemon:{}:/bin/sh\n\
+             alice:x:1000:1000:Alice:{}:/bin/bash\n",
+            dir.path().join("root").display(),
+            dir.path().join("daemon").display(),
+            dir.path().join("alice").display(),
+        );
+
+        let cache = SshStateCache::new();
+        let users = parse_system_users_linux_from(&contents, None, None, &cache);
+        let names: Vec<&str> = users.iter().map(|u| u.username.as_str()).collect();
+        assert!(
+            names.contains(&"root"),
+            "root must not be cut by the uid filter"
+        );
+        assert!(
+            names.contains(&"alice"),
+            "regular uid-1000 account must be listed"
+        );
+        assert!(
+            !names.contains(&"daemon"),
+            "sub-500 service accounts must stay filtered"
+        );
+    }
+
+    #[test]
     fn parse_sshd_config_from_keys_are_lowercased() {
         let contents = "PasswordAuthentication no\nPermitRootLogin yes\n";
         let config = parse_sshd_config_from(contents);
@@ -3533,11 +3858,10 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         assert_eq!(info.denied_users, vec!["mallory"]);
     }
 
-    use tokio::sync::Mutex;
-    static HOME_LOCK: Mutex<usize> = Mutex::const_new(0);
+    use tokio::sync::MutexGuard;
 
-    async fn acquire_home_lock() -> tokio::sync::MutexGuard<'static, usize> {
-        HOME_LOCK.lock().await
+    async fn acquire_home_lock() -> MutexGuard<'static, ()> {
+        crate::test_env::lock_async().await
     }
 
     struct TempHome {
@@ -3551,7 +3875,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             let ssh_dir = dir.path().join(".ssh");
             std::fs::create_dir_all(&ssh_dir).expect("mkdir .ssh");
             let original = std::env::var_os("HOME").map(std::path::PathBuf::from);
-            // SAFETY: test-only; HOME_LOCK ensures serial execution.
+            // SAFETY: test-only; the shared crate env lock serializes this.
             unsafe {
                 std::env::set_var("HOME", dir.path());
             }
@@ -3885,9 +4209,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
 
         let entry = matched.expect("entry must exist");
-        let fp = entry
-            .fingerprint()
-            .expect("Step 3 REMOVE: could not compute fingerprint");
+        let fp = entry.fingerprint();
         let removed = svc
             .remove(&fp)
             .await
@@ -3920,7 +4242,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let add_result = svc.add("localhost").await;
         if add_result.is_err() {
             eprintln!(
-                "⚠ Step 1 ADD: ssh-keyscan localhost failed ({:?}) — skipping known_hosts test",
+                "⚠ Step 1 ADD: ssh-keyscan localhost failed ({:?}): skipping known_hosts test",
                 add_result.err()
             );
             eprintln!("ℹ This is expected if no SSH server runs on localhost");
@@ -3969,7 +4291,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "Step 1 CREATE via execute_op failed: {:?}",
             result.err()
         );
-        eprintln!("✓ Step 1: execute_op(KeyCreate) — {}", result.unwrap());
+        eprintln!("✓ Step 1: execute_op(KeyCreate): {}", result.unwrap());
 
         let key_path = std::path::Path::new(&home).join(".ssh/pipeline-key");
         assert!(
@@ -3988,7 +4310,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "Step 3 RENAME via execute_op failed: {:?}",
             result.err()
         );
-        eprintln!("✓ Step 3: execute_op(KeyRename) — {}", result.unwrap());
+        eprintln!("✓ Step 3: execute_op(KeyRename): {}", result.unwrap());
 
         assert!(!key_path.exists(), "Step 4 VERIFY: old key still exists");
         let renamed_path = std::path::Path::new(&home).join(".ssh/pipeline-renamed");
@@ -4004,7 +4326,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "Step 5 DELETE via execute_op failed: {:?}",
             result.err()
         );
-        eprintln!("✓ Step 5: execute_op(KeyDelete) — {}", result.unwrap());
+        eprintln!("✓ Step 5: execute_op(KeyDelete): {}", result.unwrap());
 
         assert!(
             !renamed_path.exists(),
@@ -4024,7 +4346,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "Step 7 CONFIG ADD via execute_op failed: {:?}",
             result.err()
         );
-        eprintln!("✓ Step 7: execute_op(ConfigAddHost) — {}", result.unwrap());
+        eprintln!("✓ Step 7: execute_op(ConfigAddHost): {}", result.unwrap());
 
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let ast = mgr.config().load().await.expect("load config");
@@ -4045,7 +4367,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             result.err()
         );
         eprintln!(
-            "✓ Step 9: execute_op(ConfigRemoveHost) — {}",
+            "✓ Step 9: execute_op(ConfigRemoveHost): {}",
             result.unwrap()
         );
 
@@ -4317,7 +4639,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
         let entries = svc.list().await.expect("list");
         assert_eq!(entries.len(), 1, "seeded one key");
-        let fp = entries[0].fingerprint().expect("fingerprint").clone();
+        let fp = entries[0].fingerprint();
 
         let guard = would_lock_out_authorized_key(&svc, &fp)
             .await
@@ -4381,7 +4703,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
         let entries = svc.list().await.expect("list");
         assert_eq!(entries.len(), 3, "seeded three copies");
-        let fp = entries[0].fingerprint().expect("fingerprint").clone();
+        let fp = entries[0].fingerprint();
 
         let guard = would_lock_out_authorized_key(&svc, &fp)
             .await
@@ -4402,7 +4724,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
         let entries = svc.list().await.expect("list");
         assert_eq!(entries.len(), 1, "seeded one key");
-        let fp = entries[0].fingerprint().expect("fingerprint").clone();
+        let fp = entries[0].fingerprint();
 
         let home = std::env::var("HOME").expect("HOME");
         let ak_path = std::path::Path::new(&home).join(".ssh/authorized_keys");

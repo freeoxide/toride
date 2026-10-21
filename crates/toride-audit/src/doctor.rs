@@ -391,7 +391,7 @@ mod tests {
         assert!(runner.calls().is_empty());
         // check_aide ran: with a missing aide.conf it emits either
         // `binary.aide.missing` (no aide installed) or `config.aide.missing`
-        // (aide installed but conf absent). Both are acceptable — assert one.
+        // (aide installed but conf absent). Both are acceptable: assert one.
         let ids = finding_ids(&report);
         let has_aide_finding = ids
             .iter()

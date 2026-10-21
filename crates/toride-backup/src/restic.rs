@@ -720,7 +720,7 @@ impl ResticClient {
 ///
 /// The runner's `Error` `Display` (produced by `run_checked`) already scrubs
 /// secret values from the captured args/stderr when the originating spec was
-/// built with `redact(true)` — which every restic spec is — so this is safe to
+/// built with `redact(true)`: which every restic spec is, so this is safe to
 /// embed in our own error variants.
 fn restic_err(err: &toride_runner::Error) -> String {
     err.to_string()

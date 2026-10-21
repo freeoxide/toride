@@ -18,7 +18,7 @@ optional dependencies.
 
 ```toml
 [dependencies]
-toride-fs = "0.1"
+toride-fs = "0.2"
 ```
 
 [Changelog](CHANGELOG.md) · [Source](https://github.com/freeoxide/toride/tree/master/crates/toride-fs)

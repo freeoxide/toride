@@ -57,7 +57,7 @@ impl Default for GradientCache {
 /// Animated color-cycling border that draws box-drawing characters around a
 /// rect, with foreground colours flowing clockwise at ~12 cells/second.
 ///
-/// Pure UI widget — no business logic coupling. Call [`AnimatedBorder::draw`]
+/// Pure UI widget: no business logic coupling. Call [`AnimatedBorder::draw`]
 /// once per frame with the target rect.
 pub struct AnimatedBorder {
     color_cycle: Vec<Color>,
@@ -156,7 +156,7 @@ fn copy_bg_to_buf(colors: &[Color], buf: &mut Buffer, area: Rect) {
 
 // ── Animated border internals ──────────────────────────────────────────────────
 
-/// Build a seamless looping color gradient from a base color using HSL manipulation.
+/// Build a looping color gradient from a base color using HSL manipulation.
 /// Ported from exabind's `select_category_color_cycle()`, with a final wrap-around
 /// segment that interpolates back to the base color for smooth looping at corners.
 pub fn build_color_cycle(base_color: Color) -> Vec<Color> {
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn gradient_cache_default_works() {
-        // Default should behave identically to new() — no cached area.
+        // Default should behave identically to new(): no cached area.
         let area = Rect::new(0, 0, 2, 1);
         let mut buf = Buffer::empty(area);
         let mut cache = GradientCache::default();
@@ -403,7 +403,7 @@ mod tests {
             "cache hit should reuse old colours"
         );
 
-        // Invalidate and re-render — now colours must come from the new palette.
+        // Invalidate and re-render: now colours must come from the new palette.
         cache.invalidate();
         let mut buf3 = Buffer::empty(area);
         cache.render_or_copy(&mut buf3, area, NORD);

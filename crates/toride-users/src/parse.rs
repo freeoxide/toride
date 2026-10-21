@@ -48,7 +48,7 @@ impl std::fmt::Display for PasswdEntry {
 /// This parser is LENIENT at the per-line granularity, mirroring
 /// [`parse_sudoers`]: a line that does not have exactly 7 colon-separated
 /// fields, or whose UID/GID fails `u32` parsing, is logged with
-/// `tracing::warn!` and skipped — every other valid line still survives. This
+/// `tracing::warn!` and skipped: every other valid line still survives. This
 /// matters because `/etc/passwd` is free-form text that an operator may
 /// hand-edit; a single malformed line must not discard the whole file (which
 /// would otherwise render the read as an empty table and hide every valid
@@ -134,7 +134,7 @@ impl std::fmt::Display for GroupEntry {
 /// This parser is LENIENT at the per-line granularity, mirroring
 /// [`parse_sudoers`] and [`parse_passwd`]: a line that does not have exactly 4
 /// colon-separated fields, or whose GID fails `u32` parsing, is logged with
-/// `tracing::warn!` and skipped — every other valid line still survives. As
+/// `tracing::warn!` and skipped: every other valid line still survives. As
 /// with `/etc/passwd`, `/etc/group` is free-form text that an operator may
 /// hand-edit, so a single malformed line must not discard the whole file.
 ///
@@ -293,7 +293,7 @@ pub fn read_sudoers(path: &Path) -> Result<Vec<SudoersEntry>> {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 //
-// These exercise the PARSER edge cases — the unhappy paths the audit flagged as
+// These exercise the PARSER edge cases: the unhappy paths the audit flagged as
 // having zero coverage. They pin the per-line lenient degradation behavior: a
 // single malformed line must never discard the whole file, matching
 // `parse_sudoers`'s long-standing `continue` precedent.
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn parse_passwd_malformed_line_is_skipped_not_fatal() {
         // A valid entry, a degenerate line, then another valid entry. The two
-        // valid entries must survive — this is the core per-line degradation
+        // valid entries must survive: this is the core per-line degradation
         // contract that previously failed fast and lost everything.
         let input = concat!(
             "root:x:0:0:root:/root:/bin/bash\n",
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn parse_passwd_non_numeric_uid_is_skipped() {
-        // A well-formed field count but a non-numeric UID — previously
+        // A well-formed field count but a non-numeric UID: previously
         // returned Err and dropped the whole file.
         let input =
             "weird:x:notanumber:0:weird:/home/weird:/bin/bash\nroot:x:0:0:root:/root:/bin/bash\n";
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn parse_sudoers_line_with_too_few_tokens_is_skipped() {
-        // <3 space-parts — the existing `continue` path.
+        // <3 space-parts: the existing `continue` path.
         let input = "onlyoneword\nroot ALL\n";
         let entries = parse_sudoers(input).expect("short lines skipped, not fatal");
         assert!(
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn parse_sudoers_unmatched_paren_falls_back_to_no_runas() {
-        // `= (runas` with no closing paren — the fall-back branch sets runas=None
+        // `= (runas` with no closing paren: the fall-back branch sets runas=None
         // and keeps the rest verbatim. Space-separated so the `=` is its own
         // token and the `(runas` reaches the runas-extraction logic.
         let input = "bob ALL = (root NOPASSWD: /bin/true\n";

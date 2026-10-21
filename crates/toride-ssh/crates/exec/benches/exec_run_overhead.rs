@@ -15,12 +15,16 @@ use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use toride_runner::CommandOutput;
+use toride_runner::CommandSpec;
+use toride_runner::Runner as _;
 use toride_runner::discovery::binary_exists;
 use toride_runner::fake::FakeRunner;
 use toride_ssh_core::HostSpec;
-use toride_ssh_exec::ExecService;
+use toride_ssh_exec::{ExecService, SshRunner};
 
 const COMMAND: [&str; 3] = ["systemctl", "is-active", "toride-web"];
+
+const LOCAL_SPEC_ARGS: [&str; 1] = ["is-active"];
 
 fn exec_run_overhead(c: &mut Criterion) {
     assert!(
@@ -58,6 +62,18 @@ fn exec_run_overhead(c: &mut Criterion) {
                 service
                     .run(black_box(&host), black_box(&COMMAND))
                     .expect("fake-backed run succeeds"),
+            )
+        });
+    });
+
+    group.bench_function("run_ssh_runner_adapter", |b| {
+        let adapter = SshRunner::new(Box::new(fake.clone()), host.clone());
+        b.iter(|| {
+            let spec = CommandSpec::new("systemctl").args(LOCAL_SPEC_ARGS);
+            black_box(
+                adapter
+                    .run(black_box(&spec))
+                    .expect("fake-backed forwarded run succeeds"),
             )
         });
     });

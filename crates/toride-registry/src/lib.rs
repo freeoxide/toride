@@ -1,7 +1,7 @@
 //! # toride-registry
 //!
-//! Normalizes external package registries — Homebrew (formulae.brew.sh),
-//! Flathub, AppStream/DEP-11 distro catalogs, and Repology — into the one
+//! Normalizes external package registries: Homebrew (formulae.brew.sh),
+//! Flathub, AppStream/DEP-11 distro catalogs, and Repology: into the one
 //! normalized [`App`] model. Every external repository has its own
 //! structure; each is normalized by exactly one [`Adapter`], the only
 //! place source-specific knowledge lives. Search, resolve, alias handling
@@ -12,20 +12,20 @@
 //!
 //! The crate is split into:
 //!
-//! - the normalized [`model`] — the single shape that crosses the adapter
+//! - the normalized [`model`]: the single shape that crosses the adapter
 //!   boundary outward;
-//! - the [`Adapter`] trait — the contract each per-source module
+//! - the [`Adapter`] trait: the contract each per-source module
 //!   implements, with a strict parse (pure, `&str` in → `App` out,
 //!   fixture-tested offline) / fetch (thin clients returning raw body
 //!   text) split;
-//! - the per-source modules under [`sources`] — wave 1 wires
+//! - the per-source modules under [`sources`]: wave 1 wires
 //!   [`homebrew`][sources::homebrew], [`flathub`][sources::flathub],
 //!   [`appstream`][sources::appstream], and the parse-only Repology oracle
 //!   [`repology`][sources::repology];
-//! - the [`Registry`] facade (DESIGN.md §3.3) — error-tolerant search
+//! - the [`Registry`] facade (DESIGN.md §3.3): error-tolerant search
 //!   with same-app merging, resolve backed by [`AliasIndex`], and
 //!   `plan`/`plan_update`/`plan_uninstall` lifecycle argv renders;
-//! - the alias layer — [`TorideId`] derivation plus the alias index
+//! - the alias layer: [`TorideId`] derivation plus the alias index
 //!   mapping the canonical toride id to per-source ids (DESIGN.md §5).
 //!
 //! Installation itself is out of scope here: [`InstallMethod`] describes
@@ -33,18 +33,18 @@
 //!
 //! ## Pipeline
 //!
-//! 1. **Fetch** — each source's thin client GETs/POSTs and returns raw
+//! 1. **Fetch**: each source's thin client GETs/POSTs and returns raw
 //!    body text (never deserialized values), so live and fixture payloads
 //!    flow through the same parse signatures.
-//! 2. **Parse** — the pure per-source parsers turn that text into
+//! 2. **Parse**: the pure per-source parsers turn that text into
 //!    normalized types; they take no clock, no network, no client.
-//! 3. **Normalize** — adapters emit [`App`]s carrying a [`SourceRef`] per
+//! 3. **Normalize**: adapters emit [`App`]s carrying a [`SourceRef`] per
 //!    source that knows the app, [`Platform`] claims, checksummed
 //!    [`Artifact`]s, and an [`InstallMethod`].
-//! 4. **Alias** — the canonical [`TorideId`] is derived (Repology project
+//! 4. **Alias**: the canonical [`TorideId`] is derived (Repology project
 //!    name when the oracle knows the app, else the first source id) and
 //!    mapped to per-source ids through the alias index.
-//! 5. **Plan** — an [`InstallMethod`] plus the host [`Platform`] becomes
+//! 5. **Plan**: an [`InstallMethod`] plus the host [`Platform`] becomes
 //!    concrete steps for the host: the native manager command, a direct
 //!    checksummed download when the manager is missing, or `unsupported`.
 //!
@@ -109,7 +109,7 @@ pub(crate) mod http;
 pub mod model;
 pub mod sources;
 
-// Re-exports — the public API surface.
+// Re-exports: the public API surface.
 pub use adapter::{Adapter, PlannedOp, Registry, RegistryBuilder, SearchOutcome};
 pub use alias::AliasIndex;
 pub use error::{Error, Result, SourceFailure};

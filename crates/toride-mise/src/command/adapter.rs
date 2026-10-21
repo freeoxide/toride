@@ -1,4 +1,4 @@
-//! Command adapter — builds [`CommandSpec`] and parses mise output.
+//! Command adapter: builds [`CommandSpec`] and parses mise output.
 //!
 //! This module is the single place that knows how to translate mise-specific
 //! options into a [`toride_runner::CommandSpec`] and how to deserialise the
@@ -12,10 +12,6 @@ use toride_runner::CommandSpec;
 use crate::error::MiseError;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// build_spec
-// ---------------------------------------------------------------------------
-
 /// Construct a [`CommandSpec`] for a mise invocation.
 ///
 /// All parameters are optional apart from `binary` (the path or name of the
@@ -25,12 +21,12 @@ use crate::error::MiseResult;
 ///
 /// # Arguments
 ///
-/// * `binary`   — Path to or name of the mise binary.
-/// * `args`     — Positional arguments (e.g. `["ls", "--json"]`).
-/// * `cwd`      — Working directory override (`None` = inherit).
-/// * `env`      — Extra environment variable pairs.
+/// * `binary`  : Path to or name of the mise binary.
+/// * `args`    : Positional arguments (e.g. `["ls", "--json"]`).
+/// * `cwd`     : Working directory override (`None` = inherit).
+/// * `env`     : Extra environment variable pairs.
 /// * `timeout`  - Wall-clock timeout for the command.
-/// * `redact`   — Whether to redact sensitive arguments in display output.
+/// * `redact`  : Whether to redact sensitive arguments in display output.
 pub fn build_spec(
     binary: &str,
     args: &[String],
@@ -54,10 +50,6 @@ pub fn build_spec(
     spec
 }
 
-// ---------------------------------------------------------------------------
-// build_mise_args
-// ---------------------------------------------------------------------------
-
 /// Append common mise global flags to a base argument list.
 ///
 /// The returned `Vec<String>` is suitable for passing to [`build_spec`] as the
@@ -65,12 +57,12 @@ pub fn build_spec(
 ///
 /// # Arguments
 ///
-/// * `base_args` — The sub-command and its own flags (e.g. `["ls"]`).
-/// * `json`      — Append `--output=json` (or `--json` for short).
-/// * `no_config` — Append `--no-config`.
-/// * `no_env`    — Append `--no-env`.
-/// * `no_hooks`  — Append `--no-hooks`.
-/// * `locked`    — Append `--locked`.
+/// * `base_args`: The sub-command and its own flags (e.g. `["ls"]`).
+/// * `json`     : Append `--json`.
+/// * `no_config`: Append `--no-config`.
+/// * `no_env`   : Append `--no-env`.
+/// * `no_hooks` : Append `--no-hooks`.
+/// * `locked`   : Append `--locked`.
 #[allow(clippy::fn_params_excessive_bools)]
 pub fn build_mise_args(
     base_args: &[&str],
@@ -83,7 +75,7 @@ pub fn build_mise_args(
     let mut out: Vec<String> = base_args.iter().map(|s| (*s).to_owned()).collect();
 
     if json {
-        out.push("--output=json".to_owned());
+        out.push("--json".to_owned());
     }
     if no_config {
         out.push("--no-config".to_owned());
@@ -101,14 +93,10 @@ pub fn build_mise_args(
     out
 }
 
-// ---------------------------------------------------------------------------
-// parse_json_output
-// ---------------------------------------------------------------------------
-
 /// Deserialise the JSON that mise wrote to stdout.
 ///
-/// `command` is used exclusively for error messages — it is the human-readable
-/// representation of the command that produced `output` (e.g. `"mise ls --output=json"`).
+/// `command` is used exclusively for error messages: it is the human-readable
+/// representation of the command that produced `output` (e.g. `"mise ls --json"`).
 pub fn parse_json_output<T>(output: &str, command: &str) -> MiseResult<T>
 where
     T: serde::de::DeserializeOwned,
@@ -121,10 +109,6 @@ where
         stdout,
     })
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -143,7 +127,7 @@ mod tests {
 
     #[test]
     fn build_spec_full() {
-        let args: Vec<String> = vec!["ls".into(), "--output=json".into()];
+        let args: Vec<String> = vec!["ls".into(), "--json".into()];
         let env = vec![("MISE_DATA_DIR".into(), "/tmp/mise".into())];
         let spec = build_spec(
             "/usr/local/bin/mise",
@@ -169,7 +153,7 @@ mod tests {
             args,
             vec![
                 "ls",
-                "--output=json",
+                "--json",
                 "--no-config",
                 "--no-env",
                 "--no-hooks",

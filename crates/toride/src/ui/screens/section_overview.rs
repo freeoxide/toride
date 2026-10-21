@@ -6,7 +6,7 @@
 //! this trait exposes a shared shape over them so the dashboard can render a
 //! one-line status per section without knowing each section's concrete type.
 //!
-//! SSH is intentionally **excluded** — it has no `available`/`findings` shape
+//! SSH is intentionally **excluded**: it has no `available`/`findings` shape
 //! and already dominates the sidebar.
 //!
 //! # Shared severity helper
@@ -15,7 +15,7 @@
 //! `available` flag and its findings' severity strings, so the 13 impls cannot
 //! drift. Findings severities vary by backend
 //! (`"ok"|"info"|"warning"|"error"|"critical"`, plus `"important"` for updates)
-//! — the helper covers them all.
+//!: the helper covers them all.
 
 /// A snapshot of one section's overview.
 ///

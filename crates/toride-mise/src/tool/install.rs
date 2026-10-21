@@ -8,11 +8,7 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// UseScope
-// ---------------------------------------------------------------------------
-
-/// Scope for `mise use` — controls where the tool activation is recorded.
+/// Scope for `mise use`: controls where the tool activation is recorded.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum UseScope {
     /// Write to the project-local `.mise.toml`.
@@ -25,10 +21,6 @@ pub enum UseScope {
     /// Set the environment variable for the current session (`MISE_<TOOL>_VERSION`).
     Env(String),
 }
-
-// ---------------------------------------------------------------------------
-// InstallRequest
-// ---------------------------------------------------------------------------
 
 /// Parameters for a `mise install` invocation.
 ///
@@ -137,10 +129,6 @@ impl InstallRequest {
         self
     }
 }
-
-// ---------------------------------------------------------------------------
-// UseRequest
-// ---------------------------------------------------------------------------
 
 /// Parameters for a `mise use` invocation.
 ///
@@ -268,10 +256,6 @@ impl UseRequest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
-
 impl Mise {
     /// Install a tool version (simple convenience wrapper).
     ///
@@ -367,7 +351,7 @@ impl Mise {
                 args.push(var.clone());
             }
             UseScope::Local => {
-                // Default scope — no flag needed.
+                // Default scope: no flag needed.
             }
         }
 
@@ -474,10 +458,6 @@ impl Mise {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

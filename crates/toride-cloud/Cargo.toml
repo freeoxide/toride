@@ -31,7 +31,7 @@ service = ["client", "dep:toride-service"]
 
 ## Configuration parsing and validation.
 ## Implies `client` because config manager uses DuctRunner.
-config = ["client", "dep:regex"]
+config = ["client"]
 
 ## Serde serialization for domain types.
 serde = ["dep:serde", "dep:serde_json"]
@@ -56,7 +56,6 @@ toride-service = { path = "../toride-service", version = "0.2.0", optional = tru
 duct = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
-regex = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]

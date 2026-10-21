@@ -24,7 +24,7 @@ pub enum Error {
         /// Wire format that failed (`json`, `yaml`, …).
         kind: &'static str,
         /// Source-native id whose payload was being parsed
-        /// (diagnostic only — the adapter that owns the payload knows it).
+        /// (diagnostic only: the adapter that owns the payload knows it).
         id: String,
         /// Why the payload was rejected (deserializer message).
         message: String,
@@ -48,7 +48,7 @@ pub enum Error {
 
     /// A [`SourceRef`](crate::model::SourceRef) named a
     /// [`SourceKind`](crate::model::SourceKind) the receiving code does not
-    /// handle — an adapter asked to look up a row from a different source,
+    /// handle: an adapter asked to look up a row from a different source,
     /// or dispatch/plan code asked about a source with no adapter.
     #[error("no adapter handles source `{kind:?}` (id `{id}`)")]
     UnsupportedSource {
@@ -71,7 +71,7 @@ pub enum Error {
     },
 
     /// Every source the [`Registry`](crate::Registry) fan-out asked
-    /// failed — an empty hit list would look complete when it is not.
+    /// failed: an empty hit list would look complete when it is not.
     #[error("every registry source failed for `{context}`")]
     AllSourcesFailed {
         /// The query or id whose fan-out failed on every source.
@@ -81,7 +81,7 @@ pub enum Error {
     },
 }
 
-/// One adapter's failure inside a [`Registry`](crate::Registry) fan-out —
+/// One adapter's failure inside a [`Registry`](crate::Registry) fan-out:
 /// which source failed and the error it failed with.
 #[derive(Debug)]
 pub struct SourceFailure {

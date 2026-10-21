@@ -16,9 +16,9 @@ use crate::ui::theme::Palette;
 
 /// Data needed to render the header bar.
 pub struct HeaderData<'a> {
-    /// CPU usage percentage (0–100), if known.
+    /// CPU usage percentage (0-100), if known.
     pub cpu: Option<f64>,
-    /// RAM usage percentage (0–100), if known.
+    /// RAM usage percentage (0-100), if known.
     pub ram: Option<f64>,
     /// Disk I/O throughput label (e.g. `"50↓ 20↑ MB/s"`), if known.
     pub disk: Option<&'a str>,
@@ -150,7 +150,7 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
 
     // Net gauge (index 3): throughput label or spinner. render_header always
     // draws *something* for the net slot (throughput when known, an animated
-    // spinner otherwise), so the hitbox must always be populated to match — a
+    // spinner otherwise), so the hitbox must always be populated to match: a
     // default Rect::default() would leave the net gauge unreachable by mouse.
     let net_w = match data.net {
         Some(net_label) => throughput_gauge_width("net", net_label),
@@ -164,7 +164,7 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
 // ── Width helpers ──────────────────────────────────────────────────────────
 
 /// Display-column width of `s` (handles multi-byte glyphs like the ▮ gauge
-/// bar, the — placeholder, and the ↑/↓ throughput arrows, which all occupy a
+/// bar, the: placeholder, and the ↑/↓ throughput arrows, which all occupy a
 /// single terminal column despite being multi-byte UTF-8).
 fn display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
@@ -223,7 +223,7 @@ fn throughput_gauge_spans(
 
 /// Build the spans for a gauge that is still loading (animated braille spinner).
 ///
-/// Under reduced motion the spinner frame is frozen to index 0 — the gauge
+/// Under reduced motion the spinner frame is frozen to index 0: the gauge
 /// still signals "loading" (it only appears when data is pending) without
 /// per-frame cycling.
 fn spinner_gauge_spans(label: &str, elapsed: f32, p: Palette) -> Vec<Span<'static>> {
@@ -349,7 +349,7 @@ mod tests {
     /// Unicode display width). The width helpers compute column counts
     /// (`label.len()` for ASCII labels == columns, `+ 2` for the "▮ " glyph
     /// pair, `+ value.len()` for ASCII values), so the drift-guarding
-    /// invariant is column equality — if a span builder and its width helper
+    /// invariant is column equality: if a span builder and its width helper
     /// disagree on columns, the hitbox math lands on the wrong gauge.
     fn rendered_gauge_width(spans: &[Span<'static>]) -> usize {
         use unicode_width::UnicodeWidthStr;
@@ -368,7 +368,7 @@ mod tests {
         //
         // (Spinner gauges are excluded: their width helper intentionally
         // reserves a single spinner column while the braille frame renders
-        // wider — a known separate issue. Pinning that here would couple
+        // wider: a known separate issue. Pinning that here would couple
         // this drift guard to the spinner overflow bug.)
 
         // pct_gauge: known + None
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(
             usize::from(pct_gauge_width("cpu", None)),
             rendered_gauge_width(&none_spans),
-            "pct gauge None (— placeholder is 1 column, not 3 bytes)"
+            "pct gauge None (- placeholder is 1 column, not 3 bytes)"
         );
 
         // throughput_gauge: a few label/value pairs including multibyte
@@ -488,7 +488,7 @@ mod tests {
     fn gauge_hitboxes_populate_net_rect_even_when_net_unknown() {
         // Correctness guard: when data.net is None, render_header still draws
         // an animated spinner for the net slot, so rects[3] must NOT be left
-        // at Rect::default() (zero width) — it must be a real, non-empty rect.
+        // at Rect::default() (zero width): it must be a real, non-empty rect.
         let data = HeaderData {
             cpu: None,
             ram: None,

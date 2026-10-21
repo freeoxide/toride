@@ -167,7 +167,7 @@ const BACKUP_TIMER_PREFIXES: &[&str] = &[
 /// A timer that appears in the listing is loaded (installed) by definition;
 /// its `NEXT` column (an `n/a` first column marks a loaded-but-inactive
 /// timer) decides `active`. Vendor timer unit files that sit on disk but were
-/// never loaded by systemd are not enumerated — the previous per-unit
+/// never loaded by systemd are not enumerated: the previous per-unit
 /// `systemctl cat` fan-out (one spawn per fixed vendor name plus a re-probe
 /// per match) cost around ten spawns on every dashboard refresh tick.
 pub fn enumerate_backup_timers() -> Vec<TimerProbe> {
@@ -471,7 +471,7 @@ mod tests {
         let spawns = SYSTEMCTL_SPAWNS.with(std::cell::Cell::get);
         assert_eq!(
             spawns, 1,
-            "absent unit: `cat` only — is-active must be skipped"
+            "absent unit: `cat` only: is-active must be skipped"
         );
         assert!(!probe.installed);
         assert!(

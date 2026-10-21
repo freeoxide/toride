@@ -301,7 +301,7 @@ impl SshTab for AgentTab {
                             if !self.keys.is_empty() {
                                 // Use the path captured when the confirm modal
                                 // opened (resolve_agent_key_path), NOT a
-                                // freshly-derived one — the display name is
+                                // freshly-derived one: the display name is
                                 // the key comment, not a reliable filename, so
                                 // we only proceed when we could build a safe
                                 // path. $HOME is NOT read here at click time.
@@ -378,7 +378,7 @@ impl SshTab for AgentTab {
                         // Resolve the on-disk path NOW (when the modal opens),
                         // not at confirm-click time. The agent key's display
                         // name is the comment, which is NOT a reliable
-                        // filename — only build a path when `name` is a bare
+                        // filename: only build a path when `name` is a bare
                         // filename (no separators, no parent traversal).
                         self.remove_key_path = resolve_agent_key_path(&name);
                         self.confirm =
@@ -444,13 +444,6 @@ impl SshTab for AgentTab {
 
     fn has_modal(&self) -> bool {
         self.detail_open.is_some() || self.action_modal.is_some()
-    }
-
-    fn close_modal(&mut self) {
-        self.detail_open = None;
-        self.detail_modal_rect = None;
-        self.action_modal = None;
-        self.remove_key_path = None;
     }
 
     fn drain_ops(&mut self) -> Vec<SshOp> {
@@ -519,7 +512,7 @@ impl AgentTab {
         let line1_area = Rect::new(inner.x, inner.y, inner.width, 1);
         frame.render_widget(Paragraph::new(status_line), line1_area);
 
-        // Line 2: key count — show both agent-reported count and displayed count
+        // Line 2: key count: show both agent-reported count and displayed count
         let count_display = if self.keys.len() == self.status.key_count {
             format!("{} keys loaded", self.keys.len())
         } else {
@@ -589,7 +582,7 @@ impl AgentTab {
 
             let mut spans = Vec::new();
 
-            // Icon — accent when selected or hovered.
+            // Icon: accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
                 Style::new().fg(if is_selected || is_hovered {
@@ -717,7 +710,7 @@ impl AgentTab {
 /// the name is a safe bare filename.
 ///
 /// The agent key list shows the key **comment** (or, failing that, the key
-/// file's basename) — never a full path. Treating that display string as a
+/// file's basename): never a full path. Treating that display string as a
 /// filename and joining it onto `$HOME/.ssh/` is only safe when it contains no
 /// path separators and no parent-directory traversal, otherwise we could end
 /// up pointing `ssh-add -d` at an unintended file. Returns `None` for anything
@@ -936,15 +929,12 @@ mod tests {
 
     // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
 
-    /// Process-global HOME is mutated by several tests below. Acquire this lock
-    /// at the top of every env-mutating test so they cannot run concurrently
-    /// and race each other (cargo runs `#[test]`s in parallel threads within
-    /// the binary). Mirrors the `HOME_LOCK` pattern in `ssh_data.rs`.
-    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// Process-global HOME is mutated by several tests below. Acquire the
+    /// shared crate env lock (`crate::test_env`) at the top of every
+    /// env-mutating test so no test in this binary can run concurrently with
+    /// another one's env state.
+    fn env_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        crate::test_env::lock_blocking()
     }
 
     /// Drive a `FormModal` whose first field is a required text input to

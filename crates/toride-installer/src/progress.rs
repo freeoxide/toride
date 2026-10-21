@@ -3,13 +3,13 @@
 //! [`Installer::install_with_resolver`](crate::Installer::install_with_resolver)
 //! streams the artifact body chunk-by-chunk. When the caller wires a callback
 //! via [`Installer::with_progress`](crate::Installer::with_progress), the
-//! installer hands it a [`Progress`] snapshot as bytes flow in — letting the
+//! installer hands it a [`Progress`] snapshot as bytes flow in: letting the
 //! UI render a progress bar, a percentage, or a spinner that reflects real
 //! throughput.
 //!
 //! ## Percent computation
 //!
-//! The installer never divides: it just reports `downloaded` and `total`. The
+//! The installer never divides: it only reports `downloaded` and `total`. The
 //! caller computes the percent (treating a missing `total` as indeterminate):
 //!
 //! ```rust,ignore
@@ -23,7 +23,7 @@
 //! ```
 //!
 //! When no callback is set, the installer's behavior is byte-for-byte
-//! unchanged — progress reporting is purely observational.
+//! unchanged: progress reporting is purely observational.
 
 /// Bytes downloaded so far, plus the total size when the server sent
 /// `Content-Length`.

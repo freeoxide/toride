@@ -21,8 +21,8 @@ authorized-keys = ["dep:toride-ssh-authorized-keys"]
 doctor = ["dep:toride-ssh-doctor"]
 forward = ["dep:toride-ssh-forward"]
 certificate = ["dep:toride-ssh-certificate"]
-exec = ["dep:toride-ssh-exec"]
-upload = ["dep:toride-ssh-upload"]
+exec = ["dep:toride-ssh-exec", "dep:toride-runner"]
+upload = ["dep:toride-ssh-upload", "dep:toride-runner"]
 
 full = [
     "agent", "known-hosts", "authorized-keys",
@@ -41,7 +41,7 @@ toride-ssh-forward = { path = "crates/forward", version = "0.2.0", optional = tr
 toride-ssh-certificate = { path = "crates/certificate", version = "0.2.0", optional = true }
 toride-ssh-exec = { path = "crates/exec", version = "0.2.0", optional = true }
 toride-ssh-upload = { path = "crates/upload", version = "0.2.0", optional = true }
-toride-runner = { path = "../toride-runner", version = "0.2.0" }
+toride-runner = { path = "../toride-runner", version = "0.2.0", optional = true }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 
 [dev-dependencies]

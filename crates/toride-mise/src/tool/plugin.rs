@@ -9,10 +9,6 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// JSON response types
-// ---------------------------------------------------------------------------
-
 /// A single plugin as reported by `mise plugins ls --json`.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PluginInfo {
@@ -25,10 +21,6 @@ pub struct PluginInfo {
     #[serde(default)]
     pub installed: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Request types
-// ---------------------------------------------------------------------------
 
 /// Parameters for a plugin install operation.
 #[derive(Debug, Clone)]
@@ -65,10 +57,6 @@ impl PluginLinkRequest {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// Return a [`Plugins`] helper that provides the spec-recommended API shape.
@@ -193,10 +181,6 @@ impl Mise {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Plugins helper — spec-recommended API shape
-// ---------------------------------------------------------------------------
 
 /// Helper that provides the spec-recommended `mise.plugins().list()` API shape.
 ///

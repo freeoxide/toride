@@ -3,15 +3,15 @@
 //! Renders inside the dashboard's content region when
 //! [`Section::Users`](crate::data::Section) is the active sidebar section. This
 //! mirrors the read-only fail2ban template: there is no write path, no
-//! optimistic update, no cooldown, and no loading spinner — every line is a
+//! optimistic update, no cooldown, and no loading spinner: every line is a
 //! pure read.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Overview — passwd parse note (completeness caveat on macOS).
-//! 2. Users table — name, uid, shell, sudo, locked, totp.
-//! 3. Groups — name, gid, member count.
-//! 4. Sudoers — parsed rules (who / runas / commands / NOPASSWD).
-//! 5. Doctor findings — grouped by severity (Critical > Error > Warning > Info).
+//! 1. Overview: passwd parse note (completeness caveat on macOS).
+//! 2. Users table: name, uid, shell, sudo, locked, totp.
+//! 3. Groups: name, gid, member count.
+//! 4. Sudoers: parsed rules (who / runas / commands / NOPASSWD).
+//! 5. Doctor findings: grouped by severity (Critical > Error > Warning > Info).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -106,7 +106,7 @@ pub struct UserFindingEntry {
 )]
 pub struct UsersContent {
     /// Whether the users backend produced any data at all. `false` only when a
-    /// collection task panicked (`JoinError`) — partial reads (some files
+    /// collection task panicked (`JoinError`): partial reads (some files
     /// missing, e.g. on macOS) keep `available == true` with empty fields.
     available: bool,
     /// Whether `/etc/passwd` was read successfully. Used to render the
@@ -259,7 +259,7 @@ impl UsersContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -283,7 +283,7 @@ impl UsersContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -344,7 +344,7 @@ impl UsersContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (`JoinError`) — not when individual files are missing (a
+    /// task PANICS (`JoinError`): not when individual files are missing (a
     /// missing file degrades that field to empty but keeps `available == true`
     /// so the operator sees the partial table). The reason string is surfaced
     /// here so the operator can see what actually panicked.
@@ -405,7 +405,7 @@ impl UsersContent {
             Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
         )));
 
-        // passwd — note incompleteness on macOS.
+        // passwd: note incompleteness on macOS.
         let (icon, text, color) = read_badge(self.passwd_read, p);
         lines.push(Line::from(vec![
             Span::styled("  passwd   ", Style::new().fg(p.text_muted)),
@@ -437,10 +437,10 @@ impl UsersContent {
         // On Linux, /etc/passwd IS the authoritative account database, so no
         // caveat is warranted. The text below is only meaningful on macOS, where
         // the real account DB lives in OpenDirectory and /etc/passwd is a sparse
-        // fallback — gate the warning accordingly.
+        // fallback: gate the warning accordingly.
         if self.passwd_read && cfg!(target_os = "macos") {
             lines.push(Line::from(Span::styled(
-                "  note: /etc/passwd parsed — on macOS this is NOT the real account DB",
+                "  note: /etc/passwd parsed: on macOS this is NOT the real account DB",
                 Style::new().fg(p.warn),
             )));
         }
@@ -842,7 +842,7 @@ mod tests {
         c.set_available(true);
         c.set_users(sample_users());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 
@@ -855,7 +855,7 @@ mod tests {
         let mut c = UsersContent::new();
         c.set_available(false);
         c.set_unavailable_reason(Some("collector task panicked".into()));
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

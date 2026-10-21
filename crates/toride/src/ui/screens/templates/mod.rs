@@ -4,7 +4,7 @@
 //! [`Section::Templates`](crate::data::Section) is the active sidebar section.
 //! This integration mirrors the harden / fail2ban / ufw-kit templates
 //! (`HardenContent` / `Fail2banContent` / `FirewallContent`) WITHOUT any write
-//! path — every line is read-only.
+//! path: every line is read-only.
 //!
 //! ## What is "live" here
 //!
@@ -12,12 +12,12 @@
 //! toride capabilities (SSH hardening, UFW firewall, fail2ban jail, etc.),
 //! like a feature list. Each recipe maps to a real backend capability, and its
 //! per-recipe LIVE status is whether the underlying tool is present on THIS
-//! host — probed via `which::which(target_binary)`. So the catalogue is
+//! host: probed via `which::which(target_binary)`. So the catalogue is
 //! legitimate static data (not fake user data) and only the readiness column
 //! is live.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Header — `ready/total recipes ready` summary.
+//! 1. Header: `ready/total recipes ready` summary.
 //! 2. Recipe cards grouped by category (Hardening / Network / Monitoring /
 //!    Backup / Identity / Runtimes): name, status glyph + label, target tool,
 //!    difficulty badge, description.
@@ -195,7 +195,7 @@ impl TemplatesContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -219,7 +219,7 @@ impl TemplatesContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -462,7 +462,7 @@ impl crate::ui::screens::section_overview::SectionOverview for TemplatesContent 
         // offline (collection panic) reads as "offline".
         crate::ui::screens::section_overview::status_label_for(
             self.available,
-            // Promote info findings to "degraded" only when NONE are ready —
+            // Promote info findings to "degraded" only when NONE are ready:
             // otherwise the catalogue is genuinely usable. status_label_for
             // already treats any warning+ as degraded; our findings are all
             // "info", so a partially-ready catalogue reads "active", matching
@@ -482,7 +482,7 @@ impl crate::ui::screens::section_overview::SectionOverview for TemplatesContent 
     }
 
     fn findings_count(&self) -> usize {
-        // Count recipes whose target tool is missing — that is the actionable
+        // Count recipes whose target tool is missing: that is the actionable
         // readiness gap the operator cares about, surfaced as INFO findings.
         self.recipes.iter().filter(|r| r.status != "ready").count()
     }
@@ -614,7 +614,7 @@ mod tests {
     fn render_unavailable_at_degenerate_height_does_not_panic() {
         let mut c = TemplatesContent::new();
         c.set_unavailable_reason(Some("spawn_blocking panicked".into()));
-        // 20x5 — below the saturating_sub(3) threshold once the titled panel's
+        // 20x5: below the saturating_sub(3) threshold once the titled panel's
         // border/insets are accounted for. The render path wraps the reason,
         // so assert the leading token appears rather than the full string.
         let out = render_to_string(&mut c, 20, 5);
@@ -740,7 +740,7 @@ mod tests {
         c.set_available(true);
         c.set_recipes(sample_recipes());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

@@ -32,7 +32,7 @@ use crate::spec::Encryption;
 use crate::{Error, Result};
 
 // Re-export the runner primitives so the rest of this module can refer to them
-// without a separate feature gate — the `client` feature (which is the only
+// without a separate feature gate: the `client` feature (which is the only
 // context in which the wrapper is meaningfully exercised) pulls in
 // `toride_runner`'s `duct-runner` + `fake` features via the workspace Cargo.toml.
 use toride_runner::{CommandSpec, Runner};
@@ -273,8 +273,8 @@ impl BorgClient {
     /// Extract (restore) an archive into a target directory.
     ///
     /// Runs `borg extract <repo>::<archive>` with the working directory set
-    /// to `target`. Borg's `extract` subcommand has no `--destination` flag —
-    /// it always writes into the current working directory — so the target is
+    /// to `target`. Borg's `extract` subcommand has no `--destination` flag:
+    /// it always writes into the current working directory: so the target is
     /// passed via [`CommandSpec::cwd`] rather than an argument.
     ///
     /// # Errors
@@ -356,7 +356,7 @@ impl BorgClient {
     ///
     /// `redact(true)` is applied by each public method (only when
     /// [`Self::carries_secret`] is true) so that read-only commands against an
-    /// unencrypted repo do not opt into needless redaction — but every command
+    /// unencrypted repo do not opt into needless redaction: but every command
     /// that *could* carry a passphrase must be redacted.
     fn command(&self, subcommand: &str) -> CommandSpec {
         let mut spec = CommandSpec::new(self.binary.to_string_lossy().as_ref())
@@ -377,7 +377,7 @@ impl BorgClient {
     ///   - `BORG_PASSPHRASE`, added in [`Self::command`] from the `passphrase`
     ///     field; or
     ///   - `BORG_PASSCOMMAND` (or a caller-supplied `BORG_PASSPHRASE`), added
-    ///     via `extra_env` — e.g. the production `BackupClient` facade wires
+    ///     via `extra_env`: e.g. the production `BackupClient` facade wires
     ///     the spec's `password_command` onto `BORG_PASSCOMMAND` through
     ///     `with_env`, which never populates `passphrase`.
     ///
@@ -1027,7 +1027,7 @@ Pruned:                         myhost-2024-04-01-0300
         // operations. Source: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
         let (c, rc) = make("/mnt/repo", Some("hunter2"));
 
-        // init, check, create, list, info, prune, extract — every op.
+        // init, check, create, list, info, prune, extract: every op.
         c.init(&Encryption::RepoKey).unwrap();
         c.check().unwrap();
         c.create("a", &[Path::new("/x")]).unwrap();
@@ -1099,11 +1099,11 @@ Pruned:                         myhost-2024-04-01-0300
     /// Regression: the production `BackupClient` facade wires the passphrase
     /// onto `BORG_PASSCOMMAND` via `with_env` (not `with_passphrase`), so
     /// `carries_secret()` MUST treat a `BORG_PASS*`-bearing `extra_env` as
-    /// secret-bearing — otherwise every backup/prune/snapshots command runs
+    /// secret-bearing: otherwise every backup/prune/snapshots command runs
     /// `redact(false)` and the passcommand leaks into captured stderr.
     #[test]
     fn carries_secret_for_env_borne_borg_passcommand() {
-        // No passphrase field set — the secret arrives purely via env, as in
+        // No passphrase field set: the secret arrives purely via env, as in
         // the production facade (BackupClient::build_borg_client).
         let client = BorgClient::with_binary(PathBuf::from("borg"), "/repo")
             .with_env("BORG_PASSCOMMAND", "cat /etc/borg/pw");

@@ -3,13 +3,13 @@
 //! Renders inside the dashboard's content region when
 //! [`Section::Harden`](crate::data::Section) is the active sidebar section. This
 //! integration mirrors the fail2ban / ufw-kit templates (`Fail2banContent` /
-//! `FirewallContent`) WITHOUT any write path — every line is read-only.
+//! `FirewallContent`) WITHOUT any write path: every line is read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Status panel — selected profile + parameter pass/fail summary.
-//! 2. Sysctl parameter table — key, current vs desired, pass/fail.
-//! 3. Shared-memory mounts — target + options + hardened flag.
-//! 4. Doctor findings — grouped by severity (Critical > Important > Warning > Info > Ok).
+//! 1. Status panel: selected profile + parameter pass/fail summary.
+//! 2. Sysctl parameter table: key, current vs desired, pass/fail.
+//! 3. Shared-memory mounts: target + options + hardened flag.
+//! 4. Doctor findings: grouped by severity (Critical > Important > Warning > Info > Ok).
 
 use std::collections::BTreeMap;
 
@@ -109,7 +109,7 @@ pub struct HardenContent {
     /// selector with Left/Right actually swaps the table. Previously the table
     /// was a single flat `Vec` built only for profile 0, so the selector
     /// advanced the header ("Desktop" → "Server") while the rows stayed pinned
-    /// to Desktop — wrong count, wrong desired values, wrong pass/fail.
+    /// to Desktop: wrong count, wrong desired values, wrong pass/fail.
     sysctl_rows_by_profile: BTreeMap<String, Vec<SysctlRow>>,
     /// Shared-memory mounts.
     mounts: Vec<MountEntry>,
@@ -276,7 +276,7 @@ impl HardenContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -300,7 +300,7 @@ impl HardenContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -758,7 +758,7 @@ mod tests {
     /// the fixture away from production data) fails loudly.
     #[test]
     fn finding_id_format_matches_harden_backend() {
-        // Must be dot-separated (the harden backend emits dots, NOT colons —
+        // Must be dot-separated (the harden backend emits dots, NOT colons:
         // unlike ufw-kit / fail2ban which use colons).
         for f in sample_findings() {
             assert!(
@@ -819,7 +819,7 @@ mod tests {
     fn render_unavailable_at_degenerate_height_does_not_panic() {
         let mut c = HardenContent::new();
         c.set_unavailable_reason(Some("spawn_blocking panicked".into()));
-        // 20x5 — below the saturating_sub(3) threshold once the titled panel's
+        // 20x5: below the saturating_sub(3) threshold once the titled panel's
         // border/insets are accounted for. The render path wraps the reason,
         // so assert the leading token appears rather than the full string.
         let out = render_to_string(&mut c, 20, 5);
@@ -937,7 +937,7 @@ mod tests {
     }
 
     /// Regression test for the profile-selector bug: pressing Right must swap
-    /// the RENDERED sysctl table to the newly-selected profile, not just
+    /// the RENDERED sysctl table to the newly-selected profile, not only
     /// advance the header label while leaving the rows pinned to Desktop.
     /// Previously the collector built `sysctl_rows` only for profile 0, so the
     /// header advertised "Server (24 params)" while the table still showed the
@@ -1071,7 +1071,7 @@ mod tests {
         c.set_sysctl_rows_by_profile(rows);
         c.set_mounts(sample_mounts());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

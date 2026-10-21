@@ -22,16 +22,16 @@ pub enum HintResult {
 }
 
 /// Apply a config hint: expand `~` via toride-fs, report
-/// [`HintResult::SkippedExisting`] when the destination already exists —
-/// existence is probed from metadata, so any pre-existing bytes (invalid
-/// UTF-8 included) are left untouched — and otherwise write the exact bytes
-/// through [`toride_fs::atomic_write`]. Never modifies an existing file,
-/// merges into one, or creates directories.
+/// [`HintResult::SkippedExisting`] when the destination already exists, and
+/// otherwise create the destination with `O_EXCL` and write the exact bytes
+/// through that handle. Never modifies an existing file, merges into one, or
+/// creates directories. A file that appears between the existence check and
+/// the create is refused by `O_EXCL`, not clobbered.
 ///
 /// # Errors
 ///
-/// [`toride_fs::Error`] when existence cannot be probed or the atomic write
-/// fails — including a missing parent directory.
+/// [`toride_fs::Error`] when the destination cannot be created or written:
+/// including a missing parent directory.
 pub fn apply_hint(hint: &ConfigHint) -> Result<HintResult, toride_fs::Error> {
     apply_hint_with(hint, toride_fs::expand_tilde)
 }
@@ -40,10 +40,24 @@ pub(super) fn apply_hint_with(
     hint: &ConfigHint,
     expand: impl Fn(&str) -> PathBuf,
 ) -> Result<HintResult, toride_fs::Error> {
+    use std::io::ErrorKind;
+
     let path = expand(hint.path);
-    if path.try_exists().map_err(toride_fs::Error::Io)? {
-        return Ok(HintResult::SkippedExisting { path });
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    toride_fs::atomic_write(&path, hint.content)?;
+    let mut file = match options.open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            return Ok(HintResult::SkippedExisting { path });
+        }
+        Err(e) => return Err(toride_fs::Error::Io(e)),
+    };
+    std::io::Write::write_all(&mut file, hint.content.as_bytes()).map_err(toride_fs::Error::Io)?;
+    file.sync_all().map_err(toride_fs::Error::Io)?;
     Ok(HintResult::Written { path })
 }

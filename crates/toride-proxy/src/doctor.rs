@@ -177,7 +177,7 @@ impl<'a> Doctor<'a> {
 
         // Surface every finding on the report so callers (the TUI) can render
         // them. Previously the doctor computed these only to set `status`
-        // above, then discarded them — leaving the findings panel permanently
+        // above, then discarded them: leaving the findings panel permanently
         // empty.
         report.findings = findings;
 
@@ -400,7 +400,7 @@ impl<'a> Doctor<'a> {
     }
 
     /// Check security headers. Resilient: this check is pure-filesystem and
-    /// never shells out, so it cannot fail on a missing binary — included for
+    /// never shells out, so it cannot fail on a missing binary: included for
     /// symmetry with the other resilient wrappers.
     fn check_headers_resilient(&self) -> Vec<DoctorFinding> {
         self.check_headers()
@@ -483,7 +483,7 @@ impl<'a> Doctor<'a> {
                     }
 
                     // Read real expiry via openssl. Degrades to is_valid=false
-                    // on any failure (missing openssl, parse error) — never
+                    // on any failure (missing openssl, parse error): never
                     // panics.
                     let now = SystemTime::now();
                     let expiry = read_cert_expiry(&cert_path, self.runner, now)
@@ -575,7 +575,7 @@ impl<'a> Doctor<'a> {
                     let mut block =
                         crate::spec::ServerBlock::new(server_name, listen_port, upstream);
                     if p.has_ssl() {
-                        // We do not synthesize cert paths here — the cert check
+                        // We do not synthesize cert paths here: the cert check
                         // owns TLS expiry. Mark TLS presence via an extra
                         // directive so the report still distinguishes TLS blocks.
                         block = block.with_directive("# tls enabled (listen ... ssl)");
@@ -607,7 +607,7 @@ mod tests {
 
     /// When the certbot live dir holds a cert whose openssl reports a real
     /// future expiry, the doctor must populate report.certificates (previously
-    /// dead) with a CertInfo whose days_remaining is positive.
+    /// dead) with a `CertInfo` whose `days_remaining` is positive.
     #[cfg(feature = "config")]
     #[test]
     fn doctor_populates_certificates_with_real_expiry() {
@@ -646,8 +646,8 @@ mod tests {
         assert!(exp.is_valid);
     }
 
-    /// An expired cert must set is_valid=false and surface an Error finding,
-    /// and has_expired_certs() must return true.
+    /// An expired cert must set `is_valid=false` and surface an Error finding,
+    /// and `has_expired_certs()` must return true.
     #[cfg(feature = "config")]
     #[test]
     fn doctor_flags_expired_certificate() {
@@ -676,7 +676,7 @@ mod tests {
     }
 
     /// With the `config` feature, the All-scope report must populate
-    /// report.server_blocks from the on-disk nginx.conf.
+    /// `report.server_blocks` from the on-disk nginx.conf.
     #[cfg(feature = "config")]
     #[test]
     fn doctor_populates_server_blocks_from_config() {

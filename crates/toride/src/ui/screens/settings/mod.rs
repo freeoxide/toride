@@ -3,15 +3,15 @@
 //! Renders inside the dashboard's content region when
 //! [`Section::Settings`](crate::data::Section) is the active sidebar section.
 //! This integration mirrors the fail2ban / ufw-kit / toride-harden templates
-//! WITHOUT any write path — every line is read-only.
+//! WITHOUT any write path: every line is read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. THEME — every [`Theme`] variant by label, the active one highlighted, with
+//! 1. THEME: every [`Theme`] variant by label, the active one highlighted, with
 //!    small palette swatches from the live current theme. Left/Right emit
 //!    [`Action::CycleTheme`] to cycle the global theme (already wired in
-//!    `App::update`) — the screen does NOT mutate the theme locally.
-//! 2. CONFIG — path, exists badge, key=value rows parsed from the config file.
-//! 3. RUNTIME — `RUST_LOG`, dirs, log path, shell, term.
+//!    `App::update`): the screen does NOT mutate the theme locally.
+//! 2. CONFIG: path, exists badge, key=value rows parsed from the config file.
+//! 3. RUNTIME: `RUST_LOG`, dirs, log path, shell, term.
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -211,7 +211,7 @@ impl SettingsContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -405,7 +405,7 @@ impl SettingsContent {
         let (exists_icon, exists_color, exists_label) = if self.config.exists {
             ("✓", p.ok, "present")
         } else {
-            ("✗", p.warn, "missing — using defaults")
+            ("✗", p.warn, "missing: using defaults")
         };
         lines.push(Line::from(vec![
             Span::styled("  path     ", Style::new().fg(p.text_muted)),
@@ -531,7 +531,7 @@ fn push_kv_line(
     ]));
 }
 
-/// Build a small inline palette swatch — three solid block glyphs, each
+/// Build a small inline palette swatch: three solid block glyphs, each
 /// rendered with the FOREGROUND color it represents from the candidate
 /// theme's own palette (`accent`, `accent2`, `accent3`).
 ///
@@ -564,7 +564,7 @@ impl crate::ui::screens::section_overview::SectionOverview for SettingsContent {
     }
 
     fn status_label(&self) -> &'static str {
-        // Settings has no findings concept — status is driven purely by
+        // Settings has no findings concept: status is driven purely by
         // availability (active when collected, offline otherwise). Pass an
         // empty severity iterator so status_label_for reduces to availability.
         crate::ui::screens::section_overview::status_label_for(
@@ -659,7 +659,7 @@ mod tests {
     fn render_unavailable_at_degenerate_height_does_not_panic() {
         let mut c = SettingsContent::new();
         c.set_unavailable_reason(Some("spawn_blocking panicked".into()));
-        // 20x5 — below the saturating_sub(3) threshold once the titled panel's
+        // 20x5: below the saturating_sub(3) threshold once the titled panel's
         // border/insets are accounted for. The render path wraps the reason,
         // so assert the leading token appears rather than the full string.
         let out = render_to_string(&mut c, 20, 5);
@@ -746,7 +746,7 @@ mod tests {
         });
         let out = render_to_string(&mut c, 100, 30);
         assert!(
-            out.contains("missing — using defaults"),
+            out.contains("missing: using defaults"),
             "missing marker: {out}"
         );
         assert!(out.contains("no config rows"), "empty-rows marker: {out}");
@@ -808,7 +808,7 @@ mod tests {
     fn left_right_emit_cycle_theme_action() {
         let mut c = SettingsContent::new();
         c.set_available(true);
-        // The screen does NOT mutate theme locally — it emits CycleTheme and
+        // The screen does NOT mutate theme locally: it emits CycleTheme and
         // App::update applies it + pushes the new theme back via set_active_theme.
         assert_eq!(c.handle_key(KeyCode::Right), Some(Action::CycleTheme));
         assert_eq!(c.handle_key(KeyCode::Char('l')), Some(Action::CycleTheme));
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn left_right_do_not_change_local_theme() {
         // Contract: the screen is a pure reflector of the live theme. Cycling
-        // must NOT touch self.active_theme — only set_active_theme (driven by
+        // must NOT touch self.active_theme: only set_active_theme (driven by
         // App::update) does.
         let mut c = SettingsContent::new();
         c.set_available(true);
@@ -869,7 +869,7 @@ mod tests {
         c.set_available(true);
         c.set_config(sample_config());
         c.set_runtime(sample_runtime());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

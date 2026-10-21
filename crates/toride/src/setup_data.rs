@@ -35,8 +35,8 @@ pub struct SetupDataBundle {
 ///
 /// A 60s TTL cache covers the whole walk (offers + findings).
 pub struct SetupCollector {
-    rx: Option<oneshot::Receiver<(SetupDataBundle, bool)>>,
-    cached_bundle: Option<SetupDataBundle>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<SetupDataBundle>, bool)>>,
+    cached_bundle: Option<std::sync::Arc<SetupDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -83,8 +83,14 @@ impl SetupCollector {
             self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
         let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
-        let handle =
-            tokio::spawn(async move { collect_real_offers(use_cache, cached_bundle).await });
+        // TTL hit: re-ship the cached bundle by refcount, no collection task.
+        if use_cache && let Some(bundle) = cached_bundle {
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
+        let handle = tokio::spawn(async move { collect_real_offers(false, None).await });
         tokio::spawn(async move {
             let result = handle.await;
             let (bundle, reused_cache) = match result {
@@ -97,7 +103,7 @@ impl SetupCollector {
                     )
                 }
             };
-            let _ = tx.send((bundle, reused_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache));
         });
     }
 
@@ -105,15 +111,14 @@ impl SetupCollector {
     ///
     /// Returns `Some(bundle)` on completion, `None` while pending or failed.
     /// A degraded (panic) bundle is never cached.
-    pub async fn poll(&mut self) -> Option<SetupDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<SetupDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
                 if let Some((ref bundle, used_cache)) = result
-                    && bundle.available
                     && !used_cache
                 {
-                    self.cached_bundle = Some(bundle.clone());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
                     self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
@@ -124,7 +129,6 @@ impl SetupCollector {
     }
 
     /// Invalidate the offers cache so the next collection re-runs the walk.
-    #[allow(dead_code)]
     pub fn invalidate_offers_cache(&mut self) {
         self.cached_bundle = None;
         self.bundle_fresh_at = None;
@@ -151,7 +155,7 @@ pub fn to_findings(offers: &SetupOffers) -> Vec<FindingEntry> {
             bundle.recommendations.iter().map(|rec| FindingEntry {
                 id: suggest_id(bundle.id, rec),
                 severity: "info".to_string(),
-                title: format!("{} — {}", rec.title, rec.rationale),
+                title: format!("{}: {}", rec.title, rec.rationale),
             })
         })
         .collect()
@@ -422,7 +426,7 @@ mod tests {
     #[test]
     fn invalidate_offers_cache_clears_it() {
         let mut collector = SetupCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_offers_cache();
         assert!(collector.cached_bundle.is_none());
@@ -495,7 +499,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn cache_hit_returns_cached_bundle_without_rewalking() {
         let mut collector = SetupCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 
@@ -521,7 +525,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = SetupCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 

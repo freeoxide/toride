@@ -6,11 +6,11 @@
 //! are no write operations, no optimistic updates, no loading spinner.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Status panel — connected badge, node name, tailnet, IPs, exit node.
-//! 2. Peers table — name, IPs, online state, exit-node flag.
-//! 3. Netcheck / DERP — UDP/IPv6/Hairpin flags + per-region DERP latencies.
-//! 4. DNS — `MagicDNS`, nameservers, search domains.
-//! 5. Doctor findings — grouped by severity (Critical > Warning > Info > Ok).
+//! 1. Status panel: connected badge, node name, tailnet, IPs, exit node.
+//! 2. Peers table: name, IPs, online state, exit-node flag.
+//! 3. Netcheck / DERP: UDP/IPv6/Hairpin flags + per-region DERP latencies.
+//! 4. DNS: `MagicDNS`, nameservers, search domains.
+//! 5. Doctor findings: grouped by severity (Critical > Warning > Info > Ok).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -300,7 +300,7 @@ impl TailscaleContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -324,7 +324,7 @@ impl TailscaleContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens at render
+    /// Generic clamp after a data setter (defensive: the real clamp happens at render
     /// time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -387,7 +387,7 @@ impl TailscaleContent {
     /// Render the degraded state when the Tailscale local API is unreachable.
     ///
     /// `available == false` is set when the HTTP API (localhost:41642) did not respond
-    /// within the 3s timeout — i.e. tailscaled is absent or not running. The reason
+    /// within the 3s timeout: i.e. tailscaled is absent or not running. The reason
     /// string (if any) is surfaced so the operator sees what went wrong; when no reason
     /// is known we fall back to an accurate "daemon unreachable" message.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
@@ -982,7 +982,7 @@ mod tests {
         let (conn, region, lat, udp, ipv6, hair, pm) = sample_netcheck();
         c.set_netcheck(conn, region, lat, udp, ipv6, hair, pm);
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

@@ -13,8 +13,8 @@
 //! misleading placeholder (`is_valid = true`, empty `not_after`) that previously
 //! rendered as `?` in the UI.
 //!
-//! On any failure — `openssl` absent, command timeout, non-zero exit, or an
-//! unparseable date — [`read_cert_expiry`] degrades to
+//! On any failure: `openssl` absent, command timeout, non-zero exit, or an
+//! unparseable date: [`read_cert_expiry`] degrades to
 //! [`CertExpiry::unknown`], which carries `is_valid = false` and an empty
 //! `not_after`. This is deliberately NOT a "looks valid" status: the operator
 //! sees the cert as unverified rather than healthy.
@@ -65,7 +65,7 @@ impl ParsedCert {
 /// Any failure to obtain real expiry (no `openssl`, timeout, non-zero exit,
 /// unparseable date) yields [`CertExpiry::unknown`]: empty `not_after`,
 /// `days_remaining = 0`, `is_valid = false`. The `false` here means
-/// **"expiry unverified"**, not "expired-and-bad" — but it is strictly safer
+/// **"expiry unverified"**, not "expired-and-bad", but it is strictly safer
 /// than the previous `is_valid = true` placeholder, which misrepresented an
 /// unchecked cert as healthy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,9 +77,11 @@ pub struct CertExpiry {
     /// Whole days until expiry relative to the probe time. Negative once the
     /// cert has expired. `0` when expiry is unknown.
     pub days_remaining: i64,
-    /// `true` only when real expiry was parsed AND the cert is still in date
-    /// (`days_remaining > 0`). `false` for expired certs AND for certs whose
-    /// expiry could not be determined (unverified).
+    /// `true` only when real expiry was parsed AND the expiry instant is
+    /// still in the future (`expiry_epoch > now_epoch`), so a cert inside
+    /// its final 24 hours stays `true` with `days_remaining = 0`. `false`
+    /// for expired certs AND for certs whose expiry could not be determined
+    /// (unverified).
     pub is_valid: bool,
 }
 
@@ -99,19 +101,21 @@ impl CertExpiry {
 
     /// Construct a known expiry from a parsed not-after timestamp.
     ///
-    /// `days_remaining` is computed against `now`. `is_valid` is `days_remaining > 0`.
+    /// `days_remaining` is the signed whole-day count from `now` until the
+    /// expiry ([`days_until`]), so an expired certificate reports a negative
+    /// value. `is_valid` derives directly from `expiry_epoch > now_epoch`:
+    /// a certificate inside its final 24 hours still reports
+    /// `is_valid = true` alongside `days_remaining = 0`.
     #[must_use]
     pub fn from_not_after(not_after: impl Into<String>, now: SystemTime) -> Self {
         let not_after = not_after.into();
         match parse_openssl_enddate_epoch(&not_after) {
             Some(expiry_epoch) => {
                 let now_epoch = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                let secs_remaining = expiry_epoch.saturating_sub(now_epoch);
-                let days_remaining = i64::try_from(secs_remaining / 86_400).unwrap_or(i64::MAX);
                 Self {
+                    days_remaining: days_until(now_epoch, expiry_epoch),
+                    is_valid: expiry_epoch > now_epoch,
                     not_after,
-                    days_remaining,
-                    is_valid: days_remaining > 0,
                 }
             }
             None => Self::unknown_with_label(not_after),
@@ -132,8 +136,8 @@ impl CertExpiry {
 /// `openssl x509 -enddate -noout -in <path>`.
 ///
 /// The probe runs under a bounded timeout (see `OPENSSL_ENDDATE_TIMEOUT`).
-/// On any failure — `openssl` not on `$PATH`, the runner returning an error,
-/// a non-zero exit, a timeout, or an unparseable `notAfter=` line — this
+/// On any failure: `openssl` not on `$PATH`, the runner returning an error,
+/// a non-zero exit, a timeout, or an unparseable `notAfter=` line: this
 /// returns [`CertExpiry::unknown`] (degraded, NOT `is_valid = true`).
 ///
 /// `now` is taken as a parameter so callers (and tests) can pin the reference
@@ -143,7 +147,7 @@ impl CertExpiry {
 ///
 /// This function returns `Ok(CertExpiry)` for every recoverable case (openssl
 /// missing, parse failure, etc.). It returns `Err` only for an internal panic
-/// guard — in practice it never errors, matching the "read-only section must
+/// guard: in practice it never errors, matching the "read-only section must
 /// never crash" contract of the TUI integration. The `Result` shape is kept for
 /// forward-compatibility and consistency with the rest of the module.
 pub fn read_cert_expiry(path: &Path, runner: &dyn Runner, now: SystemTime) -> Result<CertExpiry> {
@@ -224,7 +228,7 @@ fn extract_not_after(stdout: &str) -> Option<String> {
 ///
 /// Accepts the canonical openssl `-enddate` format:
 /// `Mon DD HH:MM:SS YYYY GMT` (e.g. `Sep 18 00:48:15 2026 GMT`). The trailing
-/// `GMT` is optional — openssl always emits UTC, so a missing zone is treated
+/// `GMT` is optional: openssl always emits UTC, so a missing zone is treated
 /// as UTC. Returns `None` for any unparseable input rather than panicking.
 ///
 /// This avoids pulling in `chrono`/`time` for a single fixed format.
@@ -243,7 +247,7 @@ pub fn parse_openssl_enddate_epoch(s: &str) -> Option<u64> {
 
     // Sanity-check the day-of-month. openssl never emits an out-of-range day,
     // so a value like 99 is a sure sign of a non-cert `notAfter=` line (or a
-    // corrupt file) — reject it rather than computing a bogus epoch.
+    // corrupt file): reject it rather than computing a bogus epoch.
     if !(1..=31).contains(&day) {
         return None;
     }
@@ -326,7 +330,7 @@ pub fn days_until(now_secs: u64, expiry_secs: u64) -> i64 {
     let delta = i64::try_from(expiry_secs).unwrap_or(i64::MAX)
         - i64::try_from(now_secs).unwrap_or(i64::MAX);
     // Floor toward negative infinity so a cert that expired 5h ago reports -1,
-    // not 0 — matching how operators read "days remaining".
+    // not 0, matching how operators read "days remaining".
     delta.div_euclid(86_400)
 }
 
@@ -381,7 +385,7 @@ pub fn list_live_certs(live_dir: &Path) -> Result<Vec<ParsedCert>> {
 
 /// Read the PEM-encoded certificate from a fullchain file.
 ///
-/// Extracts just the first (leaf) certificate from a full chain PEM file.
+/// Extracts only the first (leaf) certificate from a full chain PEM file.
 ///
 /// # Errors
 ///
@@ -506,7 +510,7 @@ mod tests {
 
     #[test]
     fn parse_openssl_enddate_leap_year() {
-        // 2024-02-29 12:00:00 UTC — a real leap day; must parse without panic.
+        // 2024-02-29 12:00:00 UTC, a real leap day; must parse without panic.
         // Independently verified: == 1709208000.
         let epoch = parse_openssl_enddate_epoch("Feb 29 12:00:00 2024 GMT");
         assert_eq!(epoch, Some(1_709_208_000));
@@ -572,6 +576,75 @@ mod tests {
         let e = CertExpiry::from_not_after("Jan  1 00:00:00 1970 GMT", now);
         assert!(!e.is_valid, "expired cert must be is_valid=false");
         assert!(e.days_remaining <= 0);
+    }
+
+    /// The final-24-hours class: a cert with 23 h left must stay `is_valid`
+    /// with `days_remaining == 0`; 25 h keeps `days_remaining == 1`; a cert
+    /// expired 5 h ago reports `-1`, not the documented-but-never-produced 0.
+    #[test]
+    fn from_not_after_boundary_hours_table() {
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let date_at = |offset_secs: u64| {
+            let t = base + Duration::from_secs(offset_secs);
+            let secs = t.duration_since(UNIX_EPOCH).expect("positive");
+            let days = secs.as_secs() / 86_400;
+            let rem = secs.as_secs() % 86_400;
+            let (y, m, d) = civil_from_epoch_days(i64::try_from(days).expect("fits"));
+            format!(
+                "{} {:>2} {:02}:{:02}:{:02} {} GMT",
+                month_name(m),
+                d,
+                rem / 3_600,
+                (rem % 3_600) / 60,
+                rem % 60,
+                y
+            )
+        };
+
+        let e = CertExpiry::from_not_after(date_at(23 * 3_600), base);
+        assert!(e.is_valid, "a cert valid for another 23 h is not expired");
+        assert_eq!(e.days_remaining, 0);
+
+        let e = CertExpiry::from_not_after(date_at(25 * 3_600), base);
+        assert!(e.is_valid);
+        assert_eq!(e.days_remaining, 1);
+
+        let five_hours = Duration::from_secs(18_000);
+        let e = CertExpiry::from_not_after(date_at(0), base + five_hours);
+        assert!(!e.is_valid, "a cert that expired 5 h ago is invalid");
+        assert_eq!(e.days_remaining, -1, "expired certs report negative days");
+    }
+
+    /// Civil date helpers for the boundary table above.
+    fn civil_from_epoch_days(days: i64) -> (i64, i64, i64) {
+        let z = days + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        (if m <= 2 { y + 1 } else { y }, m, d)
+    }
+
+    fn month_name(month: i64) -> &'static str {
+        match month {
+            1 => "Jan",
+            2 => "Feb",
+            3 => "Mar",
+            4 => "Apr",
+            5 => "May",
+            6 => "Jun",
+            7 => "Jul",
+            8 => "Aug",
+            9 => "Sep",
+            10 => "Oct",
+            11 => "Nov",
+            12 => "Dec",
+            other => unreachable!("month {other} out of range"),
+        }
     }
 
     #[test]

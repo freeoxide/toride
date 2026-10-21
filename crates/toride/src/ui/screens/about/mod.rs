@@ -4,14 +4,14 @@
 //! [`Section::About`](crate::data::Section) is the active sidebar section. This
 //! integration mirrors the harden / tailscale / fail2ban templates
 //! (`HardenContent` / `TailscaleContent` / `Fail2banContent`) WITHOUT any write
-//! path — every line is read-only.
+//! path: every line is read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar, no sub-selector):
-//! 1. APP — compile-time build metadata (name, version, profile, homepage,
+//! 1. APP: compile-time build metadata (name, version, profile, homepage,
 //!    authors).
-//! 2. SYSTEM — live host identity (hostname, os, kernel, arch, cpu, cores, mem,
+//! 2. SYSTEM: live host identity (hostname, os, kernel, arch, cpu, cores, mem,
 //!    uptime, load) derived from [`crate::status::TorideStatus`].
-//! 3. RUNTIME — environment context (terminal, shell, user, lang, home, cwd,
+//! 3. RUNTIME: environment context (terminal, shell, user, lang, home, cwd,
 //!    config/data dir, log path).
 //!
 //! The data has no "findings" concept (it is identity metadata, not a health
@@ -37,14 +37,14 @@ use crate::ui::widgets::render_titled_panel;
 // convert layer (`about_convert`), exactly like the harden screen's
 // `SysctlRow` / `FindingEntry` / `MountEntry` / `HardenProfileEntry`. Defining
 // them here (in the screen module) and re-importing them in the data file keeps
-// the convert layer importing from the screen module — the single boundary
+// the convert layer importing from the screen module: the single boundary
 // between backend and presentation lives in `about_convert`.
 
 /// Live host/system identity derived from [`crate::status::TorideStatus`].
 ///
 /// Every field is a pre-formatted display string so the render path is pure
 /// layout. Unreadable probes degrade a field to a placeholder
-/// (`"(unknown)"` / `"(none)"`) rather than aborting the whole bundle —
+/// (`"(unknown)"` / `"(none)"`) rather than aborting the whole bundle:
 /// mirroring the harden / tailscale graceful-degradation contract.
 #[derive(Clone, Debug)]
 pub struct AboutSystem {
@@ -216,7 +216,7 @@ impl AboutContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -285,7 +285,7 @@ impl AboutContent {
     /// Render the degraded state when the About bundle could not be collected.
     ///
     /// `available == false` is set ONLY when a collection task panicked
-    /// (`JoinError`) — the underlying `TorideStatus::collect` / env reads cannot
+    /// (`JoinError`): the underlying `TorideStatus::collect` / env reads cannot
     /// realistically fail wholesale, so this branch is rare in practice.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " ABOUT ", p.text_dim, false);
@@ -573,7 +573,7 @@ mod tests {
     fn render_unavailable_at_degenerate_height_does_not_panic() {
         let mut c = AboutContent::new();
         c.set_unavailable_reason(Some("spawn_blocking panicked".into()));
-        // 20x5 — below the saturating_sub(3) threshold once the titled panel's
+        // 20x5: below the saturating_sub(3) threshold once the titled panel's
         // border/insets are accounted for.
         let _ = render_to_string(&mut c, 20, 5);
     }
@@ -760,7 +760,7 @@ mod tests {
         c.set_app(sample_app());
         c.set_system(sample_system());
         c.set_runtime(sample_runtime());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

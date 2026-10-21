@@ -6,9 +6,9 @@
 //! [`SetupCollector`](crate::setup_data::SetupCollector), no host writes.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. List view — one heading per offered bundle, one row per recommendation:
+//! 1. List view: one heading per offered bundle, one row per recommendation:
 //!    selection marker, tool title, license badge, rationale.
-//! 2. Detail view — the selected row's license label (summary, terms URL,
+//! 2. Detail view: the selected row's license label (summary, terms URL,
 //!    verified date), its FOSS alternative, and its ordered actions.
 //!
 //! Consent gate: Enter on a row whose license is not
@@ -45,7 +45,7 @@ const TITLE_W: usize = 18;
 const MODAL_WIDTH: u16 = 56;
 const MODAL_HEIGHT: u16 = 16;
 
-/// Badge label for a license kind — the commercial-use fact in two words.
+/// Badge label for a license kind: the commercial-use fact in two words.
 fn kind_label(kind: LicenseKind) -> &'static str {
     match kind {
         LicenseKind::Free => "free",
@@ -85,10 +85,16 @@ fn action_text(action: &InstallAction) -> String {
         }
         InstallAction::Hint(hint) => format!("config hint {}: {}", hint.path, hint.title),
         InstallAction::Manual { instructions } => format!("manual: {instructions}"),
+        InstallAction::Unit { name, .. } => format!("deploy unit {name}"),
+        InstallAction::Firewall { spec } => format!(
+            "firewall {} port {}",
+            if spec.allow { "open" } else { "close" },
+            spec.port
+        ),
     }
 }
 
-/// The canonical suggestion id (plan §9 shape) — one key space shared by
+/// The canonical suggestion id (plan §9 shape): one key space shared by
 /// `dismissed`, `findings_count`, and the collector's `to_findings` feed.
 pub(crate) fn suggest_id(bundle_id: &str, rec: &Recommendation) -> String {
     format!("setup.suggest.{bundle_id}.{}", rec.id)
@@ -228,7 +234,7 @@ impl SetupContent {
     }
 
     /// Rows whose install intent passed the consent gate this session, in
-    /// approval order. Nothing executes from this slice in phase 3 — it is
+    /// approval order. Nothing executes from this slice in phase 3: it is
     /// the seam an executor consumes later.
     #[must_use]
     pub fn approved(&self) -> &[&'static str] {
@@ -659,8 +665,14 @@ impl SetupContent {
             )));
         }
         lines.push(Line::raw(""));
+        let approval = if self.approved.contains(&rec.id) {
+            "approved for install (executes once wiring lands)"
+        } else {
+            "not approved yet"
+        };
+        lines.push(kv_line("install", approval, p, width));
         lines.push(Line::from(Span::styled(
-            "enter: install   esc: back",
+            "enter: approve for install   esc: back",
             Style::new().fg(p.text_muted),
         )));
         lines

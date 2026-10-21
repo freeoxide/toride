@@ -1,7 +1,7 @@
 //! Convert `toride-harden` library types to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that imports `toride_harden`
-//! types — mirroring `fail2ban_convert.rs`'s role as the single boundary between
+//! types: mirroring `fail2ban_convert.rs`'s role as the single boundary between
 //! backend and presentation. Each function handles errors gracefully: malformed
 //! input is skipped with a `tracing::warn!` and a placeholder, never propagated
 //! (the read-only section must never crash the TUI).
@@ -101,7 +101,7 @@ pub fn convert_sysctl_row(param: &SysctlParam, current: String) -> SysctlRow {
 ///
 /// Every mount maps 1:1. An empty `target` is logged and replaced with a
 /// placeholder. The `hardened` flag is `true` only when the mount carries all
-/// three required security options (`nosuid`, `nodev`, `noexec`) — computed via
+/// three required security options (`nosuid`, `nodev`, `noexec`): computed via
 /// `toride_harden::shm::missing_security_options`.
 pub fn convert_mounts(mounts: Vec<MountInfo>) -> Vec<MountEntry> {
     mounts
@@ -138,8 +138,8 @@ pub fn convert_mounts(mounts: Vec<MountInfo>) -> Vec<MountEntry> {
 /// [`HardeningProfile::all_names`] is guaranteed non-empty by construction
 /// (it returns a static `&["desktop", "server", "router"]`), so this function
 /// always yields at least one entry on a correct backend. If the backend were
-/// ever changed to return an empty slice — or to advertise a name that
-/// [`HardeningProfile::from_name`] rejects — this function degrades gracefully:
+/// ever changed to return an empty slice: or to advertise a name that
+/// [`HardeningProfile::from_name`] rejects: this function degrades gracefully:
 /// the `filter_map` silently skips unknown names and returns an empty `Vec`,
 /// and the profile selector renders an empty list rather than panicking. The
 /// `debug_assert!` below pins the non-empty invariant so a backend regression
@@ -152,7 +152,7 @@ pub fn convert_profiles() -> Vec<HardenProfileEntry> {
     // selector from the operator.
     debug_assert!(
         !names.is_empty(),
-        "HardeningProfile::all_names() must be non-empty — an empty slice would hide the profile selector"
+        "HardeningProfile::all_names() must be non-empty: an empty slice would hide the profile selector"
     );
     names
         .iter()

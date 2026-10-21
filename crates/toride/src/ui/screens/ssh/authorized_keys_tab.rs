@@ -396,12 +396,6 @@ impl SshTab for AuthorizedKeysTab {
         self.detail_modal.is_visible() || self.action_modal.is_some()
     }
 
-    fn close_modal(&mut self) {
-        self.detail_modal.close();
-        self.detail_entry_idx = None;
-        self.action_modal = None;
-    }
-
     fn drain_ops(&mut self) -> Vec<SshOp> {
         std::mem::take(&mut self.pending_ops)
     }
@@ -479,7 +473,7 @@ impl AuthorizedKeysTab {
 
             let mut spans = Vec::new();
 
-            // Icon — accent when selected or hovered.
+            // Icon: accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
                 Style::new().fg(if is_selected || is_hovered {

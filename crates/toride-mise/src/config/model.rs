@@ -8,16 +8,12 @@ use std::collections::BTreeMap;
 
 use camino::Utf8PathBuf;
 
-// ---------------------------------------------------------------------------
-// MiseToml
-// ---------------------------------------------------------------------------
-
 /// Represents the contents of a mise config file (`.mise.toml` or
 /// `config.toml`).
 ///
 /// This is a simplified view of the config: a flat map of settings, a list of
 /// tool entries, and optional environment variables. It does **not** attempt to
-/// model every possible mise config key — only the subset the crate interacts
+/// model every possible mise config key: only the subset the crate interacts
 /// with. Unknown keys are preserved in the `extra` field when the `toml`
 /// feature is enabled.
 #[derive(Debug, Clone)]
@@ -26,12 +22,13 @@ pub struct MiseToml {
     pub path: Option<Utf8PathBuf>,
     /// Top-level `settings.*` entries.
     pub settings: BTreeMap<String, SettingsEntry>,
-    /// Raw `[tools]` entries as `"tool" => "version"` strings.
-    pub tools: BTreeMap<String, String>,
+    /// Raw `[tools]` entries: single versions and version lists.
+    pub tools: BTreeMap<String, ToolVersions>,
     /// Raw `[env]` entries.
     pub env: BTreeMap<String, String>,
-    /// Raw `[tasks]` entries as `"task_name" => "command"` strings.
-    pub tasks: BTreeMap<String, String>,
+    /// Raw `[tasks]` entries: bare command strings and inline-table
+    /// definitions.
+    pub tasks: BTreeMap<String, TaskEntry>,
     /// Unknown top-level keys preserved from the TOML document.
     ///
     /// Only populated when the `toml` feature is enabled.
@@ -70,9 +67,24 @@ impl Default for MiseToml {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ConfigWriteResult
-// ---------------------------------------------------------------------------
+/// A `[tools]` entry as mise accepts it: one version or a list of versions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolVersions {
+    /// A single version string (`tools.python = "3.12"`).
+    Single(String),
+    /// A version list (`tools.python = ["3.12", "3.11"]`).
+    Multiple(Vec<String>),
+}
+
+/// A `[tasks]` entry: a bare command string or an inline-table definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskEntry {
+    /// A bare command string (`tasks.lint = "cargo clippy"`).
+    Command(String),
+    /// An inline-table definition (`tasks.build = { run = "cargo build" }`),
+    /// preserved as the re-serialized TOML of the table.
+    Table(String),
+}
 
 /// Outcome of a write operation against a mise config file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,10 +104,6 @@ pub struct ConfigWriteResult {
     /// the old value, or the old value was absent).
     pub changed: bool,
 }
-
-// ---------------------------------------------------------------------------
-// SettingsEntry
-// ---------------------------------------------------------------------------
 
 /// A single `settings.*` value from a mise config file.
 ///

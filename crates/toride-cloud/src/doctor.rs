@@ -187,7 +187,7 @@ impl Doctor {
     /// each rule into a finding:
     ///
     /// - **Critical**: ingress open to `0.0.0.0/0` (or `::/0`) on a sensitive
-    ///   port (SSH/RDP/database/admin — see [`SENSITIVE_PORTS`]).
+    ///   port (SSH/RDP/database/admin: see [`SENSITIVE_PORTS`]).
     /// - **Warning**: ingress open to `0.0.0.0/0` on any other port.
     /// - **Warning**: a group with no egress rules (no outbound filtering).
     ///
@@ -244,7 +244,7 @@ impl Doctor {
                             format!("{label}: sensitive port open to the world"),
                         )
                         .detail(format!(
-                            "{} ingress on {} allows {} — anyone on the internet can reach it.",
+                            "{} ingress on {} allows {}: anyone on the internet can reach it.",
                             group.name, port_desc, rule.cidr,
                         ))
                         .fix(format!(
@@ -454,7 +454,7 @@ fn is_open_cidr(cidr: &str) -> bool {
 
 /// Describe a rule's port as a human-readable string, and flag whether it is
 /// sensitive. Rules with no port range (e.g. ICMP, or all-protocols) are
-/// reported but never classified as sensitive — the caller still warns about
+/// reported but never classified as sensitive: the caller still warns about
 /// the open CIDR.
 ///
 /// A range is sensitive if it overlaps any entry in [`SENSITIVE_PORTS`]

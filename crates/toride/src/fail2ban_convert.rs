@@ -1,7 +1,7 @@
 //! Convert `toride-fail2ban` library types to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that imports
-//! `toride_fail2ban` types — mirroring `ssh_convert.rs`'s role as the single
+//! `toride_fail2ban` types: mirroring `ssh_convert.rs`'s role as the single
 //! boundary between backend and presentation. Each function handles errors
 //! gracefully: malformed input lines are skipped with a `tracing::warn!` and a
 //! placeholder, never propagated (the read-only section must never crash the
@@ -279,7 +279,7 @@ pub fn parse_bans(raw: &str) -> Vec<BanEntry> {
 /// Best-effort check that `s` looks like an IPv4 or IPv6 address.
 ///
 /// Accepts dotted-quad with 1-3 digit octets, or colon-separated IPv6 groups.
-/// Does NOT fully validate octet ranges — the goal is to distinguish IPs from
+/// Does NOT fully validate octet ranges: the goal is to distinguish IPs from
 /// prose, not to enforce RFC validity.
 fn looks_like_ip(s: &str) -> bool {
     // IPv4: four dot-separated groups of 1-3 digits.
@@ -500,7 +500,7 @@ Banned IP list:
     fn parse_bans_no_ips_returns_empty() {
         let raw = "Sorry, but no IP is currently banned.";
         // The "sorry" / "no ip is currently banned" guard skips this line,
-        // and there are no bare IP lines — result is empty.
+        // and there are no bare IP lines: result is empty.
         assert!(parse_bans(raw).is_empty());
     }
 

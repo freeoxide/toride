@@ -1,10 +1,10 @@
 //! Convert `toride_backup` library types to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that maps backend
-//! `toride_backup` types to UI presentation types — mirroring
+//! `toride_backup` types to UI presentation types: mirroring
 //! `fail2ban_convert.rs`'s role as the single conversion boundary between
-//! backend and presentation. (The I/O boundary — `BackupClient`,
-//! `ScheduleManager`, etc. — is owned by `toride_backup_data.rs`, mirroring
+//! backend and presentation. (The I/O boundary: `BackupClient`,
+//! `ScheduleManager`, etc.: is owned by `toride_backup_data.rs`, mirroring
 //! `fail2ban_data.rs` / `toride_harden_data.rs`.) Each function handles
 //! malformed input gracefully: empty ids/titles are replaced with a
 //! placeholder and a `tracing::warn!` is logged, never propagated (the
@@ -37,7 +37,7 @@ fn severity_str(s: toride_backup::doctor::Severity) -> &'static str {
 /// still produced with a placeholder so the row count matches the backend (the
 /// operator can see "something" even if the finding is malformed). An empty
 /// `fix` string (e.g. `Some("")`) is normalized to `None` so the render layer
-/// never shows a dangling `→ ` arrow implying a fix exists when none does —
+/// never shows a dangling `→ ` arrow implying a fix exists when none does:
 /// consistent with the placeholder treatment for empty `id`/`title`. Mirrors
 /// [`fail2ban_convert::convert_findings`](crate::fail2ban_convert::convert_findings).
 pub fn convert_findings(findings: Vec<toride_backup::doctor::Finding>) -> Vec<FindingEntry> {
@@ -54,7 +54,7 @@ pub fn convert_findings(findings: Vec<toride_backup::doctor::Finding>) -> Vec<Fi
             if f.fix.as_deref().is_some_and(str::is_empty) {
                 tracing::warn!(
                     "backup finding with empty fix string: id={:?} title={:?} \
-                     — normalizing to None",
+                    : normalizing to None",
                     f.id,
                     f.title
                 );
@@ -89,7 +89,7 @@ pub fn convert_findings(findings: Vec<toride_backup::doctor::Finding>) -> Vec<Fi
 /// scope, e.g. a narrower `DoctorScope` was requested).
 ///
 /// This keeps the convert layer pure (no I/O) and keeps a single source of
-/// truth for "is restic installed" — the doctor — consistent with how the
+/// truth for "is restic installed": the doctor, consistent with how the
 /// availability flag itself is computed downstream.
 ///
 /// Precedence: if BOTH `binary.<x>.found` AND `binary.<x>.missing` appear

@@ -25,17 +25,17 @@ const COMPACT_H: u16 = 16;
 
 /// Terminal size category for adaptive layouts.
 ///
-/// Derives `PartialOrd` / `Ord` by declaration order — variants are ordered
+/// Derives `PartialOrd` / `Ord` by declaration order: variants are ordered
 /// smallest-to-largest so that `vp >= Viewport::Compact` means "at least Compact".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Viewport {
-    /// < 30 x 10 — too small to render anything useful
+    /// < 30 x 10: too small to render anything useful
     TooSmall,
-    /// >= 30 x 10 — abbreviated text, no labels
+    /// >= 30 x 10: abbreviated text, no labels
     Minimal,
-    /// >= 50 x 16 — reduced spacing, truncated content
+    /// >= 50 x 16: reduced spacing, truncated content
     Compact,
-    /// >= 72 x 24 — full chrome, generous spacing
+    /// >= 72 x 24: full chrome, generous spacing
     Full,
 }
 
@@ -58,7 +58,7 @@ impl Viewport {
 
 // ── Layout helpers ───────────────────────────────────────────────────────────
 
-/// Center column constraint — caps at 72 columns but shrinks on narrow terminals.
+/// Center column constraint: caps at 72 columns but shrinks on narrow terminals.
 #[must_use]
 pub fn center_column() -> Constraint {
     Constraint::Max(FULL_W)
@@ -67,7 +67,7 @@ pub fn center_column() -> Constraint {
 // ── Fallback rendering ───────────────────────────────────────────────────────
 
 /// Render a centered "terminal too small" message.
-/// Returns `true` when the terminal is too small — callers should early-return.
+/// Returns `true` when the terminal is too small: callers should early-return.
 pub fn render_too_small(frame: &mut Frame, p: Palette) -> bool {
     let vp = Viewport::from_area(frame.area());
     if vp != Viewport::TooSmall {
@@ -75,7 +75,7 @@ pub fn render_too_small(frame: &mut Frame, p: Palette) -> bool {
     }
 
     let area = frame.area();
-    let msg = format!("Terminal too small — need at least {MIN_WIDTH}x{MIN_HEIGHT}");
+    let msg = format!("Terminal too small: need at least {MIN_WIDTH}x{MIN_HEIGHT}");
     let line = Line::from(Span::styled(msg, Style::new().fg(p.text_dim)));
     frame.render_widget(Paragraph::new(line).centered(), area);
     true
@@ -120,7 +120,7 @@ pub fn truncate_str(s: &str, max_width: usize) -> String {
 }
 
 /// Truncate each line of a logo (array of `&str`) to `max_width`, appending ".."
-/// when a row overflows. Returns styled `Line`s — borrows the original slice when
+/// when a row overflows. Returns styled `Line`s: borrows the original slice when
 /// no truncation is needed, avoiding allocation.
 #[must_use]
 pub fn truncate_logo<'a>(rows: &[&'a str], max_width: u16, style: Style) -> Vec<Line<'a>> {
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn viewport_minimal_between_breakpoints() {
-        // 40x12 — between Minimal and Compact
+        // 40x12: between Minimal and Compact
         assert_eq!(Viewport::from_area(rect(40, 12)), Viewport::Minimal);
     }
 
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn viewport_compact_between_breakpoints() {
-        // 60x20 — between Compact and Full
+        // 60x20: between Compact and Full
         assert_eq!(Viewport::from_area(rect(60, 20)), Viewport::Compact);
     }
 
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn truncate_str_unicode_cjk_small_width() {
-        // "日本語テスト" — each CJK char is width 2, total width = 10
+        // "日本語テスト": each CJK char is width 2, total width = 10
         // With max_width=6: first 2 CJK chars (width 4) fit, third would make 6
         // but 6+2 > 6-2=4, so truncate after 2 chars: "日本.."
         let result = truncate_str("日本語テスト", 6);

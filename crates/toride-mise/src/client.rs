@@ -26,15 +26,7 @@ use crate::languages::{
     node::NodeHelper, python::PythonHelper, ruby::RubyHelper, rust::RustHelper,
 };
 
-// ---------------------------------------------------------------------------
-// Re-export builder
-// ---------------------------------------------------------------------------
-
 pub use crate::builder::MiseBuilder;
-
-// ---------------------------------------------------------------------------
-// MiseMode
-// ---------------------------------------------------------------------------
 
 /// Controls how the `mise` binary is invoked with respect to trust.
 ///
@@ -50,10 +42,6 @@ pub enum MiseMode {
     /// Config files may require explicit trust confirmation.
     Untrusted,
 }
-
-// ---------------------------------------------------------------------------
-// LoadPolicy
-// ---------------------------------------------------------------------------
 
 /// Controls which mise subsystems are loaded on each invocation.
 ///
@@ -79,13 +67,8 @@ impl Default for LoadPolicy {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MiseProject (forward declaration)
-// ---------------------------------------------------------------------------
-
-/// Represents a mise-enabled project directory with its own config and tools.
-///
-/// This is a placeholder type; full implementation lives behind future work.
+/// A mise-enabled project directory: config-file discovery, tool listing,
+/// environment resolution, exec, and lockfile generation for one root path.
 #[derive(Debug, Clone)]
 pub struct MiseProject {
     /// Path to the project root.
@@ -94,22 +77,14 @@ pub struct MiseProject {
     pub(crate) mise: Mise,
 }
 
-// ---------------------------------------------------------------------------
-// RuntimeManager (forward declaration)
-// ---------------------------------------------------------------------------
-
-/// Manages runtime installations for a set of tools.
-///
-/// This is a placeholder type; full implementation lives behind future work.
+/// Installs and pins tool versions: install-only [`RuntimeManager::ensure`]
+/// and [`RuntimeManager::ensure_many`], config-writing
+/// [`RuntimeManager::use_tool`], and `mise exec`/`mise which` wrappers.
 #[derive(Debug)]
 pub struct RuntimeManager {
     /// The mise client used for runtime operations.
     pub client: Mise,
 }
-
-// ---------------------------------------------------------------------------
-// Mise
-// ---------------------------------------------------------------------------
 
 /// High-level async client for interacting with the mise CLI.
 ///
@@ -329,7 +304,7 @@ impl Mise {
     /// Run a mise command with the given arguments and return the raw output.
     ///
     /// This is the lowest-level async execution method. It does **not** check
-    /// the exit code — callers that need error-on-failure should use
+    /// the exit code: callers that need error-on-failure should use
     /// [`Mise::run_checked`] instead.
     ///
     /// # Errors
@@ -366,7 +341,8 @@ impl Mise {
     /// Run a mise command, verify it succeeded, and parse stdout as JSON.
     ///
     /// Calls [`Mise::run_checked`] to execute the command, then deserializes
-    /// the trimmed stdout into `T` via `serde_json`.
+    /// the trimmed stdout into `T` via `serde_json`. A parse failure carries
+    /// the full `mise <args>` label so the failing subcommand is named.
     ///
     /// # Errors
     ///
@@ -376,11 +352,15 @@ impl Mise {
         &self,
         args: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> MiseResult<T> {
-        let output = self.run_checked(args).await?;
+        let args: Vec<String> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_owned())
+            .collect();
+        let output = self.run_checked(&args).await?;
         let raw = output.stdout_trimmed();
         let raw_owned = raw.to_owned();
         serde_json::from_str(raw).map_err(|e| MiseError::JsonParse {
-            command: self.binary_name().to_owned(),
+            command: command_label(self.binary_name(), &args),
             source: e,
             stdout: raw_owned,
         })
@@ -396,7 +376,11 @@ impl Mise {
         &self,
         args: impl IntoIterator<Item = impl AsRef<str>>,
     ) -> MiseResult<Vec<T>> {
-        let output = self.run_checked(args).await?;
+        let args: Vec<String> = args
+            .into_iter()
+            .map(|arg| arg.as_ref().to_owned())
+            .collect();
+        let output = self.run_checked(&args).await?;
         let raw = output.stdout_trimmed();
 
         // Fast path: if the output is empty, `{}`, or `null`, return an empty vec.
@@ -407,7 +391,7 @@ impl Mise {
 
         let raw_owned = raw.to_owned();
         serde_json::from_str(raw).map_err(|e| MiseError::JsonParse {
-            command: self.binary_name().to_owned(),
+            command: command_label(self.binary_name(), &args),
             source: e,
             stdout: raw_owned,
         })
@@ -457,10 +441,6 @@ impl Mise {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// MiseProject implementation
-// ---------------------------------------------------------------------------
 
 impl MiseProject {
     /// Create a new [`MiseProject`] rooted at `root` with the given [`Mise`] client.
@@ -558,10 +538,6 @@ impl MiseProject {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RuntimeManager implementation
-// ---------------------------------------------------------------------------
-
 impl RuntimeManager {
     /// Create a new [`RuntimeManager`] backed by the given [`Mise`] client.
     pub fn new(mise: Mise) -> Self {
@@ -570,29 +546,49 @@ impl RuntimeManager {
 
     /// Ensure that a specific version of a tool is installed.
     ///
-    /// Delegates to `mise use <tool>@<version>` followed by `mise install`.
+    /// Runs `mise install <tool>@<version>`: install-only semantics that
+    /// never write a mise config file. Use [`RuntimeManager::use_tool`] when
+    /// the config should pin the version.
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if either command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     pub async fn ensure(&self, tool: &str, version: &str) -> MiseResult<()> {
         let spec = format!("{tool}@{version}");
-        self.client.run_checked(["use", &spec]).await?;
-        self.client.run_checked(["install"]).await?;
+        self.client.run_checked(["install", &spec]).await?;
         Ok(())
     }
 
     /// Ensure multiple tool/version pairs are installed.
     ///
-    /// Calls [`RuntimeManager::ensure`] for each pair.
+    /// Runs one `mise install a@x b@y ...` subprocess (mise accepts multiple
+    /// specs per invocation and installs them in parallel).
     ///
     /// # Errors
     ///
-    /// Returns the first error encountered.
+    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     pub async fn ensure_many(&self, tools: &[(&str, &str)]) -> MiseResult<()> {
+        let mut args: Vec<String> = vec!["install".into()];
         for (tool, version) in tools {
-            self.ensure(tool, version).await?;
+            args.push(format!("{tool}@{version}"));
         }
+        self.client.run_checked(args).await?;
+        Ok(())
+    }
+
+    /// Pin tool versions in the config and install them.
+    ///
+    /// Runs `mise use <tool>@<version>...`, which writes the project's
+    /// `mise.toml` (creating it when absent) before installing. This is the
+    /// explicit opt-in to the config-writing path [`RuntimeManager::ensure`]
+    /// avoids.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    pub async fn use_tool(&self, tool: &str, version: &str) -> MiseResult<()> {
+        let spec = format!("{tool}@{version}");
+        self.client.run_checked(["use", &spec]).await?;
         Ok(())
     }
 
@@ -625,5 +621,105 @@ impl RuntimeManager {
     pub async fn resolve_bin(&self, bin: &str) -> MiseResult<Utf8PathBuf> {
         let output = self.client.run_checked(["which", bin]).await?;
         Ok(Utf8PathBuf::from(output.stdout_trimmed().to_owned()))
+    }
+}
+
+/// The `mise <args...>` label embedded in parse errors so a failure from any
+/// of the dozens of typed subcommand methods names its subcommand.
+fn command_label(binary: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        binary.to_owned()
+    } else {
+        format!("{binary} {}", args.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use std::sync::Arc;
+
+    use toride_runner::{CommandOutput, FakeRunner};
+
+    use crate::client::{Mise, RuntimeManager};
+
+    fn manager(fake: Arc<FakeRunner>) -> RuntimeManager {
+        let mise = Mise::builder()
+            .runner(fake as Arc<dyn toride_runner::AsyncRunner>)
+            .binary(crate::binary::MiseBinary::from_path("/usr/bin/mise"))
+            .build()
+            .unwrap();
+        RuntimeManager::new(mise)
+    }
+
+    fn success() -> CommandOutput {
+        CommandOutput::from_stdout("")
+    }
+
+    #[tokio::test]
+    async fn ensure_installs_the_spec_without_a_config_write() {
+        let fake = Arc::new(FakeRunner::new().push_response(success()));
+        manager(fake.clone())
+            .ensure("node", "22.1.0")
+            .await
+            .unwrap();
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1, "ensure must spawn exactly one mise process");
+        assert_eq!(calls[0].args, ["install", "node@22.1.0"]);
+    }
+
+    #[tokio::test]
+    async fn ensure_many_batches_all_specs_into_one_install() {
+        let fake = Arc::new(FakeRunner::new().push_response(success()));
+        manager(fake.clone())
+            .ensure_many(&[("node", "22.1.0"), ("python", "3.12"), ("jq", "1.7")])
+            .await
+            .unwrap();
+
+        let calls = fake.calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "ensure_many must spawn exactly one mise process"
+        );
+        assert_eq!(
+            calls[0].args,
+            ["install", "node@22.1.0", "python@3.12", "jq@1.7"]
+        );
+    }
+
+    #[tokio::test]
+    async fn run_json_parse_error_names_the_subcommand() {
+        use crate::error::MiseError;
+
+        let fake =
+            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("not json")));
+        let mise = Mise::builder()
+            .runner(fake as Arc<dyn toride_runner::AsyncRunner>)
+            .binary(crate::binary::MiseBinary::from_path("/usr/bin/mise"))
+            .build()
+            .unwrap();
+
+        let err = mise
+            .run_json::<serde_json::Value>(["ls", "--json"])
+            .await
+            .unwrap_err();
+        let MiseError::JsonParse { command, .. } = err else {
+            panic!("expected JsonParse, got {err:?}");
+        };
+        assert_eq!(command, "/usr/bin/mise ls --json");
+    }
+
+    #[tokio::test]
+    async fn use_tool_pins_the_config() {
+        let fake = Arc::new(FakeRunner::new().push_response(success()));
+        manager(fake.clone())
+            .use_tool("node", "22.1.0")
+            .await
+            .unwrap();
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].args, ["use", "node@22.1.0"]);
     }
 }

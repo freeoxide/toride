@@ -30,7 +30,7 @@ impl ProxyClient {
     /// and resolves system paths.
     ///
     /// Construction never fails on a missing `nginx` binary: this method only
-    /// builds the runner and resolves default [`ProxyPaths`] — it does NOT
+    /// builds the runner and resolves default [`ProxyPaths`]: it does NOT
     /// shell out and does NOT check for `nginx`. A missing binary is surfaced
     /// later by the doctor as a `Critical` finding rather than as a
     /// construction error. The only way construction returns an error is a
@@ -71,11 +71,19 @@ impl ProxyClient {
 
     /// Set dry-run mode.
     ///
-    /// When enabled, mutating commands (config writes, service restart/reload,
-    /// cert obtain/revoke) are logged at `info` level but **not** executed.
-    /// Read-only operations (status, doctor, list) still run normally. This is
-    /// the advertised behavior for `with_dry_run`; it is honored by the
-    /// command-issuing paths on [`ProxyClient`] and the managers it exposes.
+    /// When enabled, the mutating operations routed through this client are
+    /// logged at `info` level but **not** executed: [`ProxyClient::reload`],
+    /// [`ProxyClient::restart`], [`ProxyClient::write_site`],
+    /// [`ProxyClient::obtain_certificate`], and [`ProxyClient::renew_all`],
+    /// plus the nginx enable/disable and caddy reload dispatches in the CLI.
+    /// Read-only operations (status, doctor, list) run normally.
+    ///
+    /// The managers returned by [`ProxyClient::nginx`],
+    /// [`ProxyClient::caddy`], and [`ProxyClient::config`] do not consult
+    /// this flag: calling their mutating methods (e.g.
+    /// [`ConfigManager::enable_site`](crate::config::ConfigManager::enable_site)
+    /// or [`CaddyManager::write_caddyfile`](crate::caddy::CaddyManager::write_caddyfile))
+    /// always performs the real write.
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
@@ -228,7 +236,7 @@ impl ProxyClient {
     #[cfg(feature = "certs")]
     pub fn obtain_certificate(&self, domain: &str, email: &str, webroot: &str) -> Result<()> {
         if self.dry_run {
-            // Log the domain (cert subject) only — the email is PII and is
+            // Log the domain (cert subject) only: the email is PII and is
             // redacted on the certbot CommandSpec, so it must not leak here.
             tracing::info!("dry-run: would obtain cert for {domain}");
             return Ok(());

@@ -52,6 +52,9 @@ pub mod systemd_zbus;
 #[cfg(feature = "tokio")]
 pub mod async_client;
 
+#[cfg(feature = "ssh")]
+pub mod ssh_runner;
+
 #[cfg(test)]
 #[path = "snapshots.test.rs"]
 mod snapshot_tests;

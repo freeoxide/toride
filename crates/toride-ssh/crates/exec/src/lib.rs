@@ -28,6 +28,10 @@
 pub use toride_runner::CommandOutput;
 pub use toride_ssh_core::{HostKeyPolicy, HostSpec};
 
+pub mod runner;
+
+pub use runner::SshRunner;
+
 use std::sync::OnceLock;
 use std::time::Duration;
 

@@ -90,7 +90,7 @@ pub fn create_backup(paths: &ProxyPaths) -> Result<BackupSnapshot> {
 ///
 /// Returns an error if any file cannot be written.
 pub fn restore_backup(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Result<()> {
-    // Restored files are live, daemon-readable configs — write them 0o644 to
+    // Restored files are live, daemon-readable configs: write them 0o644 to
     // match how they are originally written (not the 0o600 atomic_write default).
     // Restore main nginx.conf
     if let Some(content) = &snapshot.nginx_conf {

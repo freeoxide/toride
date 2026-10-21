@@ -37,7 +37,7 @@ fn build_real_mise() -> Mise {
     Mise::builder()
         .runner(Arc::new(TokioRunner) as Arc<dyn toride_runner::AsyncRunner>)
         .build()
-        .expect("failed to build Mise client — is mise installed?")
+        .expect("failed to build Mise client: is mise installed?")
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +345,7 @@ async fn real_mise_bin_paths() {
     let mise = build_real_mise();
     let paths = mise.bin_paths().await.expect("bin-paths failed");
 
-    // May be empty if no tools are installed — that's ok.
+    // May be empty if no tools are installed: that's ok.
     // We verify each path is a non-empty string.
     for p in &paths {
         assert!(!p.as_str().is_empty(), "each bin path should be non-empty");
@@ -360,7 +360,7 @@ async fn real_mise_config_ls() {
     let mise = build_real_mise();
     let paths = mise.config_ls().await.expect("config ls failed");
 
-    // May be empty if no config files are present — that's ok.
+    // May be empty if no config files are present: that's ok.
     // We verify each path is a non-empty string.
     for p in &paths {
         assert!(

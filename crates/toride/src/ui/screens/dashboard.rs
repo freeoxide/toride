@@ -71,11 +71,9 @@ struct StatCardInput {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 struct ManagedServiceCard {
     icon: &'static str,
     name: &'static str,
-    section: Section,
     overview: OverviewSnapshot,
 }
 
@@ -206,7 +204,7 @@ impl_content_panel!(
 /// read-only content sections.
 pub struct DashboardScreen {
     data: DashboardData,
-    status: Option<TorideStatus>,
+    status: Option<std::sync::Arc<TorideStatus>>,
     sidebar: Sidebar,
     active: usize,
     focus: FocusManager<ShellFocus>,
@@ -252,6 +250,9 @@ pub struct DashboardScreen {
     templates_content: TemplatesContent,
     tools_content: ToolsContent,
     setup_content: SetupContent,
+    managed_findings: usize,
+    managed_available_count: usize,
+    managed_dirty: bool,
 }
 
 impl Default for DashboardScreen {
@@ -332,12 +333,15 @@ impl DashboardScreen {
             tools_content: ToolsContent::new(),
             setup_content: SetupContent::new(),
             toride_tailscale_content: TailscaleContent::new(),
+            managed_findings: 0,
+            managed_available_count: 0,
+            managed_dirty: true,
         }
     }
 
     /// Store the latest collected system status and compute live throughput rates.
     #[expect(clippy::cast_precision_loss, reason = "display-only")]
-    pub fn set_status(&mut self, status: TorideStatus) {
+    pub fn set_status(&mut self, status: std::sync::Arc<TorideStatus>) {
         if let Some(prev) = &self.status {
             let dt = (status.collected_at)
                 .duration_since(prev.collected_at)
@@ -360,6 +364,7 @@ impl DashboardScreen {
         }
         self.status = Some(status);
         self.refresh_sidebar_badges();
+        self.refresh_managed_services();
     }
 
     fn refresh_sidebar_badges(&mut self) {
@@ -438,18 +443,41 @@ impl DashboardScreen {
         }
     }
 
+    /// Mark the managed-services derived state (module list, findings and
+    /// availability counts) stale; every data setter calls this, and the
+    /// next render recomputes it once instead of per frame.
+    fn refresh_managed_services(&mut self) {
+        self.managed_dirty = true;
+    }
+
+    /// Recompute the managed-services derived state when a setter marked it
+    /// stale; a no-op on unchanged data so steady-state frames borrow.
+    fn recompute_managed_if_dirty(&mut self) {
+        if !self.managed_dirty {
+            return;
+        }
+        self.managed_dirty = false;
+        let cards = self.managed_services();
+        self.managed_findings = cards.iter().map(|c| c.overview.findings_count).sum();
+        self.managed_available_count = cards
+            .iter()
+            .filter(|c| c.overview.status_label != "offline")
+            .count();
+        if self.status.is_some() {
+            self.modules_view = cards.iter().map(ManagedServiceCard::to_module).collect();
+        }
+    }
+
     #[must_use]
     fn managed_services(&self) -> Vec<ManagedServiceCard> {
         fn snap<O: SectionOverview>(
             icon: &'static str,
             name: &'static str,
-            section: Section,
             o: &O,
         ) -> ManagedServiceCard {
             ManagedServiceCard {
                 icon,
                 name,
-                section,
                 overview: OverviewSnapshot {
                     status_label: o.status_label(),
                     detail: o.detail(),
@@ -459,44 +487,19 @@ impl DashboardScreen {
         }
 
         vec![
-            snap("✦", "fail2ban", Section::Fail2ban, &self.fail2ban_content),
-            snap(
-                "▦",
-                "ufw firewall",
-                Section::Firewall,
-                &self.ufw_kit_content,
-            ),
-            snap("⚙", "harden", Section::Harden, &self.toride_harden_content),
-            snap(
-                "◇",
-                "wireguard",
-                Section::WireGuard,
-                &self.toride_wireguard_content,
-            ),
-            snap(
-                "↻",
-                "updates",
-                Section::Updates,
-                &self.toride_updates_content,
-            ),
-            snap("◉", "users", Section::Users, &self.toride_users_content),
-            snap("⚖", "audit", Section::Audit, &self.toride_audit_content),
-            snap(
-                "◎",
-                "monitor",
-                Section::Monitor,
-                &self.toride_monitor_content,
-            ),
-            snap("▣", "backup", Section::Backup, &self.toride_backup_content),
-            snap("⊕", "proxy", Section::Proxy, &self.toride_proxy_content),
-            snap("☁", "cloud", Section::Cloud, &self.toride_cloud_content),
-            snap(
-                "⛓",
-                "tailscale",
-                Section::Tailscale,
-                &self.toride_tailscale_content,
-            ),
-            snap("Ⓜ", "mise", Section::Mise, &self.toride_mise_content),
+            snap("✦", "fail2ban", &self.fail2ban_content),
+            snap("▦", "ufw firewall", &self.ufw_kit_content),
+            snap("⛨", "harden", &self.toride_harden_content),
+            snap("◇", "wireguard", &self.toride_wireguard_content),
+            snap("↻", "updates", &self.toride_updates_content),
+            snap("◉", "users", &self.toride_users_content),
+            snap("⚖", "audit", &self.toride_audit_content),
+            snap("◎", "monitor", &self.toride_monitor_content),
+            snap("▤", "backup", &self.toride_backup_content),
+            snap("⊕", "proxy", &self.toride_proxy_content),
+            snap("☁", "cloud", &self.toride_cloud_content),
+            snap("⛓", "tailscale", &self.toride_tailscale_content),
+            snap("Ⓜ", "mise", &self.toride_mise_content),
         ]
     }
 
@@ -526,6 +529,7 @@ impl DashboardScreen {
     #[cfg(test)]
     pub(crate) fn fail2ban_set_available_for_test(&mut self, available: bool) {
         self.fail2ban_content.set_available(available);
+        self.refresh_managed_services();
     }
 
     #[cfg(test)]
@@ -544,11 +548,13 @@ impl DashboardScreen {
             pending_total,
             None,
         );
+        self.refresh_managed_services();
     }
 
     #[cfg(test)]
     pub(crate) fn ufw_kit_set_available_for_test(&mut self, available: bool) {
         self.ufw_kit_content.set_available(available);
+        self.refresh_managed_services();
     }
 
     /// Refresh the header clock string.
@@ -616,6 +622,7 @@ impl DashboardScreen {
         self.fail2ban_content
             .set_firewall(b.fw_nft_available, b.fw_iptables_available);
         self.refresh_sidebar_badges();
+        self.refresh_managed_services();
     }
 
     /// Push a collected UFW bundle into the firewall panel.
@@ -634,6 +641,7 @@ impl DashboardScreen {
         self.ufw_kit_content.set_rules(b.rules);
         self.ufw_kit_content.set_findings(b.findings);
         self.refresh_sidebar_badges();
+        self.refresh_managed_services();
     }
 
     /// Push a collected harden bundle into the harden panel.
@@ -646,6 +654,7 @@ impl DashboardScreen {
             .set_sysctl_rows_by_profile(b.sysctl_rows_by_profile);
         self.toride_harden_content.set_mounts(b.mounts);
         self.toride_harden_content.set_findings(b.findings);
+        self.refresh_managed_services();
     }
 
     /// Push a collected `WireGuard` bundle into the `WireGuard` panel.
@@ -665,6 +674,7 @@ impl DashboardScreen {
         self.toride_wireguard_content.set_peers(b.peers);
         self.toride_wireguard_content.set_services(b.services);
         self.toride_wireguard_content.set_findings(b.findings);
+        self.refresh_managed_services();
     }
 
     /// Push a collected updates bundle into the updates panel.
@@ -684,6 +694,7 @@ impl DashboardScreen {
         self.toride_updates_content.set_timer_active(b.timer_active);
         self.toride_updates_content.set_findings(b.findings);
         self.refresh_sidebar_badges();
+        self.refresh_managed_services();
     }
 
     /// Push a collected users bundle into the users panel.
@@ -701,6 +712,7 @@ impl DashboardScreen {
         self.toride_users_content.set_groups(b.groups);
         self.toride_users_content.set_sudoers(b.sudoers);
         self.toride_users_content.set_findings(b.findings);
+        self.refresh_managed_services();
     }
 
     /// Push a collected audit bundle into the audit panel.
@@ -716,6 +728,7 @@ impl DashboardScreen {
         self.toride_audit_content
             .set_log_backends(b.rsyslog_available, b.journald_available);
         self.toride_audit_content.set_findings(b.findings);
+        self.refresh_managed_services();
     }
 
     /// Push a collected monitor bundle into the monitor panel.
@@ -731,23 +744,32 @@ impl DashboardScreen {
             .set_output_rule_count(b.output_rule_count);
         self.toride_monitor_content.set_anomalies(b.anomalies);
         self.toride_monitor_content.set_findings(b.findings);
+        self.refresh_managed_services();
     }
 
     /// Push a collected backup bundle into the backup panel.
-    pub fn set_toride_backup_data(&mut self, b: crate::toride_backup_data::BackupDataBundle) {
+    pub fn set_toride_backup_data(
+        &mut self,
+        b: &std::sync::Arc<crate::toride_backup_data::BackupDataBundle>,
+    ) {
         self.toride_backup_content.set_available(b.available);
         self.toride_backup_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.toride_backup_content
-            .set_status(b.dry_run, b.config_dir, b.data_dir, b.schedule_dir);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.toride_backup_content.set_status(
+            b.dry_run,
+            b.config_dir.clone(),
+            b.data_dir.clone(),
+            b.schedule_dir.clone(),
+        );
         self.toride_backup_content
             .set_binaries(b.restic_available, b.borg_available);
         self.toride_backup_content.set_schedule(
             b.schedule_installed,
             b.timer_active,
-            b.schedule_note,
+            b.schedule_note.clone(),
         );
-        self.toride_backup_content.set_findings(b.findings);
+        self.toride_backup_content.set_findings(b.findings.clone());
+        self.refresh_managed_services();
     }
 
     /// Push a collected proxy bundle into the proxy panel.
@@ -761,6 +783,7 @@ impl DashboardScreen {
             .set_certificates(b.certificates, b.has_expired_certs);
         self.toride_proxy_content.set_waf(b.waf_available);
         self.toride_proxy_content.set_findings(b.findings);
+        self.refresh_managed_services();
     }
 
     /// Push a collected cloud bundle into the cloud panel.
@@ -774,6 +797,7 @@ impl DashboardScreen {
         self.toride_cloud_content
             .set_security_groups(b.security_groups);
         self.toride_cloud_content.set_findings(b.findings);
+        self.refresh_managed_services();
     }
 
     /// Push a collected tailscale bundle into the tailscale panel.
@@ -804,6 +828,7 @@ impl DashboardScreen {
         );
         self.toride_tailscale_content.set_dns(b.dns);
         self.toride_tailscale_content.set_findings(b.findings);
+        self.refresh_managed_services();
     }
 
     /// Push a collected mise bundle into the mise panel.
@@ -816,6 +841,7 @@ impl DashboardScreen {
         self.toride_mise_content.set_outdated(b.outdated);
         self.toride_mise_content.set_config_files(b.config_files);
         self.toride_mise_content.set_findings(b.findings);
+        self.refresh_managed_services();
     }
 
     /// Push a collected about bundle into the about panel.
@@ -870,17 +896,31 @@ impl DashboardScreen {
     }
 
     /// Push a collected setup bundle into the setup panel.
-    pub fn set_setup_offers(&mut self, b: crate::setup_data::SetupDataBundle) {
+    pub fn set_setup_offers(&mut self, b: &std::sync::Arc<crate::setup_data::SetupDataBundle>) {
         self.setup_content.set_available(b.available);
         self.setup_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.setup_content.set_offers(b.offers);
-        self.setup_content.set_findings(b.findings);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.setup_content.set_offers(b.offers.clone());
+        self.setup_content.set_findings(b.findings.clone());
         self.refresh_sidebar_badges();
     }
 
     fn active_section(&self) -> Section {
         self.data.sidebar[self.active].section
+    }
+
+    /// The currently selected sidebar section (drives collector gating in the
+    /// app's refresh tick).
+    #[must_use]
+    pub fn current_section(&self) -> Section {
+        self.active_section()
+    }
+
+    /// Select `section` in the sidebar; a no-op when it is not listed.
+    pub fn select_section(&mut self, section: Section) {
+        if let Some(idx) = self.data.sidebar.iter().position(|i| i.section == section) {
+            self.active = idx;
+        }
     }
 
     fn active_panel_mut(&mut self) -> Option<&mut dyn ContentPanel> {
@@ -1151,17 +1191,10 @@ impl DashboardScreen {
         ])
         .areas(pad(area));
 
+        self.recompute_managed_if_dirty();
         let live = self.status.is_some();
-        let managed = self.managed_services();
-        let findings = managed
-            .iter()
-            .map(|c| c.overview.findings_count)
-            .sum::<usize>()
-            + self.status.as_ref().map_or(0, |s| s.warnings.len());
-        let managed_available = managed
-            .iter()
-            .filter(|c| c.overview.status_label != "offline")
-            .count();
+        let findings = self.managed_findings + self.status.as_ref().map_or(0, |s| s.warnings.len());
+        let managed_available = self.managed_available_count;
         let pending_total = if self.toride_updates_content.available() {
             Some(self.toride_updates_content.pending_total())
         } else {
@@ -1189,14 +1222,14 @@ impl DashboardScreen {
             ])
             .spacing(1)
             .areas(body_area);
-            self.render_modules_panel(frame, mods, p, 1, live, &managed);
+            self.render_modules_panel(frame, mods, p, 1, live);
             self.render_updates_panel(frame, ups, p);
             self.render_activity_panel(frame, acts, p);
         } else {
             let [left, right] = Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
                 .spacing(1)
                 .areas(body_area);
-            self.render_modules_panel(frame, left, p, 2, live, &managed);
+            self.render_modules_panel(frame, left, p, 2, live);
 
             let [ups, acts] = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
                 .spacing(1)
@@ -1393,7 +1426,6 @@ impl DashboardScreen {
         p: Palette,
         cols: u16,
         live: bool,
-        managed: &[ManagedServiceCard],
     ) {
         let focused = self.focus.is_focused(&ShellFocus::Content)
             && self.active_section() == Section::Dashboard
@@ -1408,13 +1440,11 @@ impl DashboardScreen {
             return;
         }
 
-        let modules: Vec<Module> = if live {
-            managed.iter().map(ManagedServiceCard::to_module).collect()
-        } else {
-            self.data.modules.clone()
-        };
-        self.modules_view.clone_from(&modules);
-        let modules: &[Module] = &modules;
+        if !live {
+            self.modules_view.clear();
+            self.modules_view.extend(self.data.modules.iter().cloned());
+        }
+        let modules: &[Module] = &self.modules_view;
 
         let rows = inner.height / MODULE_CARD_H;
         if rows == 0 {
@@ -2286,7 +2316,7 @@ mod tests {
         let mut s = DashboardScreen::new();
         assert!(
             s.needs_fast_frames(),
-            "cold start renders header gauge spinners — full frame rate"
+            "cold start renders header gauge spinners: full frame rate"
         );
 
         s.net_rx_rate = Some(1.0);
@@ -2301,7 +2331,7 @@ mod tests {
         s.set_ssh_loading(true, 1);
         assert!(s.needs_fast_frames(), "SSH write spinner needs fast frames");
         s.set_ssh_loading(false, 0);
-        assert!(!s.needs_fast_frames(), "spinner gone — slow cadence again");
+        assert!(!s.needs_fast_frames(), "spinner gone: slow cadence again");
     }
 
     #[test]
@@ -2444,7 +2474,6 @@ mod tests {
             ManagedServiceCard {
                 icon: "◆",
                 name: "x",
-                section: Section::Fail2ban,
                 overview: OverviewSnapshot {
                     status_label: label,
                     detail: None,
@@ -2464,7 +2493,6 @@ mod tests {
             ManagedServiceCard {
                 icon: "◆",
                 name: "x",
-                section: Section::Fail2ban,
                 overview: OverviewSnapshot {
                     status_label: label,
                     detail: None,
@@ -2765,7 +2793,7 @@ mod tests {
             "no fabricated badge before the first bundle lands"
         );
 
-        s.set_setup_offers(mac_setup_bundle());
+        s.set_setup_offers(&std::sync::Arc::new(mac_setup_bundle()));
         let expected = s.setup_content.findings_count();
         assert!(expected > 0, "an empty host offers every registry row");
         assert_eq!(
@@ -2778,7 +2806,7 @@ mod tests {
     #[test]
     fn dismissed_suggestion_leaves_the_setup_badge() {
         let mut s = DashboardScreen::new();
-        s.set_setup_offers(mac_setup_bundle());
+        s.set_setup_offers(&std::sync::Arc::new(mac_setup_bundle()));
         let idx = setup_sidebar_idx(&s);
         let before = s.setup_content.findings_count();
         assert!(before > 0);

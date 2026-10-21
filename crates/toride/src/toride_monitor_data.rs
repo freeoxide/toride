@@ -201,7 +201,6 @@ impl MonitorCollector {
     }
 
     /// Invalidate both cache tiers so the next collection re-runs everything.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
@@ -739,7 +738,7 @@ mod cadence_oracle {
         assert_eq!(
             ss_spawn_count(&runner),
             0,
-            "a both-tier cache hit must spawn NOTHING — no ss, no conntrack, no iptables-save"
+            "a both-tier cache hit must spawn NOTHING: no ss, no conntrack, no iptables-save"
         );
         assert!(
             runner.calls().is_empty(),

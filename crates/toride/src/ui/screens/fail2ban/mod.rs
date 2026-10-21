@@ -3,14 +3,14 @@
 //! Renders inside the dashboard's content region when
 //! [`Section::Fail2ban`](crate::data::Section) is the active sidebar section.
 //! This is the TEMPLATE integration: it mirrors the SSH reference (`SshContent`
-//! + sub-tabs) but WITHOUT any write path — every line is read-only.
+//! + sub-tabs) but WITHOUT any write path: every line is read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Status panel — active/enabled badges + version.
-//! 2. Jails table — name, banned count, file count.
-//! 3. Bans list — currently banned IPs across jails.
-//! 4. Doctor findings — grouped by severity (Critical > Error > Warning > Info).
-//! 5. Firewall-backend card — nftables / iptables availability.
+//! 1. Status panel: active/enabled badges + version.
+//! 2. Jails table: name, banned count, file count.
+//! 3. Bans list: currently banned IPs across jails.
+//! 4. Doctor findings: grouped by severity (Critical > Error > Warning > Info).
+//! 5. Firewall-backend card: nftables / iptables availability.
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -48,7 +48,7 @@ pub struct JailEntry {
 pub struct BanEntry {
     /// The banned IP address.
     pub ip: String,
-    /// Jail(s) that banned this IP (best-effort — `fail2ban-client banned`
+    /// Jail(s) that banned this IP (best-effort: `fail2ban-client banned`
     /// groups by IP).
     pub jails: Vec<String>,
 }
@@ -182,7 +182,7 @@ impl Fail2banContent {
             return None;
         }
         // Count of distinct banned IPs (one per `BanEntry`), NOT the summed
-        // byte-length of the IP strings — summing `b.ip.len()` previously
+        // byte-length of the IP strings: summing `b.ip.len()` previously
         // reported 25 for two bans ("203.0.113.42" + "198.51.100.7") and wildly
         // inflated the sidebar badge (worse for long IPv6 addresses).
         let banned = self.bans.len();
@@ -227,7 +227,7 @@ impl Fail2banContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -251,7 +251,7 @@ impl Fail2banContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(clippy::unused_self, reason = "API symmetry with SSH tabs")]
     fn clamp_scroll(&mut self) {
@@ -309,7 +309,7 @@ impl Fail2banContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (`JoinError`) — not when the binary is missing (a missing
+    /// task PANICS (`JoinError`): not when the binary is missing (a missing
     /// binary instead produces a Critical doctor finding, which keeps
     /// `available == true` so the operator sees the findings panel). The reason
     /// string is surfaced here so the operator can see what actually panicked;
@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn total_bans_counts_entries_not_ip_byte_length() {
         // Two banned-IP entries ("203.0.113.42" + "198.51.100.7") must report
-        // 2 — NOT 25, which the old `bans.iter().map(|b| b.ip.len()).sum()`
+        // 2: NOT 25, which the old `bans.iter().map(|b| b.ip.len()).sum()`
         // produced by summing the IP strings' byte lengths into the badge.
         let mut c = Fail2banContent::new();
         c.set_available(true);
@@ -761,7 +761,7 @@ mod tests {
         c.set_available(true);
         c.set_jails(sample_jails());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

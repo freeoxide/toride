@@ -3,14 +3,14 @@
 //! Renders inside the dashboard's content region when
 //! [`Section::WireGuard`](crate::data::Section) is the active sidebar section.
 //! This mirrors the fail2ban / harden read-only integrations but WITHOUT any
-//! write path — every line is read-only.
+//! write path: every line is read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Status panel — wg / wg-quick binary availability + config-dir presence.
-//! 2. Interfaces table — name, listen-port, peer counts, rx/tx.
-//! 3. Peers table — public-key, endpoint, allowed-ips, keepalive.
-//! 4. Services card — per-interface `wg-quick@<iface>` systemd unit activity.
-//! 5. Doctor findings — grouped by severity (Error > Warning > Info).
+//! 1. Status panel: wg / wg-quick binary availability + config-dir presence.
+//! 2. Interfaces table: name, listen-port, peer counts, rx/tx.
+//! 3. Peers table: public-key, endpoint, allowed-ips, keepalive.
+//! 4. Services card: per-interface `wg-quick@<iface>` systemd unit activity.
+//! 5. Doctor findings: grouped by severity (Error > Warning > Info).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -42,13 +42,13 @@ pub struct InterfaceEntry {
     /// peer counts (e.g. the `wg show` listing path), so the UI renders "?"
     /// instead of a misleading "0".
     pub peer_count: Option<usize>,
-    /// Number of peers with established handshakes. `None` when unavailable —
+    /// Number of peers with established handshakes. `None` when unavailable:
     /// rendered as "?" by the UI.
     pub active_peers: Option<usize>,
-    /// Total bytes received across the interface. `None` when unavailable —
+    /// Total bytes received across the interface. `None` when unavailable:
     /// rendered as "?" by the UI.
     pub rx_bytes: Option<u64>,
-    /// Total bytes sent across the interface. `None` when unavailable —
+    /// Total bytes sent across the interface. `None` when unavailable:
     /// rendered as "?" by the UI.
     pub tx_bytes: Option<u64>,
 }
@@ -254,7 +254,7 @@ impl WireguardContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -278,7 +278,7 @@ impl WireguardContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -803,7 +803,7 @@ mod tests {
         c.set_interfaces(sample_interfaces());
         c.set_peers(sample_peers());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

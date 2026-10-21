@@ -48,48 +48,48 @@ fn mise_spec_full(args: &[&str], env: Vec<(String, String)>, timeout: Duration) 
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot tests — one per major mise operation
+// Snapshot tests: one per major mise operation
 // ---------------------------------------------------------------------------
 
 #[test]
 fn command_spec_ls() {
-    let spec = mise_spec(&["ls", "--output=json"]);
+    let spec = mise_spec(&["ls", "--json"]);
     insta::assert_debug_snapshot!("command_spec_ls", spec);
 }
 
 #[test]
 fn command_spec_ls_installed() {
-    let spec = mise_spec(&["ls", "--installed", "--output=json"]);
+    let spec = mise_spec(&["ls", "--installed", "--json"]);
     insta::assert_debug_snapshot!("command_spec_ls_installed", spec);
 }
 
 #[test]
 fn command_spec_ls_missing() {
-    let spec = mise_spec(&["ls", "--missing", "--output=json"]);
+    let spec = mise_spec(&["ls", "--missing", "--json"]);
     insta::assert_debug_snapshot!("command_spec_ls_missing", spec);
 }
 
 #[test]
 fn command_spec_ls_current() {
-    let spec = mise_spec(&["ls", "--current", "--output=json"]);
+    let spec = mise_spec(&["ls", "--current", "--json"]);
     insta::assert_debug_snapshot!("command_spec_ls_current", spec);
 }
 
 #[test]
 fn command_spec_ls_remote() {
-    let spec = mise_spec(&["ls-remote", "node", "--output=json"]);
+    let spec = mise_spec(&["ls-remote", "node", "--json"]);
     insta::assert_debug_snapshot!("command_spec_ls_remote", spec);
 }
 
 #[test]
 fn command_spec_ls_remote_with_prefix() {
-    let spec = mise_spec(&["ls-remote", "node@22", "--output=json"]);
+    let spec = mise_spec(&["ls-remote", "node@22", "--json"]);
     insta::assert_debug_snapshot!("command_spec_ls_remote_with_prefix", spec);
 }
 
 #[test]
 fn command_spec_latest() {
-    let spec = mise_spec(&["latest", "node", "--output=json"]);
+    let spec = mise_spec(&["latest", "node"]);
     insta::assert_debug_snapshot!("command_spec_latest", spec);
 }
 
@@ -119,19 +119,19 @@ fn command_spec_env_shell() {
 
 #[test]
 fn command_spec_registry() {
-    let spec = mise_spec(&["registry", "--output=json"]);
+    let spec = mise_spec(&["registry", "--json"]);
     insta::assert_debug_snapshot!("command_spec_registry", spec);
 }
 
 #[test]
 fn command_spec_registry_search() {
-    let spec = mise_spec(&["registry", "search", "node", "--output=json"]);
+    let spec = mise_spec(&["registry", "search", "node", "--json"]);
     insta::assert_debug_snapshot!("command_spec_registry_search", spec);
 }
 
 #[test]
 fn command_spec_outdated() {
-    let spec = mise_spec(&["outdated", "--output=json"]);
+    let spec = mise_spec(&["outdated", "--json"]);
     insta::assert_debug_snapshot!("command_spec_outdated", spec);
 }
 
@@ -173,7 +173,7 @@ fn command_spec_uninstall() {
 
 #[test]
 fn command_spec_settings_ls() {
-    let spec = mise_spec(&["settings", "ls", "--output=json"]);
+    let spec = mise_spec(&["settings", "ls", "--json"]);
     insta::assert_debug_snapshot!("command_spec_settings_ls", spec);
 }
 
@@ -192,7 +192,7 @@ fn command_spec_with_cwd() {
 #[test]
 fn command_spec_with_env_and_timeout() {
     let spec = mise_spec_full(
-        &["ls", "--output=json"],
+        &["ls", "--json"],
         vec![("MISE_DATA_DIR".into(), "/tmp/mise".into())],
         Duration::from_secs(30),
     );
@@ -201,7 +201,7 @@ fn command_spec_with_env_and_timeout() {
 
 #[test]
 fn command_spec_redacted() {
-    let args: Vec<String> = vec!["ls".into(), "--output=json".into()];
+    let args: Vec<String> = vec!["ls".into(), "--json".into()];
     let spec = CommandSpec::new("mise").args(args).redact(true);
     insta::assert_debug_snapshot!("command_spec_redacted", spec);
 }

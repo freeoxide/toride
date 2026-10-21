@@ -1,4 +1,4 @@
-//! Error mapping — converts [`toride_runner::Error`] into [`MiseError`].
+//! Error mapping: converts [`toride_runner::Error`] into [`MiseError`].
 //!
 //! This module isolates the `From`-style conversion so that the rest of the
 //! crate can work entirely in terms of [`MiseError`]. Call [`map_runner_error`]
@@ -8,9 +8,9 @@ use crate::error::MiseError;
 
 /// Convert a [`toride_runner::Error`] into a [`MiseError`].
 ///
-/// `command` is a human-readable label (e.g. `"mise ls --output=json"`) that
-/// is embedded in the resulting error variant for easier debugging.
-pub fn map_runner_error(error: toride_runner::Error, _command: &str) -> MiseError {
+/// The resulting variants carry the full `program args` command built from
+/// the runner error itself; no caller-supplied label is needed.
+pub fn map_runner_error(error: toride_runner::Error) -> MiseError {
     match error {
         toride_runner::Error::BinaryNotFound(_) => MiseError::BinaryNotFound,
 
@@ -60,10 +60,6 @@ pub fn map_runner_error(error: toride_runner::Error, _command: &str) -> MiseErro
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 /// Build a human-readable command string from program + args.
 fn format_command(program: &str, args: &str) -> String {
     if args.is_empty() {
@@ -73,10 +69,6 @@ fn format_command(program: &str, args: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,7 +77,7 @@ mod tests {
     #[test]
     fn binary_not_found() {
         let err = toride_runner::Error::BinaryNotFound("mise".into());
-        let mapped = map_runner_error(err, "mise ls");
+        let mapped = map_runner_error(err);
         assert!(matches!(mapped, MiseError::BinaryNotFound));
     }
 
@@ -97,7 +89,7 @@ mod tests {
             exit_code: Some(1),
             stderr: "error: unknown flag".into(),
         };
-        let mapped = map_runner_error(err, "mise ls --output=json");
+        let mapped = map_runner_error(err);
         match mapped {
             MiseError::CommandFailed {
                 command,
@@ -121,7 +113,7 @@ mod tests {
             args: vec!["install".into(), "node".into()],
             timeout: Duration::from_secs(10),
         };
-        let mapped = map_runner_error(err, "mise install node");
+        let mapped = map_runner_error(err);
         match mapped {
             MiseError::Timeout { command } => {
                 assert_eq!(command, "mise install node");
@@ -136,7 +128,7 @@ mod tests {
             program: "mise".into(),
             detail: "No such file or directory".into(),
         };
-        let mapped = map_runner_error(err, "mise current");
+        let mapped = map_runner_error(err);
         assert!(matches!(mapped, MiseError::BinaryNotFound));
     }
 
@@ -146,7 +138,7 @@ mod tests {
             program: "mise".into(),
             detail: "permission denied".into(),
         };
-        let mapped = map_runner_error(err, "mise current");
+        let mapped = map_runner_error(err);
         match mapped {
             MiseError::Io(e) => assert!(e.to_string().contains("permission denied")),
             other => panic!("expected Io, got {other:?}"),
@@ -156,7 +148,7 @@ mod tests {
     #[test]
     fn io_error() {
         let err = toride_runner::Error::Io("broken pipe".into());
-        let mapped = map_runner_error(err, "mise where node");
+        let mapped = map_runner_error(err);
         match mapped {
             MiseError::Io(e) => assert!(e.to_string().contains("broken pipe")),
             other => panic!("expected Io, got {other:?}"),
@@ -166,7 +158,7 @@ mod tests {
     #[test]
     fn other_variants_fall_through() {
         let err = toride_runner::Error::OutputParse("bad output".into());
-        let mapped = map_runner_error(err, "mise ls");
+        let mapped = map_runner_error(err);
         match mapped {
             MiseError::Io(e) => assert!(e.to_string().contains("bad output")),
             other => panic!("expected Io fallback, got {other:?}"),

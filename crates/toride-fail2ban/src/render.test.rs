@@ -114,7 +114,7 @@ fn managed_header_is_static_str() {
 }
 
 // ===========================================================================
-// render_jail_local — snapshot tests
+// render_jail_local: snapshot tests
 // ===========================================================================
 
 #[test]
@@ -132,7 +132,7 @@ fn snapshot_jail_local_full() {
 }
 
 // ===========================================================================
-// render_jail_local — structural assertions
+// render_jail_local: structural assertions
 // ===========================================================================
 
 #[test]
@@ -195,7 +195,7 @@ fn jail_local_emits_filter_with_mode_when_set() {
 }
 
 // ===========================================================================
-// render_jail_local — optional field omission
+// render_jail_local: optional field omission
 // ===========================================================================
 
 #[test]
@@ -262,7 +262,7 @@ fn jail_local_omits_empty_actions() {
 }
 
 // ===========================================================================
-// render_jail_local — non-default values are emitted
+// render_jail_local: non-default values are emitted
 // ===========================================================================
 
 #[test]
@@ -450,7 +450,7 @@ fn jail_local_emits_maxlines() {
 }
 
 // ===========================================================================
-// render_jail_local — multiple log_paths (multi-line format)
+// render_jail_local: multiple log_paths (multi-line format)
 // ===========================================================================
 
 #[test]
@@ -498,7 +498,7 @@ fn jail_local_multiple_log_paths_uses_continuation() {
 }
 
 // ===========================================================================
-// render_jail_local — multiple actions (multi-line format)
+// render_jail_local: multiple actions (multi-line format)
 // ===========================================================================
 
 #[test]
@@ -614,7 +614,7 @@ fn jail_local_custom_action_uses_name_not_stock() {
 }
 
 // ===========================================================================
-// render_jail_local — extra_options sorted deterministically
+// render_jail_local: extra_options sorted deterministically
 // ===========================================================================
 
 #[test]
@@ -653,7 +653,7 @@ fn jail_local_extra_options_sorted_alphabetically() {
 }
 
 // ===========================================================================
-// render_jail_local — enabled = false
+// render_jail_local: enabled = false
 // ===========================================================================
 
 #[test]
@@ -677,7 +677,7 @@ fn jail_local_enabled_false() {
 }
 
 // ===========================================================================
-// render_jail_local — journal_matches multi-line
+// render_jail_local: journal_matches multi-line
 // ===========================================================================
 
 #[test]
@@ -706,7 +706,7 @@ fn jail_local_journal_matches_multiline() {
 }
 
 // ===========================================================================
-// render_jail_local — ports
+// render_jail_local: ports
 // ===========================================================================
 
 #[test]
@@ -734,7 +734,7 @@ fn jail_local_ports_comma_separated() {
 }
 
 // ===========================================================================
-// render_jail_local — field ordering stability
+// render_jail_local: field ordering stability
 // ===========================================================================
 
 #[test]
@@ -767,7 +767,7 @@ fn jail_local_field_ordering_is_stable() {
 }
 
 // ===========================================================================
-// render_filter_local — snapshot tests
+// render_filter_local: snapshot tests
 // ===========================================================================
 
 #[test]
@@ -809,7 +809,7 @@ fn snapshot_filter_local_full() {
 }
 
 // ===========================================================================
-// render_filter_local — structural assertions
+// render_filter_local: structural assertions
 // ===========================================================================
 
 #[test]
@@ -940,7 +940,7 @@ fn filter_local_extra_options_sorted() {
 }
 
 // ===========================================================================
-// render_filter_local — omission of unset fields
+// render_filter_local: omission of unset fields
 // ===========================================================================
 
 #[test]
@@ -1009,7 +1009,7 @@ fn filter_local_omits_empty_extra_options() {
 }
 
 // ===========================================================================
-// render_filter_local — namespace is unused (reserved)
+// render_filter_local: namespace is unused (reserved)
 // ===========================================================================
 
 #[test]
@@ -1025,7 +1025,7 @@ fn filter_local_ignores_namespace() {
 }
 
 // ===========================================================================
-// render_action_local — snapshot tests
+// render_action_local: snapshot tests
 // ===========================================================================
 
 #[test]
@@ -1053,7 +1053,7 @@ fn snapshot_action_local_stock_minimal() {
 }
 
 // ===========================================================================
-// render_action_local — structural assertions
+// render_action_local: structural assertions
 // ===========================================================================
 
 #[test]
@@ -1159,7 +1159,7 @@ fn action_local_omits_unset_timeout() {
 }
 
 // ===========================================================================
-// render_action_local — namespace is unused (reserved)
+// render_action_local: namespace is unused (reserved)
 // ===========================================================================
 
 #[test]

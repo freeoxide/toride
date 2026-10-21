@@ -1,7 +1,7 @@
 //! Shared color interpolation utilities.
 //!
 //! Provides a single source of truth for linear color blending, RGB extraction,
-//! and dimming — replacing scattered private copies across widgets and shell modules.
+//! and dimming: replacing scattered private copies across widgets and shell modules.
 
 use ratatui::style::Color;
 

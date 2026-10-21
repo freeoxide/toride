@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
 // ---------------------------------------------------------------------------
-// TransitionParams — animated gradient parameters derived deterministically
+// TransitionParams: animated gradient parameters derived deterministically
 // ---------------------------------------------------------------------------
 
 /// Animated-gradient parameters for a screen transition, derived
@@ -28,7 +28,7 @@ pub fn params_from_seed(seed: u32) -> TransitionParams {
     // Map to 0..2*PI using the high bits for best uniformity.
     let angle = (f64::from(angle_bits) / f64::from(u32::MAX)) * std::f64::consts::TAU;
 
-    // Magnitude in 0.02..0.08 — noticeable but not extreme.
+    // Magnitude in 0.02..0.08: noticeable but not extreme.
     let mag_bits = seed.wrapping_mul(0x01f1_d4f7).rotate_right(11);
     let magnitude = 0.02 + 0.06 * (f64::from(mag_bits) / f64::from(u32::MAX));
 
@@ -52,7 +52,7 @@ pub fn params_from_seed(seed: u32) -> TransitionParams {
 }
 
 // ---------------------------------------------------------------------------
-// TransitionCache — caches seeds per navigation edge
+// TransitionCache: caches seeds per navigation edge
 // ---------------------------------------------------------------------------
 
 /// Compact numeric identifier for a screen, used as the cache key for transition seeds.
@@ -110,7 +110,7 @@ impl TransitionCache {
 }
 
 // ---------------------------------------------------------------------------
-// TransitionState — live transition between two screens
+// TransitionState: live transition between two screens
 // ---------------------------------------------------------------------------
 
 /// Default transition duration (400 ms).

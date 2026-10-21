@@ -11,7 +11,7 @@ categories = ["os"]
 
 [features]
 default = ["client", "doctor"]
-client = ["dep:duct", "toride-runner/duct-runner"]
+client = ["toride-runner/duct-runner"]
 doctor = ["service"]
 service = ["client", "dep:toride-service"]
 config = ["client"]
@@ -34,10 +34,8 @@ toride-service = { path = "../toride-service", version = "0.2.0", optional = tru
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
-duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
-regex = { version = "1", optional = true }
 similar = "2"
 clap = { version = "4", features = ["derive"], optional = true }
 

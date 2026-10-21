@@ -1,7 +1,7 @@
 //! Convert `toride-tailscale` library types to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that imports
-//! `toride_tailscale` types — mirroring [`fail2ban_convert`](crate::fail2ban_convert)'s
+//! `toride_tailscale` types: mirroring [`fail2ban_convert`](crate::fail2ban_convert)'s
 //! role as the single boundary between backend and presentation. Each function handles
 //! errors gracefully: malformed input (empty ids / messages, unparseable latencies) is
 //! skipped with a `tracing::warn!` and a placeholder, never propagated (the read-only
@@ -16,7 +16,7 @@ use crate::ui::screens::toride_tailscale::{
 ///
 /// Kept here so the TUI never imports the Severity enum directly (mirrors
 /// `fail2ban_convert::severity_str`). Note the Tailscale backend only has four severity
-/// levels (no `error` — its `Severity` is `Ok | Info | Warning | Critical`), unlike
+/// levels (no `error`: its `Severity` is `Ok | Info | Warning | Critical`), unlike
 /// fail2ban/cloud which also have `Error`.
 fn severity_str(s: toride_tailscale::doctor::Severity) -> &'static str {
     use toride_tailscale::doctor::Severity;
@@ -119,7 +119,7 @@ pub fn convert_peers(peers: &[toride_tailscale::report::PeerInfo]) -> Vec<PeerEn
 pub struct NetcheckInfo {
     /// Whether the node can reach the coordination server (backend
     /// `MappingVariesByDestIP` flag). This tracks NAT behavior, NOT whether the daemon
-    /// was reachable — a probe that reaches the daemon can still report `false`.
+    /// was reachable: a probe that reaches the daemon can still report `false`.
     pub connectivity: bool,
     /// Preferred DERP relay region.
     pub derp_region: Option<String>,
@@ -157,7 +157,7 @@ pub fn convert_netcheck(report: toride_tailscale::report::NetcheckReport) -> Net
             latency_ms: ms,
         })
         .collect();
-    // Lowest latency first — the preferred relay floats to the top.
+    // Lowest latency first: the preferred relay floats to the top.
     derp_latency.sort_by(|a, b| {
         a.latency_ms
             .partial_cmp(&b.latency_ms)
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn convert_dns_with_empty_fields() {
-        // The DNS convert has no placeholder branch — empty fields must pass through as
+        // The DNS convert has no placeholder branch: empty fields must pass through as
         // empty Vecs without panicking or being substituted.
         let config = toride_tailscale::dns::DnsConfigInfo {
             magic_dns: false,

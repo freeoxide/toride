@@ -1,18 +1,18 @@
-//! Mise — the wired concrete tool.
+//! Mise: the wired concrete tool.
 //!
 //! Resolves the single static `mise` binary from
 //! <https://github.com/jdx/mise/releases>. mise publishes a raw
 //! executable asset named `mise-v<VERSION>-<os>-<arch>` (no extension,
 //! no tarball) for each release, plus glibc/musl tarballs; we use the raw
 //! binary so the framework's `Binary` artifact path is exercised end-to-end.
-//! On Windows the raw asset carries an `.exe` suffix —
+//! On Windows the raw asset carries an `.exe` suffix:
 //! `mise-v<VERSION>-windows-x64.exe`, with a `.zip` bundle published
-//! alongside that we do not use — verified against the live v2026.9.15
+//! alongside that we do not use: verified against the live v2026.9.15
 //! release (asset list and `SHASUMS256.txt`); the descriptor installs the
 //! binary as `mise.exe` there (see [`MISE_BIN_NAME`]).
 //!
 //! Every mise release also publishes a `SHASUMS256.txt` covering its
-//! assets (coreutils `sha256sum` format with `./`-prefixed filenames —
+//! assets (coreutils `sha256sum` format with `./`-prefixed filenames:
 //! verified live against v2026.9.15). The static [`Tool`] descriptor
 //! carries [`Checksum::None`] only because the checksum-file URL embeds
 //! the concrete version; the install paths pin [`Checksum::Url`] for that
@@ -55,9 +55,9 @@ use crate::tool::{ArtifactKind, Checksum, Tool};
 pub const MISE_REPO: &str = "jdx/mise";
 
 /// The on-disk binary name the mise descriptor installs as on the compile
-/// target: `mise.exe` under `cfg(windows)` — the managed install lands at
+/// target: `mise.exe` under `cfg(windows)`: the managed install lands at
 /// `<dir>/<bin_name>` and the published Windows raw asset is an `.exe`
-/// executable (verified against the live v2026.9.15 release) — `mise`
+/// executable (verified against the live v2026.9.15 release): `mise`
 /// everywhere else.
 #[cfg(windows)]
 pub const MISE_BIN_NAME: &str = "mise.exe";
@@ -83,7 +83,7 @@ const USER_AGENT: &str = concat!("toride-installer/", env!("CARGO_PKG_VERSION"))
 ///
 /// mise is a `Binary` artifact. The descriptor carries [`Checksum::None`]
 /// only because the release's `SHASUMS_FILE` URL embeds the concrete
-/// version — the install paths pin [`Checksum::Url`] for that version once
+/// version: the install paths pin [`Checksum::Url`] for that version once
 /// it is known (see `checksum_pinned_tool`). The default install dir is
 /// `~/.local/bin` (handled by the engine when `default_install_dir` is
 /// `None`), and `bin_name` follows the compile target: `mise.exe` under
@@ -100,10 +100,24 @@ pub fn mise_tool() -> Tool {
     }
 }
 
+/// The resolver's lazily-built default client, shared process-wide.
+///
+/// Built with the engine's [`build_http_client`](crate::installer::build_http_client)
+/// policy (User-Agent, bounded redirects, overall plus connect timeouts) so a
+/// stalled releases API cannot hang `ensure_mise("latest")`, and so repeated
+/// lookups reuse one connection pool instead of building a client each time.
+#[cfg(feature = "http")]
+fn shared_policy_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(crate::installer::build_http_client)
+        .clone()
+}
+
 /// Mise's release resolver.
 ///
 /// For a pinned version (e.g. `"2026.6.14"`) the asset URL is constructed
-/// directly from the version — no API call is needed. For `"latest"` the
+/// directly from the version: no API call is needed. For `"latest"` the
 /// GitHub `releases/latest` endpoint is queried to learn the newest tag,
 /// then the versioned asset URL is built from it.
 ///
@@ -113,7 +127,8 @@ pub fn mise_tool() -> Tool {
 #[derive(Debug, Clone, Default)]
 pub struct MiseResolver {
     /// Optional injected HTTP client (e.g. for a shared connection pool or
-    /// a mock in tests). When `None`, a fresh client is built per lookup.
+    /// a mock in tests). When `None`, the process-wide policy client built
+    /// by the installer engine is shared (User-Agent, redirects, timeouts).
     pub client: Option<reqwest::Client>,
 }
 
@@ -127,7 +142,7 @@ impl MiseResolver {
 
     /// The asset filename for a given (version, target), e.g.
     /// `mise-v2026.6.14-linux-x64`, or `mise-v2026.6.14-windows-x64.exe`
-    /// on Windows targets — the raw Windows asset carries an `.exe`
+    /// on Windows targets: the raw Windows asset carries an `.exe`
     /// extension, verified against the live v2026.9.15 release whose
     /// `SHASUMS256.txt` lists `./mise-v2026.9.15-windows-x64.exe`.
     fn asset_name(version: &str, target: Target) -> String {
@@ -142,7 +157,7 @@ impl MiseResolver {
     }
 
     fn client(&self) -> reqwest::Client {
-        self.client.clone().unwrap_or_default()
+        self.client.clone().unwrap_or_else(shared_policy_client)
     }
 
     /// Query GitHub for the latest mise release version (without the
@@ -220,7 +235,7 @@ fn shasums256_url(version: &str) -> String {
 }
 
 /// [`mise_tool`] with the release's [`SHASUMS_FILE`] pinned for the concrete
-/// `version` — the descriptor [`install_mise`] actually installs.
+/// `version`: the descriptor [`install_mise`] actually installs.
 ///
 /// [`Checksum::Url`] makes the engine fetch the checksum file and verify the
 /// asset's sha256 strictly, so the size-floor policy never applies to a mise
@@ -239,9 +254,9 @@ fn checksum_pinned_tool(version: &str, target: Target) -> Tool {
 /// Convenience: checksum-verified install of the latest (or a pinned) mise
 /// to `~/.local/bin/mise` (or `install_dir` when provided).
 ///
-/// The concrete version is resolved first — zero network for a pinned
+/// The concrete version is resolved first: zero network for a pinned
 /// request; for `"latest"` it is the one API call the install needed anyway
-/// — then `checksum_pinned_tool` pins the release's `SHASUMS_FILE` on
+///: then `checksum_pinned_tool` pins the release's `SHASUMS_FILE` on
 /// the descriptor and the engine verifies the downloaded asset against it
 /// strictly. The engine re-resolves the now-concrete version off its pinned
 /// (pure string-formatting) path, so nothing is fetched twice.
@@ -255,10 +270,13 @@ fn checksum_pinned_tool(version: &str, target: Target) -> Tool {
 #[cfg(feature = "http")]
 pub async fn install_mise(version: &str, install_dir: Option<&Utf8PathBuf>) -> Result<Utf8PathBuf> {
     let target = Target::host()?;
-    let resolver = MiseResolver::new();
+    let installer = Installer::new();
+    let resolver = MiseResolver {
+        client: Some(installer.http_client().clone()),
+    };
     let (concrete, _url) = resolver.resolve(target, version).await?;
     let tool = checksum_pinned_tool(&concrete, target);
-    Installer::new()
+    installer
         .install_with_resolver(&tool, target, &concrete, install_dir, &resolver)
         .await
 }
@@ -268,7 +286,7 @@ pub async fn install_mise(version: &str, install_dir: Option<&Utf8PathBuf>) -> R
 /// the miss routed through [`install_mise`] so the install is
 /// checksum-verified.
 ///
-/// A copy that already runs is kept with **zero network** — neither the
+/// A copy that already runs is kept with **zero network**: neither the
 /// detect probe nor the satisfaction check consults the resolver.
 /// `"latest"` always keeps an installed copy (deciding whether a newer
 /// release exists needs network by definition); a pinned semver keeps it
@@ -313,7 +331,7 @@ pub async fn ensure_mise(
     }
     let detector = builder.build();
 
-    // 1. detect first — offline, never errors, and via `detect_async`: the
+    // 1. detect first: offline, never errors, and via `detect_async`: the
     //    version probe spawns subprocesses and must not block an async
     //    runtime worker.
     let status = detector.detect_async(&tool).await;
@@ -345,7 +363,7 @@ mod tests {
         assert_eq!(tool.bin_name, MISE_BIN_NAME);
         assert_eq!(tool.artifact, ArtifactKind::Binary);
         // The static descriptor stays checksum-free (the checksum-file URL
-        // is version-dependent); installs pin `Checksum::Url` — see
+        // is version-dependent); installs pin `Checksum::Url`: see
         // `checksum_pinned_tool_names_the_release_checksum_file`.
         assert_eq!(tool.checksum, Checksum::None);
         assert!(tool.bin_path.is_none());
@@ -558,7 +576,7 @@ mod resolver_tests {
                 url: "https://github.com/jdx/mise/releases/download/v2026.9.15/SHASUMS256.txt"
                     .into(),
                 // Must byte-match the SHASUMS256.txt entry after the parser
-                // strips its `./` prefix — including the `.exe` (live-
+                // strips its `./` prefix: including the `.exe` (live-
                 // verified against v2026.9.15:
                 // `./mise-v2026.9.15-windows-x64.exe`).
                 asset_name: "mise-v2026.9.15-windows-x64.exe".into(),
@@ -569,7 +587,7 @@ mod resolver_tests {
 
     #[tokio::test]
     async fn pinned_version_resolves_to_direct_url_no_network() {
-        // Pinned versions are resolved offline — no HTTP call is made.
+        // Pinned versions are resolved offline: no HTTP call is made.
         let r = MiseResolver::new();
         let t = Target {
             os: Os::Linux,

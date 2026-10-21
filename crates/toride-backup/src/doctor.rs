@@ -24,7 +24,7 @@
 //!   informational finding pointing at [`Doctor::run_spec`] when no
 //!   [`BackupSpec`] is available.
 //! - [`Doctor::run_spec`] takes a full [`BackupSpec`]
-//!   and runs *real* probes — constructing typed
+//!   and runs *real* probes: constructing typed
 //!   [`CommandSpec`]s for `restic`/`borg` and
 //!   executing them through the injected [`Runner`].
 //!
@@ -33,7 +33,7 @@
 //! Every command that touches the repository is built with
 //! [`CommandSpec::redact`](toride_runner::CommandSpec::redact)`(true)`, and
 //! the passphrase is delivered via the `RESTIC_PASSWORD` / `BORG_PASSPHRASE`
-//! environment variable — never as a positional argument. The repo URL is
+//! environment variable: never as a positional argument. The repo URL is
 //! likewise treated as potentially secret (it can embed credentials for
 //! `sftp:`/`b2:` backends).
 //!
@@ -158,7 +158,7 @@ pub enum DoctorScope {
 impl DoctorScope {
     /// Return all individual scope categories (excluding `All`).
     pub fn all_categories() -> Vec<DoctorScope> {
-        // Stable placeholder names — these are the per-job categories that
+        // Stable placeholder names: these are the per-job categories that
         // require a BackupSpec to probe meaningfully. `run` will surface an
         // informational note pointing the caller at `run_spec` for these.
         vec![
@@ -409,7 +409,7 @@ fn iso_to_days(ts: &str) -> Option<i64> {
     Some(days_from_civil(y, m, d))
 }
 
-/// Howard Hinnant's days-from-civil algorithm — converts a Gregorian
+/// Howard Hinnant's days-from-civil algorithm: converts a Gregorian
 /// (year, month, day) to a count of days since 1970-01-01. No external dep.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -1241,7 +1241,7 @@ impl Doctor {
     ///   decryptable and restorable.
     ///   Docs: <https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency>
     /// - borg:   `borg check --verify-data <repo>` reads and authenticates
-    ///   every chunk — the strongest pre-restore confidence check.
+    ///   every chunk: the strongest pre-restore confidence check.
     ///   Docs: <https://borgbackup.readthedocs.io/en/stable/usage/check.html>
     fn probe_restore(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
         let binary = self.resolve_binary(spec)?;
@@ -1264,7 +1264,7 @@ impl Doctor {
                 "restore.viable",
                 Severity::Ok,
                 format!(
-                    "{} data verification passed — restore path is viable",
+                    "{} data verification passed: restore path is viable",
                     spec.backend
                 ),
             )),
@@ -1272,7 +1272,7 @@ impl Doctor {
                 Finding::new(
                     "restore.risky",
                     Severity::Error,
-                    "data verification failed — restores may not succeed",
+                    "data verification failed: restores may not succeed",
                 )
                 .detail(runner_err(&e))
                 .fix(format!(
@@ -1404,7 +1404,7 @@ impl Doctor {
     /// Borg repo URLs are positional, so unlike restic the repo argument is
     /// added at each call site (after the subcommand verb).
     fn borg_repo_spec(binary: &str, spec: &BackupSpec) -> CommandSpec {
-        // `borg list --json <repo>` — repo is positional. We build the verb
+        // `borg list --json <repo>`: repo is positional. We build the verb
         // base here and let the caller append the repo, OR we append it.
         // For consistency with the list probe, append the repo here.
         let s = CommandSpec::new(binary);
@@ -1862,7 +1862,7 @@ mod tests {
     }
 
     // Source: https://borgbackup.readthedocs.io/en/stable/usage/check.html
-    // `borg check --repository-only <repo>` — cheap structural check.
+    // `borg check --repository-only <repo>`: cheap structural check.
 
     #[test]
     fn borg_integrity_probe_builds_check_command() {
@@ -1996,7 +1996,7 @@ mod tests {
 
     #[test]
     fn restic_staleness_probe_old_snapshot_is_stale() {
-        // 1990 — unmistakably stale for a daily schedule.
+        // 1990: unmistakably stale for a daily schedule.
         let sample = r#"[{"time":"1990-01-01T02:00:00.000000000Z","id":"abc","short_id":"abc","tree":"t","paths":["/etc"],"hostname":"h","username":"u"}]"#;
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(sample));
         let (doc, _rc) = doctor_with_fake(runner, "restic");

@@ -4,7 +4,7 @@
 //! HTTP requests against a set of signature rules and decides whether to allow,
 //! log, or block them. The engine is pure-Rust and dependency-light (a single
 //! `regex` for signature matching); it does NOT shell out and does not require
-//! ModSecurity to be installed.
+//! `ModSecurity` to be installed.
 //!
 //! # Design
 //!
@@ -21,7 +21,7 @@
 //! The default rule set ([`WafConfig::with_default_rules`]) ships OWASP-style
 //! signatures for SQL injection, cross-site scripting, path traversal, and a
 //! few common protocol attacks. These are conservative signatures, not a
-//! substitute for a full CRS — but they make the engine do real work rather
+//! substitute for a full CRS, but they make the engine do real work rather
 //! than being a type-only stub.
 
 use crate::error::{Error, Result};

@@ -1,7 +1,7 @@
 //! Convert `toride-audit` library types to UI presentation types.
 //!
 //! This is the single boundary for pure type mapping between backend and
-//! presentation — mirroring `fail2ban_convert.rs`'s role. The data layer
+//! presentation: mirroring `fail2ban_convert.rs`'s role. The data layer
 //! (`toride_audit_data.rs`) additionally calls backend facade methods, which
 //! is consistent with every sibling data file in the crate. Each function
 //! here handles errors gracefully: malformed input is skipped with a
@@ -86,7 +86,7 @@ pub fn convert_rule_files(
 ) -> Vec<AuditRuleEntry> {
     let mut entries: Vec<AuditRuleEntry> = Vec::new();
     for file in files {
-        // An empty name is malformed — log and skip the whole file rather than
+        // An empty name is malformed: log and skip the whole file rather than
         // emit a placeholder row that would inflate the count misleadingly.
         if file.name.is_empty() {
             tracing::warn!(

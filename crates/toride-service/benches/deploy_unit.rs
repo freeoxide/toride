@@ -5,12 +5,13 @@ use std::time::Duration;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use toride_runner::fake::FakeRunner;
 use toride_service::ServiceManager;
+use toride_service::ledger::{ActionKind, ActionLedger, ActionRecord};
 
 const UNIT_NAME: &str = "bench.service";
 
 const UNIT_CONTENTS: &str = "[Unit]\nDescription=bench unit\n\n[Service]\nExecStart=/bin/true\n";
 
-const EXPECTED_DEPLOY_SPAWNS: usize = 5;
+const EXPECTED_DEPLOY_SPAWNS: usize = 4;
 
 const SAMPLE_SIZE: usize = 30;
 const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
@@ -20,7 +21,6 @@ fn deploy_rig(units_root: &std::path::Path) -> (FakeRunner, ServiceManager) {
     let fake = FakeRunner::new()
         .push_response(toride_runner::CommandOutput::from_stdout(""))
         .push_response(toride_runner::CommandOutput::from_stdout("enabled\n"))
-        .push_response(toride_runner::CommandOutput::from_stdout(""))
         .push_response(toride_runner::CommandOutput::from_stdout(""))
         .push_response(toride_runner::CommandOutput::from_stdout("active\n"));
     let manager = ServiceManager::with_units_root(Box::new(fake.clone()), units_root);
@@ -44,8 +44,7 @@ fn oracle(units_root: &std::path::Path) {
     assert_eq!(
         calls.len(),
         EXPECTED_DEPLOY_SPAWNS,
-        "the happy-path deploy spawns five systemctl invocations today; \
-         the enable-skip fix targets four"
+        "the happy-path deploy of an already-enabled unit skips the no-op enable spawn"
     );
     assert_eq!(
         calls,
@@ -53,11 +52,11 @@ fn oracle(units_root: &std::path::Path) {
             ("systemctl".to_owned(), vec!["daemon-reload".to_owned()]),
             (
                 "systemctl".to_owned(),
-                vec!["is-enabled".to_owned(), "--".to_owned(), UNIT_NAME.to_owned()]
-            ),
-            (
-                "systemctl".to_owned(),
-                vec!["enable".to_owned(), "--".to_owned(), UNIT_NAME.to_owned()]
+                vec![
+                    "is-enabled".to_owned(),
+                    "--".to_owned(),
+                    UNIT_NAME.to_owned()
+                ]
             ),
             (
                 "systemctl".to_owned(),
@@ -65,7 +64,11 @@ fn oracle(units_root: &std::path::Path) {
             ),
             (
                 "systemctl".to_owned(),
-                vec!["is-active".to_owned(), "--".to_owned(), UNIT_NAME.to_owned()]
+                vec![
+                    "is-active".to_owned(),
+                    "--".to_owned(),
+                    UNIT_NAME.to_owned()
+                ]
             ),
         ],
         "the exact argv sequence per deploy, pinned like the manager test"
@@ -102,6 +105,35 @@ fn deploy_unit_bench(criterion: &mut Criterion) {
     group.finish();
 }
 
+/// The per-deploy ledger write, isolated so it stays its own tracked
+/// metric under the deploy baseline: one load-plus-atomic-save of a
+/// one-record document on a fresh ledger, exactly what `deploy_unit`
+/// pays after its activity check.
+fn ledger_append_bench(criterion: &mut Criterion) {
+    let mut group = criterion.benchmark_group("deploy_unit");
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(MEASUREMENT_TIME);
+    group.warm_up_time(WARM_UP_TIME);
+
+    group.bench_function("ledger_append_single_record", |b| {
+        b.iter_batched(
+            || tempfile::tempdir().expect("fresh ledger root"),
+            |dir| {
+                let ledger = ActionLedger::in_root(dir.path());
+                ledger
+                    .append(black_box(ActionRecord::now(ActionKind::UnitDeployed {
+                        unit: UNIT_NAME.to_owned(),
+                    })))
+                    .expect("ledger append succeeds");
+                black_box(ledger)
+            },
+            BatchSize::PerIteration,
+        );
+    });
+
+    group.finish();
+}
+
 fn duct_leg(criterion: &mut Criterion) {
     if std::env::var_os("TORIDE_BENCH_DEPLOY_UNIT_DUCT").is_none() {
         return;
@@ -125,10 +157,8 @@ fn duct_leg(criterion: &mut Criterion) {
     unsafe { std::env::set_var("PATH", path) };
 
     let units_root = tempfile::tempdir().expect("temp dir");
-    let manager = ServiceManager::with_units_root(
-        Box::new(toride_runner::DuctRunner),
-        units_root.path(),
-    );
+    let manager =
+        ServiceManager::with_units_root(Box::new(toride_runner::DuctRunner), units_root.path());
 
     let mut group = criterion.benchmark_group("deploy_unit");
     group.sample_size(SAMPLE_SIZE);
@@ -144,5 +174,5 @@ fn duct_leg(criterion: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, deploy_unit_bench, duct_leg);
+criterion_group!(benches, deploy_unit_bench, ledger_append_bench, duct_leg);
 criterion_main!(benches);

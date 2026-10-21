@@ -9,10 +9,6 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// impl Mise — path operations
-// ---------------------------------------------------------------------------
-
 impl Mise {
     /// Resolve the global mise config file path.
     ///

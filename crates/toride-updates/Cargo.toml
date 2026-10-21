@@ -24,7 +24,7 @@ default = ["client", "doctor"]
 client = ["dep:duct"]
 doctor = ["service"]
 service = ["client", "dep:toride-service"]
-config = ["client", "dep:regex"]
+config = ["client"]
 apt = ["client"]
 dnf = ["client"]
 schedule = ["client"]
@@ -46,7 +46,6 @@ which = { workspace = true }
 duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
-regex = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]

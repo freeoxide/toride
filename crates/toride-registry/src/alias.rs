@@ -22,7 +22,7 @@ impl AliasIndex {
         Self::default()
     }
 
-    /// The rows recorded for `id` — empty when the index never saw it.
+    /// The rows recorded for `id`: empty when the index never saw it.
     #[must_use]
     pub fn get(&self, id: &TorideId) -> &[SourceRef] {
         self.rows.get(id).map_or(&[], Vec::as_slice)
@@ -52,29 +52,60 @@ impl AliasIndex {
     }
 }
 
+/// One surviving row inside [`merge_hits`]: its bucket origin, the row
+/// itself, and its lazily-memoized slugified name set. The memo is built on
+/// first name comparison and invalidated only when `absorb` actually grows
+/// the alias set, so join decisions stay identical to recomputing per pair
+/// while the pairing loop stops re-slugifying names it never compares.
+struct MergedRow {
+    origin: usize,
+    app: App,
+    names: Option<Vec<TorideId>>,
+}
+
 pub(crate) fn merge_hits(buckets: impl IntoIterator<Item = Vec<App>>) -> Vec<App> {
-    let mut merged: Vec<(usize, App)> = Vec::new();
+    let mut merged: Vec<MergedRow> = Vec::new();
     for (origin, bucket) in buckets.into_iter().enumerate() {
         for mut hit in bucket {
-            let joinable = merged
-                .iter_mut()
-                .find(|(row_origin, row)| *row_origin != origin && same_app(row, &hit));
-            if let Some((_, row)) = joinable {
-                absorb(row, hit);
+            let mut hit_names: Option<Vec<TorideId>> = None;
+            let joinable = merged.iter_mut().position(|row| {
+                if row.origin == origin {
+                    return false;
+                }
+                match join_preface(&row.app, &hit) {
+                    JoinPreface::Joined => true,
+                    JoinPreface::Apart => false,
+                    JoinPreface::ByName => {
+                        let names = hit_names.get_or_insert_with(|| join_names(&hit));
+                        row.names
+                            .get_or_insert_with(|| join_names(&row.app))
+                            .iter()
+                            .any(|name| names.contains(name))
+                    }
+                }
+            });
+            if let Some(index) = joinable {
+                if absorb(&mut merged[index].app, hit) {
+                    merged[index].names = None;
+                }
             } else {
                 disambiguate(&mut hit, &merged);
-                merged.push((origin, hit));
+                merged.push(MergedRow {
+                    origin,
+                    app: hit,
+                    names: hit_names,
+                });
             }
         }
     }
-    merged.into_iter().map(|(_, app)| app).collect()
+    merged.into_iter().map(|row| row.app).collect()
 }
 
-fn disambiguate(hit: &mut App, merged: &[(usize, App)]) {
+fn disambiguate(hit: &mut App, merged: &[MergedRow]) {
     let Some(key) = source_key(hit) else {
         return;
     };
-    while merged.iter().any(|(_, row)| row.id == hit.id) {
+    while merged.iter().any(|row| row.app.id == hit.id) {
         let suffixed = format!("{}-{key}", hit.id.as_str());
         hit.id = TorideId::slugify(&suffixed);
     }
@@ -94,17 +125,39 @@ fn source_kind_key(source: SourceKind) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn same_app(left: &App, right: &App) -> bool {
+    let left_names = join_names(left);
+    let right_names = join_names(right);
+    match join_preface(left, right) {
+        JoinPreface::Joined => true,
+        JoinPreface::Apart => false,
+        JoinPreface::ByName => left_names.iter().any(|name| right_names.contains(name)),
+    }
+}
+
+/// The cheap guards of a join decision, ahead of the name-slug comparison:
+/// an identity conflict rules the pair apart, a shared canonical id or an
+/// equal homepage joins it outright, and only the remainder needs the
+/// slugified name sets.
+enum JoinPreface {
+    Joined,
+    Apart,
+    ByName,
+}
+
+fn join_preface(left: &App, right: &App) -> JoinPreface {
     if text_conflict(left.homepage.as_deref(), right.homepage.as_deref())
         || text_conflict(left.developer.as_deref(), right.developer.as_deref())
     {
-        return false;
+        return JoinPreface::Apart;
     }
-    left.id == right.id
+    if left.id == right.id
         || matches!((&left.homepage, &right.homepage), (Some(l), Some(r)) if l == r)
-        || join_names(left)
-            .iter()
-            .any(|name| join_names(right).contains(name))
+    {
+        return JoinPreface::Joined;
+    }
+    JoinPreface::ByName
 }
 
 fn text_conflict(left: Option<&str>, right: Option<&str>) -> bool {
@@ -119,19 +172,40 @@ fn join_names(app: &App) -> Vec<TorideId> {
         .collect()
 }
 
-fn absorb(row: &mut App, hit: App) {
+/// Union `hit` into the surviving `row`. Returns `true` when the alias set
+/// grew (the only change that can alter the row's slugified name set, so
+/// callers know when to invalidate a memoized copy).
+fn absorb(row: &mut App, hit: App) -> bool {
     row.summary = row.summary.take().or(hit.summary);
     row.description = row.description.take().or(hit.description);
     row.homepage = row.homepage.take().or(hit.homepage);
     row.license = row.license.take().or(hit.license);
     row.developer = row.developer.take().or(hit.developer);
     row.latest = row.latest.take().or(hit.latest);
+    let mut aliases_grew = false;
     for alias in hit.aliases {
         if !row.aliases.contains(&alias) {
             row.aliases.push(alias);
+            aliases_grew = true;
+        }
+    }
+    for binary in hit.binaries {
+        if !row.binaries.contains(&binary) {
+            row.binaries.push(binary);
+        }
+    }
+    for platform in hit.platforms {
+        if !row.platforms.contains(&platform) {
+            row.platforms.push(platform);
+        }
+    }
+    for artifact in hit.artifacts {
+        if !row.artifacts.contains(&artifact) {
+            row.artifacts.push(artifact);
         }
     }
     union_rows(&mut row.sources, hit.sources);
+    aliases_grew
 }
 
 pub(crate) fn union_rows(rows: &mut Vec<SourceRef>, extra: impl IntoIterator<Item = SourceRef>) {
@@ -314,7 +388,7 @@ mod tests {
         assert_eq!(
             merged[1].sources,
             vec![row(SourceKind::Flathub, "com.example.Notes")],
-            "the row's per-source identity is untouched — only the canonical id diverges"
+            "the row's per-source identity is untouched: only the canonical id diverges"
         );
     }
 
@@ -360,6 +434,63 @@ mod tests {
         assert_eq!(
             merged[0].aliases,
             ["Brave Browser".to_owned(), "Brave Web Browser".to_owned()]
+        );
+    }
+
+    #[test]
+    fn merge_hits_unions_platforms_artifacts_and_binaries() {
+        use crate::model::{Arch, Artifact, ArtifactKind, Checksum, ChecksumAlgo, Os, Platform};
+
+        let mut cask = app("brave-browser", "Brave Browser", SourceKind::HomebrewCask);
+        cask.platforms = vec![Platform {
+            os: Os::MacOs,
+            arch: Some(Arch::X86_64),
+            min_release: None,
+        }];
+        cask.binaries = vec!["brave".to_owned()];
+
+        let mut flathub = app("com-brave-browser", "Brave Browser", SourceKind::Flathub);
+        flathub.platforms = vec![
+            Platform {
+                os: Os::Linux,
+                arch: None,
+                min_release: None,
+            },
+            Platform {
+                os: Os::MacOs,
+                arch: Some(Arch::X86_64),
+                min_release: None,
+            },
+        ];
+        flathub.artifacts = vec![Artifact {
+            url: "https://flathub/repo/brave".to_owned(),
+            checksum: Some(Checksum {
+                algo: ChecksumAlgo::Sha256,
+                digest: "a".repeat(64),
+            }),
+            os: Some(Os::Linux),
+            arch: None,
+            kind: ArtifactKind::Package,
+        }];
+        flathub.binaries = vec!["brave".to_owned(), "brave-browser".to_owned()];
+
+        let merged = merge_hits([vec![cask], vec![flathub]]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0]
+                .platforms
+                .iter()
+                .map(|claim| claim.os)
+                .collect::<Vec<_>>(),
+            [Os::MacOs, Os::Linux],
+            "the flathub Linux claim must survive the cask-first merge"
+        );
+        assert_eq!(merged[0].platforms.len(), 2, "duplicate claims dedupe");
+        assert_eq!(merged[0].artifacts.len(), 1);
+        assert_eq!(
+            merged[0].binaries,
+            ["brave".to_owned(), "brave-browser".to_owned()],
+            "binaries union without duplicates"
         );
     }
 

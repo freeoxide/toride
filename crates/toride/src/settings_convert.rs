@@ -1,7 +1,7 @@
 //! Convert local config-file + environment reads into UI presentation types.
 //!
 //! This is the ONLY module that knows how to read the toride config file and
-//! the process environment for the Settings section — mirroring
+//! the process environment for the Settings section: mirroring
 //! `toride_harden_convert`'s role as the single boundary between source and
 //! presentation. Every function degrades gracefully: an unreadable config
 //! file, a missing env var, or a malformed `key = value` row is logged and
@@ -88,7 +88,7 @@ pub fn convert_config() -> SettingsConfig {
     let contents = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) => {
-            // Missing file is the COMMON case on a fresh install — debug, not
+            // Missing file is the COMMON case on a fresh install: debug, not
             // warn. Anything else (permission denied, IO error) is warn.
             if e.kind() == std::io::ErrorKind::NotFound {
                 tracing::debug!("settings: no config file at {path_str} (using defaults)");
@@ -160,11 +160,11 @@ fn env(name: &str) -> Option<String> {
 }
 
 /// Parse `key = value` rows out of raw config text, tolerating comments and
-/// section headers. Malformed lines are skipped (debug-logged) — never panic.
+/// section headers. Malformed lines are skipped (debug-logged): never panic.
 ///
 /// - Lines starting with `#` or `;` are comments.
 /// - `[section]` headers are skipped (the section name is not folded into the
-///   key — the config schema today is flat; a future structured loader can
+///   key: the config schema today is flat; a future structured loader can
 ///   replace this).
 /// - A line without `=` is skipped.
 /// - Empty keys (e.g. `= value`) are skipped as malformed.
@@ -176,7 +176,7 @@ pub fn parse_kv_rows(contents: &str) -> Vec<(String, String)> {
             continue;
         }
         if line.starts_with('[') && line.ends_with(']') {
-            // Section header — skip (flat schema today).
+            // Section header: skip (flat schema today).
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -219,7 +219,7 @@ fn strip_quotes(s: String) -> String {
 }
 
 /// [`empty_config`] but carrying a concrete path string (used when `dirs`
-/// itself returns `None` — the panel then shows why the path is blank).
+/// itself returns `None`: the panel then shows why the path is blank).
 fn empty_config_with_path(path: String) -> SettingsConfig {
     SettingsConfig {
         path,

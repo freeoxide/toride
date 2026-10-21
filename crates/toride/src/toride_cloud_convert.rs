@@ -1,7 +1,7 @@
 //! Convert `toride-cloud` library types to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that imports `toride_cloud`
-//! types — mirroring [`fail2ban_convert`](crate::fail2ban_convert)'s role as
+//! types: mirroring [`fail2ban_convert`](crate::fail2ban_convert)'s role as
 //! the single boundary between backend and presentation. Each function handles
 //! errors gracefully: malformed input (empty ids / titles, unparseable ports,
 //! unknown protocols) is skipped with a `tracing::warn!` and a placeholder,
@@ -29,7 +29,7 @@ fn severity_str(s: toride_cloud::report::Severity) -> &'static str {
 /// Format a detected [`toride_cloud::CloudProvider`] as a human-friendly label.
 ///
 /// `Unknown` becomes `"none"` so the UI can render "provider: none" on a dev
-/// box that is not running on a cloud VM — clearer than the literal "unknown",
+/// box that is not running on a cloud VM: clearer than the literal "unknown",
 /// which reads as an error state rather than the expected no-cloud case.
 pub fn format_provider(provider: toride_cloud::CloudProvider) -> &'static str {
     match provider {
@@ -112,7 +112,7 @@ fn format_protocol(p: toride_cloud::spec::Protocol) -> String {
 ///
 /// Malformed rules (empty CIDR with no port, or a protocol that renders blank)
 /// are logged and still produced with a placeholder so the rule count matches
-/// the backend — the operator can see the row exists even if its fields are
+/// the backend: the operator can see the row exists even if its fields are
 /// unusual.
 fn convert_rule(rule: toride_cloud::spec::FirewallRule) -> FirewallRuleEntry {
     let protocol = format_protocol(rule.protocol);
@@ -372,7 +372,7 @@ mod tests {
     }
 
     // Finding 2a: A SecurityGroup with no rules must yield zero ingress/egress
-    // counts and an empty rule list — guards against a future refactor that
+    // counts and an empty rule list: guards against a future refactor that
     // initializes counts to a non-zero default.
     #[test]
     fn convert_security_groups_empty_rules_yield_zero_counts() {

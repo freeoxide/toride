@@ -1,8 +1,8 @@
 //! # Normalized model
 //!
 //! The single shape downstream ever sees (DESIGN.md §2): [`App`] plus its
-//! leaf types. Every external repository — Homebrew, Flathub,
-//! `AppStream`/DEP-11, Repology — is squashed into these types by exactly one adapter,
+//! leaf types. Every external repository: Homebrew, Flathub,
+//! `AppStream`/DEP-11, Repology: is squashed into these types by exactly one adapter,
 //! so search, resolve, alias handling and install planning never touch a
 //! source-specific wire struct.
 //!
@@ -11,18 +11,18 @@
 //! (new sources, new distro families, Windows later).
 //!
 //! Deliberately NOT in the model: categories/icons/screenshots/
-//! verification badges (flathub `verification_verified` — distinct from
+//! verification badges (flathub `verification_verified`: distinct from
 //! the modeled [`VerificationPolicy`])/popularity, local-state echoes
 //! (`installed`, `outdated`, `pinned`), and
 //! repology per-repo `status` (lives at parse level in the oracle). Versions
-//! stay opaque strings — repology `origversion` suffixes and flathub
+//! stay opaque strings: repology `origversion` suffixes and flathub
 //! development releases are not semver, and cross-source comparison is the
 //! oracle's job, not the model's.
 
 use crate::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
-/// Canonical toride app id — the slug every downstream subsystem keys on.
+/// Canonical toride app id: the slug every downstream subsystem keys on.
 ///
 /// Rules: lowercase ASCII `[a-z0-9]` plus `-`; no leading, trailing, or
 /// double hyphen; whitespace, `_`, and `.` collapse to `-`. Derived
@@ -38,7 +38,7 @@ impl TorideId {
     /// separator, separators collapse, and leading/trailing separators
     /// are trimmed. Input with no ASCII alphanumeric at all (empty,
     /// punctuation-only, non-ASCII-only) falls back to the crate's
-    /// degenerate-id marker `unnamed` — the alias layer's collision
+    /// degenerate-id marker `unnamed`: the alias layer's collision
     /// policy (DESIGN.md §5: same slug → merge/suffix by source) is what
     /// disambiguates distinct degenerate inputs. `slugify(s).parse()` is
     /// always `Ok`.
@@ -85,7 +85,7 @@ impl TorideId {
         Self(slug)
     }
 
-    /// Validated constructor — accepts exactly what [`TorideId::slugify`]
+    /// Validated constructor: accepts exactly what [`TorideId::slugify`]
     /// would emit: non-empty, only `[a-z0-9-]`, no leading/trailing
     /// hyphen, no double hyphen. Use [`TorideId::slugify`] to normalize
     /// arbitrary input first.
@@ -129,7 +129,7 @@ impl TorideId {
     }
 }
 
-/// One normalized registry entry — the ONLY shape downstream ever sees.
+/// One normalized registry entry: the ONLY shape downstream ever sees.
 ///
 /// Adapters emit one `App` per source record; the cross-source merge (same
 /// slug + same homepage/developer → same app, merge [`App::sources`]) is
@@ -137,7 +137,7 @@ impl TorideId {
 /// boundary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct App {
-    /// Canonical toride id — the slug downstream subsystems key on.
+    /// Canonical toride id: the slug downstream subsystems key on.
     pub id: TorideId,
     /// Display name (C/default locale).
     pub name: String,
@@ -156,7 +156,7 @@ pub struct App {
     pub developer: Option<String>,
     /// Executable names the app puts on PATH (formula `executables`, DEP-11
     /// `Provides.binaries`). The join key for tool detection
-    /// (appstream.md §5) — kept in the model for exactly that consumer.
+    /// (appstream.md §5): kept in the model for exactly that consumer.
     pub binaries: Vec<String>,
     /// Best-known version from this app's own sources.
     pub latest: Option<Version>,
@@ -169,7 +169,7 @@ pub struct App {
     pub artifacts: Vec<Artifact>,
     /// Primary install descriptor (see [`InstallMethod`]).
     pub install: InstallMethod,
-    /// Per-source identity rows — the alias table's payload (DESIGN.md
+    /// Per-source identity rows: the alias table's payload (DESIGN.md
     /// §5); a merged App carries one entry per source that knows it.
     pub sources: Vec<SourceRef>,
     /// Lifecycle: homebrew cask/formula `deprecated`/`disabled`
@@ -192,7 +192,7 @@ pub enum Availability {
 
 impl App {
     /// The best checksummed artifact for `os`/`arch` wrapped as an
-    /// [`InstallMethod::Direct`] — exact (os, arch) match preferred,
+    /// [`InstallMethod::Direct`]: exact (os, arch) match preferred,
     /// undeclared slots (`None`) as wildcards; `None` when no checksummed
     /// artifact matches (DESIGN.md §3.3).
     #[must_use]
@@ -242,7 +242,7 @@ pub struct Version {
     pub published_unix: Option<i64>,
 }
 
-/// Which external source a [`SourceRef`] belongs to — one variant per
+/// Which external source a [`SourceRef`] belongs to: one variant per
 /// adapter (the surveyed adapter keys).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -262,7 +262,7 @@ pub enum SourceKind {
 
 /// Whether a source publishes checksums for the downloads it lists
 /// (plan gap 3.12): `OutOfBand` marks an empty [`App::artifacts`] list
-/// as unverifiable — demand an out-of-band digest, never a size floor.
+/// as unverifiable: demand an out-of-band digest, never a size floor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum VerificationPolicy {
@@ -277,7 +277,7 @@ pub enum VerificationPolicy {
 }
 
 impl SourceKind {
-    /// The verification policy of every record this source publishes —
+    /// The verification policy of every record this source publishes:
     /// a fact about the source, not about any one app.
     ///
     /// ```
@@ -320,7 +320,7 @@ pub struct SourceRef {
     /// The version this source currently reports, when captured.
     pub version: Option<Version>,
     /// True when this row was minted from a fallback rather than parsed
-    /// from the source's own catalog — today only repology-minted
+    /// from the source's own catalog: today only repology-minted
     /// `Distro` descriptors for families with no adapter (DESIGN.md §5).
     /// Persists through the alias index's JSON serialization;
     /// `#[serde(default)]` keeps older caches deserializable.
@@ -336,7 +336,7 @@ pub enum Os {
     MacOs,
     /// Linux (flathub, distro catalogs, formula bottles).
     Linux,
-    /// Windows (wave 2 — winget).
+    /// Windows (wave 2: winget).
     Windows,
 }
 
@@ -359,7 +359,7 @@ pub struct Platform {
     pub os: Os,
     /// `None` = arch-independent / undeclared (flathub `arches: null`).
     pub arch: Option<Arch>,
-    /// Minimum OS release the source declares — cask
+    /// Minimum OS release the source declares: cask
     /// `depends_on.macos.{">=":["13"]}` → `Some("13")` (brave fixture).
     pub min_release: Option<String>,
 }
@@ -368,11 +368,11 @@ pub struct Platform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ChecksumAlgo {
-    /// sha256, lowercase hex — the only algorithm any wave-1 source
+    /// sha256, lowercase hex: the only algorithm any wave-1 source
     /// publishes (homebrew cask `sha256` + per-variation, formula bottle
     /// files; flathub and DEP-11 publish none at all).
     Sha256,
-    /// sha512, lowercase hex — modeled so a source that publishes one
+    /// sha512, lowercase hex: modeled so a source that publishes one
     /// needs no model change; no wave-1 adapter emits it yet.
     Sha512,
 }
@@ -389,7 +389,7 @@ impl ChecksumAlgo {
     }
 
     /// True iff `digest` is exactly [`ChecksumAlgo::digest_hex_len`] hex
-    /// digits (case-insensitive) — the same shape rule toride-installer's
+    /// digits (case-insensitive): the same shape rule toride-installer's
     /// checksum-file parser applies. Store normalized to lowercase.
     #[must_use]
     pub fn is_valid_digest(self, digest: &str) -> bool {
@@ -435,7 +435,7 @@ pub struct Artifact {
     pub kind: ArtifactKind,
 }
 
-/// How to install — the descriptor install planning consumes. One variant
+/// How to install: the descriptor install planning consumes. One variant
 /// per install technology: brew / flatpak / distro / direct URL / the
 /// language managers (npm, cargo, pipx, uv, mise).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -481,7 +481,7 @@ pub enum InstallMethod {
         /// Arch the artifact targets, when known.
         arch: Option<Arch>,
     },
-    /// `npm install -g <package>[@<version>]` — the global CLI-tool scope.
+    /// `npm install -g <package>[@<version>]`: the global CLI-tool scope.
     Npm {
         /// npm package name.
         package: String,
@@ -517,7 +517,7 @@ pub enum InstallMethod {
     },
 }
 
-/// Distro family — selects the native package manager for
+/// Distro family: selects the native package manager for
 /// [`InstallMethod::Distro`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -526,7 +526,7 @@ pub enum DistroFamily {
     Debian,
     /// Ubuntu (apt; DEP-11 layout verified identical to Debian's).
     Ubuntu,
-    /// Fedora (dnf; no wave-1 catalog adapter — DESIGN.md §6).
+    /// Fedora (dnf; no wave-1 catalog adapter: DESIGN.md §6).
     Fedora,
     /// Arch (pacman; provisional repology-minted descriptors only).
     Arch,

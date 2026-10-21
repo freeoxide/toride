@@ -8,10 +8,6 @@ use camino::Utf8PathBuf;
 use super::discovery::MiseBinary;
 use crate::error::{MiseError, MiseResult};
 
-// ---------------------------------------------------------------------------
-// BootstrapOptions
-// ---------------------------------------------------------------------------
-
 /// Options controlling how the `mise` binary should be installed.
 #[derive(Debug, Clone, Default)]
 pub struct BootstrapOptions {
@@ -27,10 +23,6 @@ pub struct BootstrapOptions {
     pub version: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// BootstrapMethod
-// ---------------------------------------------------------------------------
-
 /// Strategy for obtaining the `mise` binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BootstrapMethod {
@@ -39,10 +31,6 @@ pub enum BootstrapMethod {
     /// Do not attempt installation; return a hint instead.
     HintOnly,
 }
-
-// ---------------------------------------------------------------------------
-// Platform detection
-// ---------------------------------------------------------------------------
 
 /// Return the asset name substring used to find the right GitHub release asset.
 ///
@@ -68,10 +56,6 @@ fn platform_asset_keyword() -> Option<String> {
 
     Some(format!("{os}-{arch}"))
 }
-
-// ---------------------------------------------------------------------------
-// install_mise
-// ---------------------------------------------------------------------------
 
 /// Attempt to install the `mise` binary using the given method.
 ///
@@ -105,10 +89,6 @@ pub async fn install_mise(
     }
 }
 
-// ---------------------------------------------------------------------------
-// GitHub release implementation
-// ---------------------------------------------------------------------------
-
 #[cfg(feature = "bootstrap")]
 mod github {
     use super::{BootstrapOptions, platform_asset_keyword};
@@ -122,8 +102,46 @@ mod github {
     /// inside a mise GitHub release (checked case-insensitively).
     ///
     /// mise publishes `SHASUMS256.txt`; the broader alternatives keep this
-    /// robust against minor upstream naming changes.
+    /// working across minor upstream naming changes.
     const CHECKSUM_FILE_KEYWORDS: [&str; 3] = ["shasums256", "sha256sums", "checksums"];
+
+    /// Cap on any single bootstrap download (release JSON, checksum file, or
+    /// tarball), shared with the installer engine's download bound.
+    const MAX_DOWNLOAD_BYTES: u64 = toride_installer::installer::DEFAULT_MAX_BYTES;
+
+    /// Build the bootstrap HTTP client with the installer engine's policy:
+    /// a `User-Agent` (api.github.com rejects UA-less clients with 403),
+    /// bounded redirects, and the engine's overall and connect timeouts.
+    fn build_bootstrap_client() -> MiseResult<reqwest::Client> {
+        reqwest::Client::builder()
+            .user_agent(concat!("toride-mise/", env!("CARGO_PKG_VERSION")))
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .timeout(toride_installer::installer::DEFAULT_HTTP_TIMEOUT)
+            .connect_timeout(toride_installer::installer::DEFAULT_HTTP_CONNECT_TIMEOUT)
+            .build()
+            .map_err(|e| MiseError::BootstrapFailed {
+                reason: format!("failed to build HTTP client: {e}"),
+            })
+    }
+
+    /// Read a response body, refusing anything larger than
+    /// [`MAX_DOWNLOAD_BYTES`].
+    async fn read_body_capped(resp: reqwest::Response, what: &str) -> MiseResult<Vec<u8>> {
+        let mut resp = resp;
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| MiseError::BootstrapFailed {
+            reason: format!("failed to read {what} body: {e}"),
+        })? {
+            let cap = usize::try_from(MAX_DOWNLOAD_BYTES).unwrap_or(usize::MAX);
+            if body.len() + chunk.len() > cap {
+                return Err(MiseError::BootstrapFailed {
+                    reason: format!("{what} exceeded the {cap} byte download cap"),
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
+    }
 
     /// Fetch the download URL, asset name, checksum-file URL, and tag for the
     /// latest (or specific) mise release.
@@ -151,14 +169,18 @@ mod github {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = read_body_capped(resp, "GitHub API response").await?;
             return Err(MiseError::BootstrapFailed {
-                reason: format!("GitHub API returned {status}: {body}"),
+                reason: format!(
+                    "GitHub API returned {status}: {}",
+                    String::from_utf8_lossy(&body)
+                ),
             });
         }
 
+        let body = read_body_capped(resp, "GitHub API response").await?;
         let release: serde_json::Value =
-            resp.json().await.map_err(|e| MiseError::BootstrapFailed {
+            serde_json::from_slice(&body).map_err(|e| MiseError::BootstrapFailed {
                 reason: format!("failed to parse GitHub release JSON: {e}"),
             })?;
 
@@ -204,14 +226,10 @@ mod github {
             })?
             .to_string();
 
-        // Locate the published checksum file. mise publishes a single
-        // `SHASUMS256.txt` covering every release asset.
+        // mise publishes a single `SHASUMS256.txt` covering every asset.
         let checksum_url = assets.iter().find_map(|a| {
             let name = a["name"].as_str()?;
             let lower = name.to_ascii_lowercase();
-            // The keyword check (already lower-cased) confirms this is a
-            // checksum manifest; the extension/name gate avoids matching an
-            // unrelated file that merely contains the word "sha256".
             let has_checksum_extension = lower == "checksums"
                 || lower.ends_with(".sha256")
                 || std::path::Path::new(&lower)
@@ -246,47 +264,7 @@ mod github {
         out
     }
 
-    /// Pull the expected sha256 digest for `asset_name` out of a published
-    /// checksum-file body.
-    ///
-    /// Accepts both coreutils `sha256sum` output (`<hex>  <filename>`,
-    /// separated by whitespace; the filename is optional and may be prefixed
-    /// with `*` to mark a binary-mode digest) and a bare `<hex>` line. The
-    /// first line whose digest matches and whose filename matches
-    /// `asset_name` (when given) wins.
-    fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<String> {
-        /// True iff `s` is exactly 64 hex digits (case-insensitive).
-        fn is_hex64(s: &str) -> bool {
-            s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
-        }
-
-        for raw in body.lines() {
-            let line = raw.trim();
-            if line.is_empty() {
-                continue;
-            }
-            // Bare `<hex>` line with no filename — only accept when the caller
-            // has not pinned a specific asset name.
-            if is_hex64(line) && asset_name.is_empty() {
-                return Some(line.to_ascii_lowercase());
-            }
-            let Some((digest, rest)) = line.split_once(char::is_whitespace) else {
-                continue;
-            };
-            if !is_hex64(digest) {
-                continue;
-            }
-            let filename = rest.trim_start();
-            // coreutils `sha256sum` prefixes binary-mode filenames with `*`.
-            let filename = filename.trim_start_matches('*').trim();
-            if asset_name.is_empty() || filename == asset_name {
-                return Some(digest.to_ascii_lowercase());
-            }
-        }
-        None
-    }
-
-    /// Resolve the expected sha256 digest for the asset named `asset_name`.
+    /// Pull the expected sha256 digest for the asset named `asset_name`.
     ///
     /// `checksum_url` is the published checksum file (e.g. `SHASUMS256.txt`).
     /// When the URL is missing the release publishes no checksum and we fail
@@ -322,11 +300,10 @@ mod github {
             });
         }
 
-        let body = resp.text().await.map_err(|e| MiseError::BootstrapFailed {
-            reason: format!("failed to read checksum file body: {e}"),
-        })?;
+        let body = read_body_capped(resp, "checksum file").await?;
+        let body = String::from_utf8_lossy(&body);
 
-        extract_digest_from_checksum_body(&body, asset_name).ok_or_else(|| {
+        toride_installer::extract_digest_from_checksum_body(&body, asset_name).ok_or_else(|| {
             MiseError::BootstrapFailed {
                 reason: format!(
                     "checksum file did not contain a sha256 entry for asset `{asset_name}`"
@@ -354,7 +331,7 @@ mod github {
     ///
     /// `expected_digest` is the published sha256 of the tarball; the download
     /// is verified against it before any extraction happens. A missing or
-    /// mismatching digest fails closed — the binary is never unpacked.
+    /// mismatching digest fails closed: the binary is never unpacked.
     async fn download_and_extract(
         client: &reqwest::Client,
         url: &str,
@@ -375,21 +352,17 @@ mod github {
             });
         }
 
-        let bytes = resp.bytes().await.map_err(|e| MiseError::BootstrapFailed {
-            reason: format!("failed to read download body: {e}"),
-        })?;
+        let bytes = read_body_capped(resp, "archive").await?;
 
-        // Integrity gate: verify the tarball BEFORE touching disk so a tampered
-        // or truncated download can never reach the extraction path.
+        // Verify the tarball BEFORE touching disk so a tampered or truncated
+        // download can never reach the extraction path.
         verify_sha256(&bytes, expected_digest)?;
 
-        // Ensure the target directory exists.
         fs_err::create_dir_all(target_dir).map_err(|e| MiseError::BootstrapFailed {
             reason: format!("failed to create directory {target_dir}: {e}"),
         })?;
 
-        // Extract the `mise` binary from the tar.gz archive.
-        let decoder = flate2::read::GzDecoder::new(bytes.as_ref());
+        let decoder = flate2::read::GzDecoder::new(bytes.as_slice());
         let mut archive = tar::Archive::new(decoder);
 
         let mut found_path: Option<Utf8PathBuf> = None;
@@ -406,8 +379,8 @@ mod github {
 
             let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
-            if file_name == "mise" {
-                let dest = target_dir.join("mise");
+            if file_name == toride_installer::tools::mise::MISE_BIN_NAME {
+                let dest = target_dir.join(toride_installer::tools::mise::MISE_BIN_NAME);
                 entry
                     .unpack(&dest)
                     .map_err(|e| MiseError::BootstrapFailed {
@@ -419,7 +392,10 @@ mod github {
         }
 
         let bin_path = found_path.ok_or_else(|| MiseError::BootstrapFailed {
-            reason: "archive did not contain a 'mise' binary".into(),
+            reason: format!(
+                "archive did not contain a '{}' binary",
+                toride_installer::tools::mise::MISE_BIN_NAME
+            ),
         })?;
 
         // Set executable permissions on unix.
@@ -437,13 +413,13 @@ mod github {
 
     /// Full GitHub release bootstrap pipeline.
     pub async fn install_from_github(opts: &BootstrapOptions) -> MiseResult<Utf8PathBuf> {
-        let client = reqwest::Client::new();
+        let client = build_bootstrap_client()?;
 
         let (download_url, asset_name, checksum_url, tag) =
             fetch_release_info(&client, opts.version.as_deref()).await?;
 
-        // Resolve the published digest BEFORE downloading the (potentially
-        // large) tarball so an unchecksummed release is refused cheaply.
+        // Resolve the published digest BEFORE downloading the tarball so an
+        // unchecksummed release is refused cheaply.
         let expected_digest =
             resolve_expected_digest(&client, checksum_url.as_deref(), &asset_name).await?;
 
@@ -459,13 +435,13 @@ mod github {
         let bin_path =
             download_and_extract(&client, &download_url, &expected_digest, &target_dir).await?;
 
-        let _ = tag; // available for logging if needed
+        let _ = tag;
 
         Ok(bin_path)
     }
 
     // -----------------------------------------------------------------------
-    // Tests (integrity verification — pure, no network)
+    // Tests (integrity verification: pure, no network)
     // -----------------------------------------------------------------------
 
     #[cfg(test)]
@@ -474,12 +450,10 @@ mod github {
 
         #[test]
         fn hex_sha256_matches_known_vector() {
-            // sha256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
             assert_eq!(
                 hex_sha256(b""),
                 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
             );
-            // sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
             assert_eq!(
                 hex_sha256(b"abc"),
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -487,54 +461,38 @@ mod github {
         }
 
         #[test]
-        fn extract_digest_parses_coreutils_format() {
-            let body = "\
-                1111111111111111111111111111111111111111111111111111111111111111  mise-linux-x64.tar.gz\n\
-                2222222222222222222222222222222222222222222222222222222222222222  mise-macos-arm64.tar.gz\n";
-            let digest = extract_digest_from_checksum_body(body, "mise-linux-x64.tar.gz");
+        fn digest_parser_handles_live_shasums256_shape() {
+            // mise's published SHASUMS256.txt lists `./`-prefixed names
+            // (verified live against v2026.9.15); the parser must strip the
+            // prefix and still match the asset.
+            let body = "1111111111111111111111111111111111111111111111111111111111111111  ./mise-linux-x64.tar.gz\n\
+                        2222222222222222222222222222222222222222222222222222222222222222  ./mise-macos-arm64.tar.gz\n";
             assert_eq!(
-                digest.as_deref(),
+                toride_installer::extract_digest_from_checksum_body(body, "mise-linux-x64.tar.gz")
+                    .as_deref(),
                 Some("1111111111111111111111111111111111111111111111111111111111111111")
             );
         }
 
         #[test]
-        fn extract_digest_handles_binary_star_prefix() {
-            let body = "deadbeef00000000000000000000000000000000000000000000000000000001 *mise-linux-x64.tar.gz";
-            let digest = extract_digest_from_checksum_body(body, "mise-linux-x64.tar.gz");
-            assert_eq!(
-                digest.as_deref(),
-                Some("deadbeef00000000000000000000000000000000000000000000000000000001")
-            );
-        }
-
-        #[test]
-        fn extract_digest_skips_non_hex_and_returns_none_when_absent() {
-            let body = "\
-                # mise release checksums\n\
-                not-a-digest  mise-linux-x64.tar.gz\n\
-                1234567890abcdef  mise-macos-arm64.tar.gz\n";
-            assert_eq!(
-                extract_digest_from_checksum_body(body, "mise-linux-x64.tar.gz"),
-                None
-            );
-        }
-
-        #[test]
-        fn extract_digest_accepts_bare_hex_when_asset_unpinned() {
+        fn digest_parser_accepts_bare_hex_when_asset_unpinned() {
             let body = "cafef00d00000000000000000000000000000000000000000000000000000001";
             assert_eq!(
-                extract_digest_from_checksum_body(body, "").as_deref(),
+                toride_installer::extract_digest_from_checksum_body(body, "").as_deref(),
                 Some("cafef00d00000000000000000000000000000000000000000000000000000001")
             );
         }
 
         #[test]
+        fn bootstrap_client_builds() {
+            build_bootstrap_client().expect("policy client must build");
+        }
+
+        #[test]
         fn verify_sha256_passes_on_match_case_insensitive() {
             let bytes = b"hello world";
-            let digest = hex_sha256(bytes); // lowercase
+            let digest = hex_sha256(bytes);
             assert!(verify_sha256(bytes, &digest).is_ok());
-            // Uppercase variant must also be accepted.
             assert!(verify_sha256(bytes, &digest.to_uppercase()).is_ok());
         }
 
@@ -568,15 +526,11 @@ async fn install_from_github(_opts: &BootstrapOptions) -> MiseResult<Utf8PathBuf
     })
 }
 
-// ---------------------------------------------------------------------------
-// MiseBinary::ensure_installed (impl block)
-// ---------------------------------------------------------------------------
-
 impl MiseBinary {
     /// Ensure that the `mise` binary is available on the host.
     ///
     /// This first attempts normal discovery via
-    /// [`MiseBinary::discover_async`] — the same offline cascade as
+    /// [`MiseBinary::discover_async`]: the same offline cascade as
     /// [`MiseBinary::discover`], run on tokio's blocking pool because the
     /// detector's `mise --version` / `-V` probes are sync subprocess work
     /// and must not occupy an async runtime worker. If the binary is found,
@@ -586,11 +540,11 @@ impl MiseBinary {
     ///
     /// Discovery is offline and never installs: it consults `MISE_BIN`, then
     /// `toride_installer`'s `Detector` over the real `$PATH` and the managed
-    /// install location (`~/.local/bin` — where the installer's checksum-
+    /// install location (`~/.local/bin`: where the installer's checksum-
     /// verified install path writes), then the system-wide and app-bundled
     /// fallbacks. A true miss is reported as the hint below rather than
     /// triggering a download, so the meaning of the user-facing outcome is
-    /// unchanged — only the probe behind it is shared with the installer.
+    /// unchanged: only the probe behind it is shared with the installer.
     ///
     /// For automated bootstrapping, match on [`MiseError::BootstrapHint`]
     /// and call [`install_mise`] with the desired [`BootstrapMethod`].
@@ -614,10 +568,6 @@ impl MiseBinary {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -673,7 +623,7 @@ mod tests {
 
     #[test]
     fn platform_asset_keyword_returns_some_on_supported() {
-        // This test simply verifies the function returns Some on the current
+        // Verifies the function returns Some on the current
         // platform if it is one of the supported ones.
         let kw = platform_asset_keyword();
         // On CI or dev machines this is usually macos-arm64 or linux-x64.

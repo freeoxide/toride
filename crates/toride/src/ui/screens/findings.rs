@@ -54,13 +54,13 @@ pub struct FindingWidths {
 }
 
 impl FindingWidths {
-    /// Title capped at 60, detail at 70 — the most common prior layout.
+    /// Title capped at 60, detail at 70: the most common prior layout.
     pub const TITLE_60: Self = Self {
         title: 60,
         detail: 70,
     };
 
-    /// Title capped at 70, detail at 70 — used by `message`-based findings.
+    /// Title capped at 70, detail at 70: used by `message`-based findings.
     pub const TITLE_70: Self = Self {
         title: 70,
         detail: 70,

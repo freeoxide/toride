@@ -57,7 +57,7 @@ impl Doctor {
     /// degrades per-file (logs via `tracing::warn!` and continues), so an
     /// unreadable `/etc/passwd` / `/etc/shadow` / `/etc/sudoers` /
     /// `/etc/sudoers.d` / `/etc/group` / `/etc/login.defs` / `pam.d/sshd`
-    /// costs at most the findings that depend on it — never the rest of the
+    /// costs at most the findings that depend on it: never the rest of the
     /// suite. The `Result` is retained for API stability and for any future
     /// non-IO failure class.
     pub fn run(&self, scope: &DoctorScope) -> Result<UserReport> {
@@ -143,7 +143,7 @@ impl Doctor {
                     .detail(format!(
                         "PermitRootLogin is set to 'yes' inside a conditional \
                          `Match {}` block in {}. This only applies when the Match \
-                         criteria are met — verify it is intentional.",
+                         criteria are met: verify it is intentional.",
                         cond.match_clause,
                         cond.source.as_deref().unwrap_or_else(|| self
                             .paths
@@ -225,7 +225,7 @@ impl Doctor {
     fn check_sudo(&self, report: &mut UserReport) {
         // Check main sudoers file for NOPASSWD entries. Per-check degrade: an
         // unreadable /etc/sudoers must NOT abort the whole suite. Log and
-        // continue to the drop-in scan — one unreadable file costs at most the
+        // continue to the drop-in scan: one unreadable file costs at most the
         // findings that depend on it.
         if self.paths.sudoers.exists() {
             let entries = match crate::parse::read_sudoers(&self.paths.sudoers) {
@@ -258,7 +258,7 @@ impl Doctor {
 
         // Check sudoers.d drop-in files. Per-check degrade: an unreadable
         // /etc/sudoers.d directory must NOT abort the whole suite. Log and
-        // continue — the main-sudoers findings (if any) are already pushed.
+        // continue: the main-sudoers findings (if any) are already pushed.
         if self.paths.sudoers_d.is_dir() {
             let entries = match std::fs::read_dir(&self.paths.sudoers_d) {
                 Ok(rd) => rd,
@@ -343,10 +343,10 @@ impl Doctor {
         }
 
         // Check for sudo users without TOTP. Per-check degrade: an unreadable
-        // /etc/group must NOT abort the whole suite. Log and continue — there is
+        // /etc/group must NOT abort the whole suite. Log and continue: there is
         // nothing to iterate, so we skip the per-member TOTP loop. NOTE: the old
         // code also did `let _passwd_entries = read_passwd(...)?` here, reading
-        // /etc/passwd purely to propagate an IO error — the result was
+        // /etc/passwd purely to propagate an IO error: the result was
         // discarded (`_passwd_entries`), so its only effect was an extra abort
         // point. It has been removed: the actual data source for this check is
         // /etc/group (read_group), not /etc/passwd, and is_totp_configured
@@ -432,7 +432,7 @@ impl Doctor {
         }
 
         // Check login.defs for password policy. Per-check degrade: an unreadable
-        // /etc/login.defs must NOT abort the whole suite. Log and continue —
+        // /etc/login.defs must NOT abort the whole suite. Log and continue:
         // neither PASS_MAX_DAYS nor PASS_MIN_DAYS finding can be derived, but
         // the empty-password findings above are already pushed.
         if self.paths.login_defs.exists() {
@@ -559,14 +559,14 @@ impl ResolvedRootLogin {
 ///
 /// `main_path` is the top-level config file (e.g. `/etc/ssh/sshd_config`). The
 /// directory of the file being parsed is used to resolve relative Include
-/// paths, which per `sshd_config(5)` default to `/etc/ssh` — and on a stock
+/// paths, which per `sshd_config(5)` default to `/etc/ssh`, and on a stock
 /// system the main file lives in `/etc/ssh`, so the file's parent dir is the
 /// correct base for relative resolution under both the real host and a temp
 /// `UserPaths::with_base` tree.
 fn resolve_sshd_root_login(main_path: &std::path::Path) -> ResolvedRootLogin {
     let mut out = ResolvedRootLogin::default();
     // Per-check degrade: a missing/unreadable main config yields the (empty)
-    // default — no findings — rather than aborting. The doctor's caller treats
+    // default: no findings, rather than aborting. The doctor's caller treats
     // a missing sshd_config as "feature absent".
     if !main_path.is_file() {
         return out;
@@ -582,7 +582,7 @@ fn resolve_sshd_root_login(main_path: &std::path::Path) -> ResolvedRootLogin {
 /// at global scope. Per `sshd_config(5)`, an `Include` inside a Match block is
 /// *conditional*, so the scope propagates into the included file's directives.
 /// `seen` guards against Include cycles (a file that includes itself directly
-/// or transitively) — sshd itself rejects such loops, but a malformed config
+/// or transitively): sshd itself rejects such loops, but a malformed config
 /// must not send us into infinite recursion.
 fn resolve_in_file(
     path: &std::path::Path,
@@ -634,7 +634,7 @@ fn resolve_in_file(
             // Rest of the line is the criteria clause. A new `Match` line
             // supersedes any prior block's scope for subsequent directives.
             // `Match all` is itself a (always-satisfied) Match block, not a
-            // reset to global scope — the clause text is recorded verbatim so
+            // reset to global scope: the clause text is recorded verbatim so
             // the finding detail stays faithful.
             let clause: String = tokens.collect::<Vec<_>>().join(" ");
             local_scope = Some(clause);
@@ -666,7 +666,7 @@ fn resolve_in_file(
         if key.eq_ignore_ascii_case("PermitRootLogin") {
             // Argument matching is case-sensitive; `yes` grants unrestricted
             // (password) root login. A directive with no argument is a config
-            // error sshd would reject — treat as inert here.
+            // error sshd would reject: treat as inert here.
             if let Some(arg) = tokens.next() {
                 let arg = strip_quotes(arg);
                 out.record(arg, local_scope.as_deref(), source);
@@ -689,7 +689,7 @@ fn strip_quotes(s: &str) -> &str {
 /// Non-absolute patterns resolve relative to `base` (the config file's dir,
 /// which on a stock system is `/etc/ssh`). Non-matching patterns yield no
 /// entries (sshd silently ignores a glob with no hits, but treats a literal
-/// missing file as an error — we follow the lenient "no hits" path so a stale
+/// missing file as an error: we follow the lenient "no hits" path so a stale
 /// drop-in glob never aborts the suite).
 ///
 /// The pattern may carry a literal directory prefix (e.g. `sshd_config.d/`
@@ -711,7 +711,7 @@ fn expand_include(base: &std::path::Path, pattern: &str) -> Vec<std::path::PathB
     let search_dir = resolved.parent().unwrap_or(base);
     let pattern_str = file_name.to_string_lossy();
 
-    // Fast path: no wildcard — return the literal path if it is a file.
+    // Fast path: no wildcard: return the literal path if it is a file.
     if !pattern_str.contains(['*', '?']) {
         return if resolved.is_file() {
             vec![resolved]
@@ -796,7 +796,7 @@ mod tests {
         let base = dir.path().to_path_buf();
         let paths = UserPaths::with_base(&base);
 
-        // passwd: only `root` and `alice`. `ghost` is intentionally absent — it
+        // passwd: only `root` and `alice`. `ghost` is intentionally absent: it
         // simulates a stale sudo-group membership for a deleted account.
         std::fs::write(
             &paths.passwd,
@@ -846,7 +846,7 @@ mod tests {
     /// (`read_to_string` on a dir returns an IO error) while keeping
     /// `/etc/login.defs` readable and populated so the password-policy check has
     /// real findings to emit. The suite must survive and still report the
-    /// login.defs findings — proving `check_password_policy` ran despite
+    /// login.defs findings: proving `check_password_policy` ran despite
     /// `check_accounts`' passwd read failing.
     #[test]
     fn unreadable_passwd_does_not_abort_whole_suite() {
@@ -854,7 +854,7 @@ mod tests {
         let base = dir.path().to_path_buf();
         let paths = UserPaths::with_base(&base);
 
-        // passwd is a DIRECTORY — read_passwd returns Err(Io), which previously
+        // passwd is a DIRECTORY: read_passwd returns Err(Io), which previously
         // aborted run() via check_accounts(...)?.
         std::fs::create_dir(&paths.passwd).expect("create passwd as dir");
 
@@ -883,7 +883,7 @@ mod tests {
     }
 
     /// Companion: an unreadable `/etc/shadow` must not abort the
-    /// password-policy check — the `/etc/login.defs` half must still run.
+    /// password-policy check: the `/etc/login.defs` half must still run.
     /// Before the fix, `check_password_policy`'s `read_to_string(&shadow)?` at
     /// the top of the function short-circuited the login.defs check below it.
     #[test]
@@ -892,7 +892,7 @@ mod tests {
         let base = dir.path().to_path_buf();
         let paths = UserPaths::with_base(&base);
 
-        // shadow exists (so the `.exists()` guard fires) but is a DIRECTORY —
+        // shadow exists (so the `.exists()` guard fires) but is a DIRECTORY:
         // read_to_string returns Err(Io).
         std::fs::create_dir(&paths.shadow).expect("create shadow as dir");
 
@@ -912,7 +912,7 @@ mod tests {
             ids.contains(&"password-policy.no-max-days"),
             "login.defs finding should still be present despite unreadable shadow, got: {ids:?}"
         );
-        // No empty-password finding was emitted — shadow was unreadable.
+        // No empty-password finding was emitted: shadow was unreadable.
         assert!(
             !ids.iter().any(|id| id.starts_with("password.empty.")),
             "no empty-password finding should be emitted when shadow is unreadable, got: {ids:?}"
@@ -1228,7 +1228,7 @@ mod tests {
     /// Include globs expand in lexical order and the FIRST obtained global
     /// value wins (`sshd_config(5)`). With two drop-ins where the lexically-first
     /// one sets `no` and a later one sets `yes`, the effective value must be
-    /// `no` — proving we honour both lexical Include ordering and first-wins.
+    /// `no`: proving we honour both lexical Include ordering and first-wins.
     #[test]
     fn sshd_resolver_include_lexical_order_first_wins() {
         let dir = TempDir::new().expect("tempdir");
@@ -1259,7 +1259,7 @@ mod tests {
         );
     }
 
-    /// A `PermitRootLogin yes` inside a `Match` block is *conditional* — it
+    /// A `PermitRootLogin yes` inside a `Match` block is *conditional*: it
     /// only applies when the Match criteria are satisfied. The resolver must
     /// NOT fold it into the global effective value (the host's global default
     /// may be the safe `prohibit-password`); it must surface it separately so
@@ -1299,10 +1299,10 @@ mod tests {
     }
 
     /// `Match all` (OpenSSH 6.5p1+) is itself a Match block whose criteria are
-    /// always satisfied — it does NOT reset to global scope (the common
+    /// always satisfied: it does NOT reset to global scope (the common
     /// "use `Match all` to close a block" idiom is really "open an
     /// always-matching block"). Per `sshd_config(5)`, directives following any
-    /// `Match` line — including `Match all` — are conditional. A
+    /// `Match` line: including `Match all`: are conditional. A
     /// `PermitRootLogin yes` after `Match all` is therefore surfaced as a
     /// conditional directive (clause `all`), NOT folded into the global value.
     #[test]

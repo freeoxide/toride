@@ -1447,7 +1447,7 @@ pub struct DiskIoSnapshot {
 /// be read (e.g. load average on Windows) will be `None`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemStatus {
-    /// CPU usage as a percentage (0.0–100.0).
+    /// CPU usage as a percentage (0.0-100.0).
     pub cpu_usage: Option<f64>,
     /// Memory metrics.
     pub memory: MemoryStatus,
@@ -1500,7 +1500,7 @@ pub struct MemoryStatus {
     pub used_bytes: u64,
     /// Total memory in bytes.
     pub total_bytes: u64,
-    /// Usage percentage (0.0–100.0).
+    /// Usage percentage (0.0-100.0).
     pub percentage: f64,
     /// Free memory in bytes.
     pub free_bytes: u64,
@@ -1525,7 +1525,7 @@ pub struct DiskStatus {
     pub used_bytes: u64,
     /// Total disk space in bytes.
     pub total_bytes: u64,
-    /// Usage percentage (0.0–100.0).
+    /// Usage percentage (0.0-100.0).
     pub percentage: f64,
     /// Whether the disk is removable.
     pub is_removable: bool,
@@ -1543,7 +1543,7 @@ pub struct DiskStatus {
     pub serial: Option<String>,
     /// Device temperature in Celsius, if available.
     pub temperature: Option<f32>,
-    /// Wear percentage (0.0–100.0) for SSDs, if available.
+    /// Wear percentage (0.0-100.0) for SSDs, if available.
     pub wear_percent: Option<f32>,
 }
 
@@ -1615,7 +1615,7 @@ pub struct OsInfo {
 pub struct CpuCore {
     /// Core identifier (e.g., "cpu0").
     pub name: String,
-    /// Core usage percentage (0.0–100.0).
+    /// Core usage percentage (0.0-100.0).
     pub usage: f64,
     /// Core frequency in MHz.
     pub frequency: u64,
@@ -1653,7 +1653,7 @@ pub struct CpuStatic {
 /// Point-in-time CPU usage sample.
 #[derive(Debug, Clone, Serialize)]
 pub struct CpuSample {
-    /// Aggregate CPU usage percentage (0.0–100.0).
+    /// Aggregate CPU usage percentage (0.0-100.0).
     pub total_usage: Option<f64>,
     /// Per-core usage percentages.
     pub per_core: Vec<f64>,
@@ -1666,7 +1666,7 @@ pub struct SwapStatus {
     pub used_bytes: u64,
     /// Total swap in bytes.
     pub total_bytes: u64,
-    /// Usage percentage (0.0–100.0).
+    /// Usage percentage (0.0-100.0).
     pub percentage: f64,
     /// Free swap in bytes.
     pub free_bytes: u64,
@@ -1776,7 +1776,7 @@ pub struct GpuInfo {
 /// Battery status snapshot.
 #[derive(Debug, Clone, Serialize)]
 pub struct BatteryInfo {
-    /// Battery charge percentage (0.0–100.0).
+    /// Battery charge percentage (0.0-100.0).
     pub charge_percent: f32,
     /// Battery state (Charging, Discharging, Full, Unknown).
     pub state: String,
@@ -3322,7 +3322,7 @@ mod tests {
         if let Some(cpu) = status.cpu_usage {
             assert!(
                 (0.0..=100.0).contains(&cpu),
-                "CPU usage {cpu}% out of range 0–100"
+                "CPU usage {cpu}% out of range 0-100"
             );
         }
     }
@@ -5459,7 +5459,7 @@ mod tests {
         if let Some(cpu) = status.cpu_usage {
             assert!(
                 (0.0..=100.0).contains(&cpu),
-                "CPU usage {cpu}% out of range 0–100"
+                "CPU usage {cpu}% out of range 0-100"
             );
         }
     }

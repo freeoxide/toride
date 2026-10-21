@@ -6,12 +6,12 @@
 //! [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector) and
 //! [`StatusCollector`](crate::status_collector::StatusCollector).
 //!
-//! This mirrors the fail2ban read-only template MINUS the write path — there
+//! This mirrors the fail2ban read-only template MINUS the write path: there
 //! are no mutating operations, no optimistic updates, no cooldown gate, and no
 //! loading spinner. Every call to the backend is a pure read.
 //!
 //! Doctor findings are expensive (they shell out to `systemctl`, `which`,
-//! auditctl, …) and change slowly, so they are cached for 60s — exactly like
+//! auditctl, …) and change slowly, so they are cached for 60s: exactly like
 //! the fail2ban findings cache. AIDE integrity status is cached longer
 //! (300s, `IntegrityManager::DEFAULT_STATUS_TTL`): a fresh `aide --check`
 //! re-hashes the monitored filesystem, which takes minutes on a real host,
@@ -43,7 +43,7 @@ use crate::ui::screens::toride_audit::{
 #[derive(Clone, Debug)]
 pub struct AuditDataBundle {
     /// Whether the audit backend was reachable at all. `false` only when a
-    /// collection task panicked (`JoinError`) — a missing binary surfaces as a
+    /// collection task panicked (`JoinError`): a missing binary surfaces as a
     /// Critical finding and keeps `available == true` so the operator sees the
     /// findings panel. `false` means the UI renders a degraded "unavailable"
     /// panel.
@@ -68,7 +68,7 @@ pub struct AuditDataBundle {
     pub findings: Vec<AuditFindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
     /// `available == false` because a collection task panicked (`JoinError`).
-    /// `None` otherwise — notably also `None` for a freshly-constructed empty
+    /// `None` otherwise: notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
     pub unavailable_reason: Option<String>,
@@ -91,6 +91,8 @@ pub struct AuditCollector {
     cached_findings: Option<Vec<AuditFindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
+    cached_bundle: Option<AuditDataBundle>,
+    bundle_fresh_at: Option<std::time::Instant>,
     /// Cached AIDE integrity status from the last collection.
     cached_integrity: Option<IntegrityStateEntry>,
     /// When the integrity cache was last refreshed.
@@ -125,6 +127,8 @@ impl AuditCollector {
             rx: None,
             cached_findings: None,
             findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
             cached_integrity: None,
             integrity_fresh_at: None,
         }
@@ -162,6 +166,16 @@ impl AuditCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
+        if let (Some(bundle), Some(at)) = (&self.cached_bundle, self.bundle_fresh_at)
+            && at.elapsed() < FINDINGS_TTL
+        {
+            self.rx = Some(rx);
+            let bundle = bundle.clone();
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, PollRan::default()));
+            });
+            return;
+        }
         let use_findings_cache = self.findings_cache_is_fresh();
         let use_integrity_cache = self.integrity_cache_is_fresh();
         let cached_findings = self.cached_findings.clone();
@@ -194,6 +208,8 @@ impl AuditCollector {
                     if ran.doctor {
                         self.cached_findings = Some(bundle.findings.clone());
                         self.findings_fresh_at = Some(std::time::Instant::now());
+                        self.cached_bundle = Some(bundle.clone());
+                        self.bundle_fresh_at = Some(std::time::Instant::now());
                     }
                     if ran.integrity {
                         self.cached_integrity = Some(bundle.integrity.clone());
@@ -208,18 +224,20 @@ impl AuditCollector {
     }
 
     /// Invalidate the findings cache so the next collection re-runs the doctor.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 
     /// Invalidate the integrity cache so the next collection re-runs
     /// `aide --version` + `aide --check`.
-    #[allow(dead_code)]
     pub fn invalidate_integrity_cache(&mut self) {
         self.cached_integrity = None;
         self.integrity_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -235,8 +253,8 @@ impl Default for AuditCollector {
 ///
 /// All work runs on the blocking thread pool (the `DuctRunner` shells out
 /// synchronously). Doctor findings and integrity status may be reused from
-/// the collector caches. On ANY error — construction failure, doctor error,
-/// every probe failing — returns [`empty_bundle`] with `available = false`.
+/// the collector caches. On ANY error: construction failure, doctor error,
+/// every probe failing: returns [`empty_bundle`] with `available = false`.
 ///
 /// Returns `(bundle, ran)` where `ran` records which expensive probes
 /// actually ran; the caller updates only those caches, so a cache-hit poll
@@ -337,7 +355,7 @@ async fn collect_real_audit(
         // The section is "available" if ANY probe produced data: a non-empty
         // status, the AIDE DB initialized, any rule file, any log source, a
         // confirmed backend, or any doctor finding. A host with every audit
-        // binary missing yields Critical findings but no status — that still
+        // binary missing yields Critical findings but no status: that still
         // counts as available so the operator SEES the findings rather than a
         // blank panel.
         let available = !auditd_status.is_empty()
@@ -424,7 +442,7 @@ fn empty_bundle() -> AuditDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`): the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> AuditDataBundle {
     let mut b = empty_bundle();
@@ -638,7 +656,7 @@ mod tests {
         //
         // `available` is computed once per poll inside `collect_real_audit`
         // as an OR over the fresh probes (auditd_status, auditd_running,
-        // integrity, rules, log_sources, rsyslog, journald, findings) — it
+        // integrity, rules, log_sources, rsyslog, journald, findings): it
         // is NOT recomputed from the other bundle fields on mutation. So the
         // correct model of "two successive polls" is two independent bundles
         // whose `available` flags were each set by the heuristic at poll
@@ -671,7 +689,7 @@ mod tests {
         assert!(poll_b.findings.is_empty());
 
         // Poll C: auditd goes silent again. The heuristic recomputes against
-        // current probes and yields false — the prior true does NOT latch.
+        // current probes and yields false: the prior true does NOT latch.
         let poll_c = empty_bundle();
         assert!(
             !poll_c.available,
@@ -680,7 +698,7 @@ mod tests {
 
         // Independence: poll B's flag is untouched by poll C. This is the
         // property that makes the per-poll overwrite in
-        // `set_toride_audit_data` correct — each bundle is a self-contained
+        // `set_toride_audit_data` correct: each bundle is a self-contained
         // snapshot.
         assert!(poll_b.available, "poll B snapshot is independent of poll C");
         assert!(!poll_a.available);

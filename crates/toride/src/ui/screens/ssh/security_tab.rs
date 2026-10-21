@@ -303,6 +303,16 @@ impl SecurityTab {
     }
 }
 
+impl SecurityTab {
+    /// Close the detail modal and any pending confirm, returning the tab to
+    /// its list view.
+    pub fn close_modal(&mut self) {
+        self.detail_modal.close();
+        self.detail_user = None;
+        self.pending_confirm = None;
+    }
+}
+
 impl SshTab for SecurityTab {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         let visible = self.content_height;
@@ -381,7 +391,7 @@ impl SshTab for SecurityTab {
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         // Confirm modal open: it sits on top of the detail modal, so it takes
-        // input priority — a click on the confirm buttons must reach the
+        // input priority: a click on the confirm buttons must reach the
         // ConfirmModal, not be swallowed by the detail modal underneath.
         if self.pending_confirm.is_some() {
             if let Some(result) = self.confirm.handle_mouse(&mouse) {
@@ -535,12 +545,6 @@ impl SshTab for SecurityTab {
 
     fn has_modal(&self) -> bool {
         self.detail_modal.is_visible() || self.pending_confirm.is_some()
-    }
-
-    fn close_modal(&mut self) {
-        self.detail_modal.close();
-        self.detail_user = None;
-        self.pending_confirm = None;
     }
 
     fn drain_ops(&mut self) -> Vec<SshOp> {
@@ -918,7 +922,7 @@ impl SecurityTab {
             }
         }
 
-        // 12. Footer — context-aware key hints.
+        // 12. Footer: context-aware key hints.
         lines.push(Line::raw(""));
         let footer_spans = if data.system_users.is_empty() {
             vec![
@@ -1019,7 +1023,7 @@ impl SecurityTab {
                 let note = if user.authorized_key_count == 0 {
                     "  (none)"
                 } else {
-                    "  (unreadable — run as root to view other users' keys)"
+                    "  (unreadable: run as root to view other users' keys)"
                 };
                 lines.push(Line::from(Span::styled(note, Style::new().fg(p.text_dim))));
             } else {
@@ -1768,7 +1772,7 @@ mod tests {
         // bob must START in the allow list so the L5 both-lists mirror
         // (`allowed_users.retain(|u| u != &username)`) has real work to do.
         // With allowed_users empty the retain is a no-op and deleting the
-        // mirror line would still pass — exactly the false confidence F15 flags.
+        // mirror line would still pass: exactly the false confidence F15 flags.
         let mut data = sample_data();
         data.access_info.allowed_users = vec!["bob".into()];
         let mut tab = SecurityTab::new();
@@ -1827,7 +1831,7 @@ mod tests {
         assert!(tab.pending_confirm.is_some(), "'r' should request confirm");
         assert!(tab.drain_ops().is_empty());
 
-        // Cancel with 'n' — nothing applied.
+        // Cancel with 'n': nothing applied.
         tab.handle_key(KeyCode::Char('n'));
         assert!(tab.pending_confirm.is_none());
         assert!(tab.drain_ops().is_empty());
@@ -1990,7 +1994,7 @@ mod tests {
 
         // Reorder: move bob from index 1 to index 0, push a new user after.
         // (Same length as before, so the old length-based guard in set_data
-        // would NOT have caught this — the bug is precisely that a same-length
+        // would NOT have caught this: the bug is precisely that a same-length
         // reorder flipped the index.)
         let mut data = sample_data();
         // Original order: alice(0), bob(1), root(2). Clone the keepers out so

@@ -331,7 +331,7 @@ struct RawTag {
     value: String,
 }
 
-/// A single `IpPermission` entry — one protocol/port combo expanded across
+/// A single `IpPermission` entry: one protocol/port combo expanded across
 /// every CIDR it covers.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -896,7 +896,7 @@ mod tests {
 
     #[test]
     fn create_falls_back_to_minimal_group_when_fetch_fails() {
-        // create returns GroupId, but the follow-up describe errors — we still
+        // create returns GroupId, but the follow-up describe errors: we still
         // hand back a group with the minted ID.
         let runner = Arc::new(
             FakeRunner::new()

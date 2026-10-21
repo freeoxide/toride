@@ -1,4 +1,4 @@
-//! Doctor module — structured diagnostic checks for kernel hardening.
+//! Doctor module: structured diagnostic checks for kernel hardening.
 //!
 //! Returns findings as [`toride_diagnostic_types::Finding`] values, each
 //! with a unique ID, severity, message, and optional fix hint.

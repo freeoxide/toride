@@ -9,11 +9,11 @@ use crate::spec::{AclRule, DnsConfig};
 /// Severity of a validation finding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ValidationSeverity {
-    /// Informational — no action needed.
+    /// Informational: no action needed.
     Info,
-    /// Warning — may indicate a misconfiguration.
+    /// Warning: may indicate a misconfiguration.
     Warning,
-    /// Error — invalid configuration.
+    /// Error: invalid configuration.
     Error,
 }
 

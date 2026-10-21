@@ -1,7 +1,7 @@
 //! Convert `toride-wireguard` library types to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that imports
-//! `toride_wireguard` types — mirroring `fail2ban_convert.rs`'s role as the
+//! `toride_wireguard` types: mirroring `fail2ban_convert.rs`'s role as the
 //! single boundary between backend and presentation. Each function handles
 //! errors gracefully: malformed input is skipped with a `tracing::warn!` and a
 //! placeholder, never propagated (the read-only section must never crash the
@@ -86,7 +86,7 @@ pub fn convert_findings(findings: Vec<toride_wireguard::report::Finding>) -> Vec
 /// Convert a parsed `wg show` interface entry into a UI [`InterfaceEntry`].
 ///
 /// The `WgShowEntry` carries only the interface name, public key, and listen
-/// port — it does NOT carry peer counts or transfer stats. Those fields are
+/// port: it does NOT carry peer counts or transfer stats. Those fields are
 /// therefore emitted as `None` sentinels so the UI renders "?" rather than a
 /// misleading "peers 0/0  rx 0 B  tx 0 B" that would contradict the live Peers
 /// table below the Interfaces table. When the backend is wired to real
@@ -106,7 +106,7 @@ pub fn convert_show_entry(e: &toride_wireguard::parse::WgShowEntry) -> Interface
         },
         // `wg show` listing implies the interface is up (it is running in the
         // kernel). Peer counts / transfer stats are NOT available from this
-        // entry — emit None so the UI renders "?" instead of a misleading 0.
+        // entry: emit None so the UI renders "?" instead of a misleading 0.
         is_up: !e.interface.is_empty(),
         listen_port: e.listen_port,
         peer_count: None,
@@ -356,7 +356,7 @@ mod tests {
     /// variant being added to the backend enum silently: if one is added, the
     /// compiler will flag the non-exhaustive match in `severity_str` (good),
     /// and this test pins that the converter's output vocabulary is exactly
-    /// {info, warning, error} — no `"ok"` leaks into the UI from this path.
+    /// {info, warning, error}: no `"ok"` leaks into the UI from this path.
     #[test]
     fn severity_str_never_emits_ok() {
         // Exhaust over every Severity variant; none may map to "ok".
@@ -364,7 +364,7 @@ mod tests {
             let out = severity_str(s);
             assert_ne!(
                 out, "ok",
-                "severity_str emitted \"ok\" for {s:?} — the backend Severity enum is not expected to have an Ok variant"
+                "severity_str emitted \"ok\" for {s:?}: the backend Severity enum is not expected to have an Ok variant"
             );
         }
     }

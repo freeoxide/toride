@@ -9,10 +9,16 @@ readme = "README.md"
 keywords = ["systemd", "service", "systemctl", "daemon", "unit"]
 categories = ["os"]
 
+## The lib carries no `#[bench]` functions; criterion owns the `[[bench]]`
+## target. Disabling the lib bench target keeps `cargo bench -- <criterion
+## args>` from forwarding those args to the libtest harness, which does not
+## understand them.
+[lib]
+bench = false
+
 [features]
 default = ["client"]
 client = ["dep:duct"]
-serde = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -20,8 +26,8 @@ tracing = { workspace = true }
 toride-runner = { path = "../toride-runner", version = "0.2.0" }
 toride-fs = { path = "../toride-fs", version = "0.2.0" }
 duct = { version = "1", features = ["timeout"], optional = true }
-serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 insta = "1"

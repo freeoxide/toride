@@ -9,12 +9,12 @@
 //! [`IntegrityManager::status`] performs *real* detection rather than
 //! returning hardcoded `None` placeholders:
 //!
-//! 1. **Binary** — `aide` is located via the `which` crate / `PATH` scan.
-//! 2. **Config** — `/etc/aide.conf` and `/etc/aide/aide.conf` are probed.
-//! 3. **Database** — `/var/lib/aide/aide.db.gz` and `/var/lib/aide/aide.db.new.gz`
+//! 1. **Binary**: `aide` is located via the `which` crate / `PATH` scan.
+//! 2. **Config**: `/etc/aide.conf` and `/etc/aide/aide.conf` are probed.
+//! 3. **Database**: `/var/lib/aide/aide.db.gz` and `/var/lib/aide/aide.db.new.gz`
 //!    are probed; the newest existing one's mtime becomes `last_check`.
-//! 4. **Version** — `aide --version` is parsed for a version string.
-//! 5. **Check** — `aide --check` is run best-effort (allowed to fail); its
+//! 4. **Version**: `aide --version` is parsed for a version string.
+//! 5. **Check**: `aide --check` is run best-effort (allowed to fail); its
 //!    output is parsed by [`crate::integrity_parse::parse_aide_check`] to
 //!    derive `file_count` (added + removed + changed) and `last_check_passed`.
 //!
@@ -44,19 +44,19 @@ use toride_runner::CommandSpec;
 /// as a stub.
 ///
 /// The fields are intentionally the minimal set the presentation layer reads
-/// (see `toride/src/toride_audit_convert.rs`). Richer signals — binary
-/// presence, config presence, version, last-check timestamp — are folded into
+/// (see `toride/src/toride_audit_convert.rs`). Richer signals: binary
+/// presence, config presence, version, last-check timestamp: are folded into
 /// the existing fields:
 ///
-/// - [`IntegrityStatus::database_initialized`] — does the AIDE database file
+/// - [`IntegrityStatus::database_initialized`]: does the AIDE database file
 ///   exist?
-/// - [`IntegrityStatus::file_count`] — entries AIDE reported as changed/added/
+/// - [`IntegrityStatus::file_count`]: entries AIDE reported as changed/added/
 ///   removed on the last `aide --check`; `Some(0)` means "ran clean".
-/// - [`IntegrityStatus::last_check_passed`] — `Some(true)`/`Some(false)` from a
+/// - [`IntegrityStatus::last_check_passed`]: `Some(true)`/`Some(false)` from a
 ///   real check, or `Some(false)` when AIDE itself is not installed (so the
 ///   status honestly reads "monitoring not active" rather than "unknown").
-/// - [`IntegrityStatus::last_check_output`] — a one-line, human-readable status
-///   summarizing the probe (e.g. `"AIDE 0.18.8 — db initialized, 0 changes"`
+/// - [`IntegrityStatus::last_check_output`]: a one-line, human-readable status
+///   summarizing the probe (e.g. `"AIDE 0.18.8: db initialized, 0 changes"`
 ///   or `"AIDE not installed"`).
 #[derive(Debug, Clone)]
 pub struct IntegrityStatus {
@@ -71,7 +71,7 @@ pub struct IntegrityStatus {
     /// from a real `aide --check`; `Some(false)` when AIDE is not installed
     /// (monitoring not active). Never `None` after [`IntegrityManager::status`].
     pub last_check_passed: Option<bool>,
-    /// A one-line human-readable status summarizing the probe — version,
+    /// A one-line human-readable status summarizing the probe: version,
     /// install state, database state, and change count.
     pub last_check_output: Option<String>,
 }
@@ -81,7 +81,7 @@ impl IntegrityStatus {
     ///
     /// This is the honest representation of "no integrity monitoring is
     /// configured on this host": `database_initialized=false`,
-    /// `file_count=None` (no check ever ran, so no count exists — `Some(0)`
+    /// `file_count=None` (no check ever ran, so no count exists: `Some(0)`
     /// would falsely read as "ran clean"), `last_check_passed=Some(false)`
     /// (monitoring is not active), and a clear status string so the
     /// presentation layer renders "AIDE not installed" rather than an
@@ -250,7 +250,7 @@ impl<'a> IntegrityManager<'a> {
     /// Performs real detection of the `aide` binary, config, database, and a
     /// best-effort `aide --check`, folding every probe into the returned
     /// [`IntegrityStatus`]. When AIDE is not installed, returns
-    /// [`IntegrityStatus::not_installed`] — an honest "monitoring not active"
+    /// [`IntegrityStatus::not_installed`]: an honest "monitoring not active"
     /// status rather than a stub.
     ///
     /// The result is memoized for [`IntegrityManager::DEFAULT_STATUS_TTL`]
@@ -470,7 +470,7 @@ fn build_status_line(
         parts.push(format!("last {ts}"));
     }
 
-    parts.join(" — ")
+    parts.join(": ")
 }
 
 /// Render a `SystemTime` as a compact RFC-3339-ish string, or `None` if the

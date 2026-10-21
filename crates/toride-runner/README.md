@@ -25,7 +25,7 @@ for a fake in tests.
 
 ```toml
 [dependencies]
-toride-runner = "0.1"
+toride-runner = "0.2"
 ```
 
 [Changelog](CHANGELOG.md) · [Source](https://github.com/freeoxide/toride/tree/master/crates/toride-runner)

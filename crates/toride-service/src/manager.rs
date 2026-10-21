@@ -3,7 +3,7 @@
 //! [`ServiceManager`] provides a typed interface for controlling systemd
 //! service units. Every operation goes through the centralised
 //! [`toride_runner::Runner`] trait so that the entire call stack remains
-//! testable and respects dry-run mode automatically.
+//! testable with a fake runner.
 //!
 //! # Quick start
 //!
@@ -23,6 +23,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::ledger::{ActionKind, ActionLedger, ActionRecord, LedgerResult};
 use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -61,13 +62,52 @@ impl std::str::FromStr for ServiceStatus {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.trim() {
-            "active" | "running" => Ok(Self::Active),
+            "active" | "running" | "reloading" => Ok(Self::Active),
             "inactive" | "stopped" => Ok(Self::Inactive),
             "failed" => Ok(Self::Failed),
             "activating" => Ok(Self::Activating),
             _ => Ok(Self::Unknown),
         }
     }
+}
+
+/// Outcome of `systemctl is-enabled` mapped from its documented exit codes.
+enum Enablement {
+    Enabled,
+    Disabled,
+    Unknown,
+}
+
+/// Map a `systemctl is-active` result to a status per systemctl(1).
+///
+/// Exit 0 means active (stdout parsed); exit 3 with `inactive` stdout means a
+/// cleanly stopped unit; exit 4 means no such unit; everything else, including
+/// the `failed` state, is Failed.
+fn classify_is_active(output: &toride_runner::CommandOutput) -> ServiceStatus {
+    match output.exit_code {
+        Some(0) => output
+            .stdout
+            .trim()
+            .parse()
+            .unwrap_or(ServiceStatus::Unknown),
+        Some(3) if output.stdout.trim() == "inactive" => ServiceStatus::Inactive,
+        Some(4) => ServiceStatus::Unknown,
+        _ => ServiceStatus::Failed,
+    }
+}
+
+/// Whether a unit file's `[Service]` section declares `Type=oneshot`.
+fn is_oneshot_unit(contents: &str) -> bool {
+    let mut in_service = false;
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_service = line.eq_ignore_ascii_case("[service]");
+        } else if in_service && let Some(value) = line.strip_prefix("Type=") {
+            return value.trim() == "oneshot";
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +118,8 @@ impl std::str::FromStr for ServiceStatus {
 ///
 /// Owns a `Box<dyn Runner>`, so the manager has full ownership of the runner
 /// lifecycle. All `systemctl` invocations are routed through the runner for
-/// testability, logging, and dry-run support.
+/// testability and logging. Operations always run the real command; there is
+/// no dry-run mode.
 ///
 /// # Construction
 ///
@@ -102,11 +143,14 @@ pub struct ServiceManager {
     /// The command runner used to execute `systemctl`.
     runner: Box<dyn toride_runner::Runner>,
     units_root: PathBuf,
+    action_ledger: ActionLedger,
 }
 
 const DEFAULT_UNITS_ROOT: &str = "/etc/systemd/system";
 
 const UNIT_FILE_MODE: u32 = 0o644;
+
+const MAX_RETAINED_UNIT_BACKUPS: usize = 5;
 
 const UNITS_LOCK_FILE: &str = ".toride-units.lock";
 
@@ -123,21 +167,37 @@ impl ServiceManager {
     /// The runner is used for all `systemctl` invocations, making the manager
     /// fully testable via a fake or mock runner.
     pub fn new(runner: Box<dyn toride_runner::Runner>) -> Self {
-        Self {
-            runner,
-            units_root: PathBuf::from(DEFAULT_UNITS_ROOT),
-        }
+        Self::with_units_root(runner, PathBuf::from(DEFAULT_UNITS_ROOT))
     }
 
     /// Create a new `ServiceManager` that installs unit files under
-    /// `units_root` instead of `/etc/systemd/system`.
+    /// `units_root` instead of `/etc/systemd/system`, recording completed
+    /// deploys in the ledger at `units_root`/[`LEDGER_FILE`](crate::ledger::LEDGER_FILE).
     pub fn with_units_root(
         runner: Box<dyn toride_runner::Runner>,
         units_root: impl Into<PathBuf>,
     ) -> Self {
+        let units_root = units_root.into();
+        let action_ledger = ActionLedger::in_root(&units_root);
+        Self {
+            runner,
+            units_root,
+            action_ledger,
+        }
+    }
+
+    /// Create a new `ServiceManager` with an explicit
+    /// [`ActionLedger`] instead of the default one derived from
+    /// `units_root`.
+    pub fn with_action_ledger(
+        runner: Box<dyn toride_runner::Runner>,
+        units_root: impl Into<PathBuf>,
+        action_ledger: ActionLedger,
+    ) -> Self {
         Self {
             runner,
             units_root: units_root.into(),
+            action_ledger,
         }
     }
 
@@ -157,38 +217,35 @@ impl ServiceManager {
     /// Check whether the service unit is enabled at boot.
     ///
     /// Returns `Ok(true)` when `systemctl is-enabled <service>` exits with
-    /// code 0, and `Ok(false)` for any non-zero exit.
+    /// code 0 and `Ok(false)` when it exits with code 1, the documented code
+    /// for a unit that is not enabled. Any other exit (bus failure, missing
+    /// unit, signal) returns [`Error::CommandFailed`] so callers can tell
+    /// "not enabled" apart from "could not determine".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CommandFailed`] when `systemctl is-enabled` cannot be
+    /// executed or exits with a code other than 0 or 1.
     pub fn is_enabled(&self, service: &str) -> Result<bool> {
-        let output = self.run_systemctl("is-enabled", service)?;
-        Ok(output.success)
+        let (state, output) = self.enablement_state(service)?;
+        match state {
+            Enablement::Enabled => Ok(true),
+            Enablement::Disabled => Ok(false),
+            Enablement::Unknown => Err(command_failed("is-enabled", service, &output)),
+        }
     }
 
     /// Query the current status of a service unit.
     ///
-    /// Returns a [`ServiceStatus`] derived from the exit code and output of
-    /// `systemctl is-active <service>`.
-    ///
-    /// The exit code takes precedence over stdout: `systemctl is-active`
-    /// prints `inactive` and exits non-zero for a unit that is missing or has
-    /// errored. Rather than trusting the benign-looking stdout, a non-zero
-    /// exit is reported as [`ServiceStatus::Failed`] so callers can tell a
-    /// genuinely stopped unit (exit 0) apart from one that errored or does not
-    /// exist (non-zero exit).
+    /// Returns a [`ServiceStatus`] derived from the exit code and stdout of
+    /// `systemctl is-active <service>` per systemctl(1): exit 0 means the unit
+    /// is active and stdout is parsed; exit 3 with `inactive` stdout is a
+    /// cleanly stopped unit; exit 4 means no such unit exists; every other
+    /// outcome, including the `failed` state (which also exits 3), maps to
+    /// [`ServiceStatus::Failed`].
     pub fn status(&self, service: &str) -> Result<ServiceStatus> {
         let output = self.run_systemctl("is-active", service)?;
-        if !output.success {
-            // A non-zero exit means the unit is not cleanly active: it may be
-            // stopped-but-missing, in a failed state, or the verb itself
-            // errored. Report `Failed` so the benign "inactive" stdout of a
-            // missing/errored unit is not mistaken for a clean stop.
-            return Ok(ServiceStatus::Failed);
-        }
-        let status: ServiceStatus = output
-            .stdout
-            .trim()
-            .parse()
-            .unwrap_or(ServiceStatus::Unknown);
-        Ok(status)
+        Ok(classify_is_active(&output))
     }
 
     /// Check whether the service unit is installed on the system.
@@ -298,6 +355,11 @@ impl ServiceManager {
     /// Install `name`, then daemon-reload, enable, start, and confirm the unit
     /// went active; on post-write failure the previous file and enablement
     /// state is restored and a rollback error returned ([`Error::DeployRolledBack`]).
+    ///
+    /// Once the activity check succeeds, one ledger record
+    /// ([`ActionKind::UnitDeployed`]) is appended; a failed ledger write
+    /// downgrades to a warning instead of failing or rolling back the
+    /// working deploy.
     pub fn deploy_unit(&self, name: &str, contents: &str) -> Result<()> {
         Self::validate_unit_name(name)?;
         self.with_units_lock(|| self.deploy_unit_locked(name, contents))
@@ -306,28 +368,50 @@ impl ServiceManager {
     fn deploy_unit_locked(&self, name: &str, contents: &str) -> Result<()> {
         let backup = self.prepare_unit(name, contents)?;
         let mut prior_enablement: Option<bool> = None;
-        if let Err(cause) = self.activate_unit(name, &mut prior_enablement) {
-            let rollback = self.rollback_deployment(name, backup.as_deref(), prior_enablement);
-            let _ = self.daemon_reload();
-            return Err(match rollback {
-                Ok(()) => {
-                    tracing::error!(unit = name, "deployment failed; unit rolled back");
-                    Error::DeployRolledBack {
-                        unit: name.to_owned(),
-                        cause: Box::new(cause),
-                    }
+        match self.activate_unit(name, contents, &mut prior_enablement) {
+            Ok(()) => {
+                if let Err(ledger_error) = self.record_deployed_unit(name) {
+                    tracing::warn!(
+                        unit = name,
+                        error = %ledger_error,
+                        "deploy succeeded but the action ledger append failed"
+                    );
                 }
-                Err(rollback_error) => {
-                    tracing::error!(unit = name, "deployment failed and rollback failed too");
-                    Error::DeployRollbackFailed {
-                        unit: name.to_owned(),
-                        cause: Box::new(cause),
-                        rollback_error: Box::new(rollback_error),
-                    }
+                Self::delete_backup(backup.as_deref());
+                Ok(())
+            }
+            Err(cause) => {
+                let rollback = self.rollback_deployment(name, backup.as_deref(), prior_enablement);
+                let rollback_restored = rollback.is_ok();
+                if rollback_restored {
+                    Self::delete_backup(backup.as_deref());
                 }
-            });
+                if let Err(reload_error) = self.daemon_reload() {
+                    tracing::warn!(
+                        unit = name,
+                        error = %reload_error,
+                        "post-rollback daemon-reload failed; systemd may hold a stale unit cache"
+                    );
+                }
+                Err(match rollback {
+                    Ok(()) => {
+                        tracing::error!(unit = name, "deployment failed; unit rolled back");
+                        Error::DeployRolledBack {
+                            unit: name.to_owned(),
+                            cause: Box::new(cause),
+                        }
+                    }
+                    Err(rollback_error) => {
+                        tracing::error!(unit = name, "deployment failed and rollback failed too");
+                        Error::DeployRollbackFailed {
+                            unit: name.to_owned(),
+                            cause: Box::new(cause),
+                            rollback_error: Box::new(rollback_error),
+                        }
+                    }
+                })
+            }
         }
-        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -375,10 +459,16 @@ impl ServiceManager {
     fn run_systemctl(&self, verb: &str, service: &str) -> Result<toride_runner::CommandOutput> {
         Self::validate_service_name(service)?;
         tracing::debug!(%verb, service, "invoking systemctl");
-        // The `--` terminator guarantees `service` is treated as a positional
-        // unit argument even if it begins with `-`.
         let spec = toride_runner::CommandSpec::new("systemctl").args([verb, "--", service]);
         Ok(self.runner.run(&spec)?)
+    }
+
+    /// Append the unit-deployed ledger record after the activity check.
+    fn record_deployed_unit(&self, name: &str) -> LedgerResult<()> {
+        self.action_ledger
+            .append(ActionRecord::now(ActionKind::UnitDeployed {
+                unit: name.to_owned(),
+            }))
     }
 
     fn prepare_unit(&self, name: &str, contents: &str) -> Result<Option<PathBuf>> {
@@ -401,6 +491,9 @@ impl ServiceManager {
             ));
         }
         tracing::info!(unit = name, path = %unit_path.display(), "installed unit file");
+        if backup.is_some() {
+            self.prune_unit_backups(name);
+        }
         Ok(backup)
     }
 
@@ -474,6 +567,56 @@ impl ServiceManager {
         Ok(dest)
     }
 
+    /// Remove a spent backup so successful deploys do not litter the units
+    /// root; failures are logged, never propagated.
+    fn delete_backup(backup: Option<&Path>) {
+        if let Some(path) = backup
+            && let Err(e) = fs::remove_file(path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                backup = %path.display(),
+                error = %e,
+                "could not remove the spent unit backup"
+            );
+        }
+    }
+
+    /// Cap retained `<unit>.bak.<nanos>` siblings for `name` at
+    /// [`MAX_RETAINED_UNIT_BACKUPS`], newest first; prune failures are logged.
+    fn prune_unit_backups(&self, name: &str) {
+        let prefix = format!("{name}.bak.");
+        let entries = match fs::read_dir(&self.units_root) {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!(
+                    root = %self.units_root.display(),
+                    error = %e,
+                    "could not list the units root to prune backups"
+                );
+                return;
+            }
+        };
+        let mut backups: Vec<(u128, PathBuf)> = entries
+            .filter_map(std::result::Result::ok)
+            .filter_map(|entry| {
+                let file_name = entry.file_name().into_string().ok()?;
+                let stamp = file_name.strip_prefix(&prefix)?.parse::<u128>().ok()?;
+                Some((stamp, entry.path()))
+            })
+            .collect();
+        backups.sort_by_key(|&(stamp, _)| std::cmp::Reverse(stamp));
+        for (_, path) in backups.into_iter().skip(MAX_RETAINED_UNIT_BACKUPS) {
+            if let Err(e) = fs::remove_file(&path) {
+                tracing::warn!(
+                    backup = %path.display(),
+                    error = %e,
+                    "could not prune the old unit backup"
+                );
+            }
+        }
+    }
+
     fn with_units_lock<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce() -> Result<()>,
@@ -488,18 +631,83 @@ impl ServiceManager {
         outcome
     }
 
-    fn activate_unit(&self, name: &str, prior_enablement: &mut Option<bool>) -> Result<()> {
+    fn activate_unit(
+        &self,
+        name: &str,
+        contents: &str,
+        prior_enablement: &mut Option<bool>,
+    ) -> Result<()> {
         self.daemon_reload()?;
-        prior_enablement.replace(self.is_enabled(name)?);
-        self.enable(name)?;
-        self.start(name)?;
-        if self.is_active(name)? {
-            Ok(())
-        } else {
-            Err(Error::ServiceFailed(format!(
-                "unit {name} did not become active after start"
-            )))
+        let (state, _) = self.enablement_state(name)?;
+        let prior = match state {
+            Enablement::Enabled => Some(true),
+            Enablement::Disabled => Some(false),
+            Enablement::Unknown => {
+                tracing::warn!(
+                    unit = name,
+                    "prior enablement could not be determined; rollback will not disable"
+                );
+                None
+            }
+        };
+        *prior_enablement = prior;
+        if prior != Some(true) {
+            self.enable(name)?;
         }
+        self.start(name)?;
+        self.confirm_unit_running(name, contents)
+    }
+
+    /// Confirm the started unit reached a running or otherwise successful
+    /// state, accepting a cleanly finished `Type=oneshot` unit (inactive with
+    /// `Result=success`) as a successful start.
+    fn confirm_unit_running(&self, name: &str, contents: &str) -> Result<()> {
+        let output = self.run_systemctl("is-active", name)?;
+        match classify_is_active(&output) {
+            ServiceStatus::Active | ServiceStatus::Activating => Ok(()),
+            ServiceStatus::Inactive if is_oneshot_unit(contents) => {
+                if self.unit_start_result_is_success(name)? {
+                    Ok(())
+                } else {
+                    Err(Error::ServiceFailed(format!(
+                        "oneshot unit {name} finished without success"
+                    )))
+                }
+            }
+            _ => Err(Error::ServiceFailed(format!(
+                "unit {name} did not become active after start"
+            ))),
+        }
+    }
+
+    /// Query `systemctl show -p Result,SubState` and report whether the unit's
+    /// last start job completed with `Result=success`.
+    fn unit_start_result_is_success(&self, name: &str) -> Result<bool> {
+        Self::validate_service_name(name)?;
+        tracing::debug!(service = name, "invoking systemctl show");
+        let spec = toride_runner::CommandSpec::new("systemctl").args([
+            "show",
+            "-p",
+            "Result,SubState",
+            "--",
+            name,
+        ]);
+        let output = self.runner.run(&spec)?;
+        Ok(output.success && output.stdout.lines().any(|l| l.trim() == "Result=success"))
+    }
+
+    /// Run `systemctl is-enabled` and classify its exit code.
+    fn enablement_state(
+        &self,
+        service: &str,
+    ) -> Result<(Enablement, toride_runner::CommandOutput)> {
+        let output = self.run_systemctl("is-enabled", service)?;
+        let state = match output.exit_code {
+            Some(0) => Enablement::Enabled,
+            Some(1) => Enablement::Disabled,
+            _ => Enablement::Unknown,
+        };
+        Ok((state, output))
     }
 
     fn rollback_deployment(
@@ -546,6 +754,11 @@ impl ServiceManager {
         if name.starts_with('-') {
             return Err(Error::InvalidUnitName(format!(
                 "must not start with '-': {name:?}"
+            )));
+        }
+        if name.starts_with('.') {
+            return Err(Error::InvalidUnitName(format!(
+                "must not start with '.': systemd ignores dotfile units: {name:?}"
             )));
         }
         if name.contains("..") {
@@ -602,15 +815,57 @@ fn restore_unit_from_backup(backup_path: &Path, unit_path: &Path) -> Result<()> 
     if file_type.is_symlink() {
         return restore_symlink_backup(backup_path, unit_path);
     }
-    let contents = fs::read_to_string(backup_path).map_err(Error::Io)?;
-    toride_fs::atomic_write_with_perms(unit_path, &contents, UNIT_FILE_MODE).map_err(Error::from)
+    let bytes = fs::read(backup_path).map_err(Error::Io)?;
+    let mode = backup_mode(backup_path).unwrap_or(UNIT_FILE_MODE);
+    toride_fs::atomic_write_bytes_with_perms(unit_path, &bytes, mode).map_err(Error::from)
+}
+
+/// Mode bits (masked to 0o777) of a backup file, or `None` off Unix and when
+/// the metadata is unreadable.
+#[cfg(unix)]
+fn backup_mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .ok()
+        .map(|m| m.permissions().mode() & 0o777)
+}
+
+#[cfg(not(unix))]
+fn backup_mode(_path: &Path) -> Option<u32> {
+    None
 }
 
 #[cfg(unix)]
 fn restore_symlink_backup(backup_path: &Path, unit_path: &Path) -> Result<()> {
     let target = fs::read_link(backup_path).map_err(Error::Io)?;
-    fs::remove_file(unit_path).map_err(Error::Io)?;
-    std::os::unix::fs::symlink(&target, unit_path).map_err(Error::Io)
+    let staging = unit_path.with_file_name(format!(
+        "{}.restore.{}",
+        unit_path.file_name().map_or_else(
+            || unit_path.to_string_lossy().into_owned(),
+            |name| name.to_string_lossy().into_owned()
+        ),
+        unix_timestamp_nanos()
+    ));
+    std::os::unix::fs::symlink(&target, &staging).map_err(Error::Io)?;
+    if let Err(rename_error) = fs::rename(&staging, unit_path) {
+        let fallback = fs::remove_file(unit_path).or_else(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        });
+        if let Err(fallback_error) = fallback.and_then(|()| fs::rename(&staging, unit_path)) {
+            let _ = fs::remove_file(&staging);
+            return Err(Error::Io(fallback_error));
+        }
+        tracing::warn!(
+            error = %rename_error,
+            staging = %staging.display(),
+            "symlink restore fell back to remove plus rename"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -645,6 +900,8 @@ fn unix_timestamp_nanos() -> u128 {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    use crate::ledger::LEDGER_FILE;
 
     use tempfile::TempDir;
     use toride_runner::{CommandOutput, CommandSpec, Runner};
@@ -695,7 +952,7 @@ mod tests {
         let actual: Vec<&str> = spec.args.iter().map(String::as_str).collect();
         assert_eq!(
             actual, expected_args,
-            "wrong args — expected the service name after a `--` guard"
+            "wrong args: expected the service name after a `--` guard"
         );
     }
 
@@ -764,10 +1021,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // status() — exit-code precedence (correctness finding at line 139)
-    // -------------------------------------------------------------------------
-
     #[test]
     fn status_active_when_exit_zero_and_active_stdout() {
         let (mgr, _runner) = manager_with_output(CommandOutput::from_stdout("active\n"));
@@ -776,36 +1029,29 @@ mod tests {
     }
 
     #[test]
-    fn status_inactive_when_exit_zero_and_inactive_stdout() {
-        // A cleanly stopped unit exits 0 with "inactive" on stdout.
+    fn status_inactive_when_exit_three_and_inactive_stdout() {
         let (mgr, _runner) = manager_with_output(CommandOutput::new(
             "inactive\n".to_owned(),
             String::new(),
-            Some(0),
+            Some(3),
         ));
         let status = mgr.status("sshd").unwrap();
         assert_eq!(status, ServiceStatus::Inactive);
     }
 
     #[test]
-    fn status_failed_when_nonzero_exit_even_if_stdout_says_inactive() {
-        // The bug: a missing/errored unit prints "inactive" on stdout but
-        // exits non-zero. We must NOT report Inactive — that masks the error.
+    fn status_unknown_when_exit_four_no_such_unit() {
         let (mgr, _runner) = manager_with_output(CommandOutput::new(
             "inactive\n".to_owned(),
             "Unit nosuch.service could not be found.\n".to_owned(),
-            Some(3),
+            Some(4),
         ));
         let status = mgr.status("nosuch").unwrap();
-        assert_eq!(
-            status,
-            ServiceStatus::Failed,
-            "non-zero exit must surface as Failed, not the benign stdout Inactive"
-        );
+        assert_eq!(status, ServiceStatus::Unknown);
     }
 
     #[test]
-    fn status_failed_when_nonzero_exit_with_failed_stdout() {
+    fn status_failed_when_exit_three_with_failed_stdout() {
         let (mgr, _runner) = manager_with_output(CommandOutput::new(
             "failed\n".to_owned(),
             String::new(),
@@ -815,9 +1061,38 @@ mod tests {
         assert_eq!(status, ServiceStatus::Failed);
     }
 
-    // -------------------------------------------------------------------------
-    // run_systemctl — `--` guard + name validation (security finding at 239)
-    // -------------------------------------------------------------------------
+    #[test]
+    fn status_failed_when_exit_one() {
+        let (mgr, _runner) = manager_with_output(CommandOutput::new(
+            String::new(),
+            "Failed to connect to bus\n".to_owned(),
+            Some(1),
+        ));
+        let status = mgr.status("sshd").unwrap();
+        assert_eq!(status, ServiceStatus::Failed);
+    }
+
+    #[test]
+    fn status_failed_when_killed_by_signal() {
+        let (mgr, _runner) =
+            manager_with_output(CommandOutput::new(String::new(), String::new(), None));
+        let status = mgr.status("sshd").unwrap();
+        assert_eq!(status, ServiceStatus::Failed);
+    }
+
+    #[test]
+    fn status_parses_reloading_as_active() {
+        let (mgr, _runner) = manager_with_output(CommandOutput::from_stdout("reloading\n"));
+        let status = mgr.status("sshd").unwrap();
+        assert_eq!(status, ServiceStatus::Active);
+    }
+
+    #[test]
+    fn status_unknown_when_exit_zero_with_unrecognized_stdout() {
+        let (mgr, _runner) = manager_with_output(CommandOutput::from_stdout("\n"));
+        let status = mgr.status("sshd").unwrap();
+        assert_eq!(status, ServiceStatus::Unknown);
+    }
 
     #[test]
     fn run_systemctl_inserts_double_dash_before_service() {
@@ -910,6 +1185,7 @@ mod tests {
         failing_verb: Option<String>,
         enabled: bool,
         active: bool,
+        show_stdout: Option<String>,
     }
 
     impl VerbsRunner {
@@ -933,6 +1209,14 @@ mod tests {
                 failing_verb: Some(verb.to_owned()),
                 enabled,
                 ..Self::default()
+            }
+        }
+
+        /// Model a oneshot unit's `systemctl show -p Result,SubState` output.
+        fn with_show_stdout(self, stdout: &str) -> Self {
+            Self {
+                show_stdout: Some(stdout.to_owned()),
+                ..self
             }
         }
 
@@ -964,13 +1248,32 @@ mod tests {
                     Some(1),
                 ));
             }
-            let query_exit = match verb {
-                Some("is-enabled") => Some(i32::from(!self.enabled)),
-                Some("is-active") => Some(i32::from(!self.active)),
-                _ => None,
-            };
-            if let Some(code) = query_exit {
-                return Ok(CommandOutput::new(String::new(), String::new(), Some(code)));
+            if let Some(stdout) = self.show_stdout.as_deref()
+                && verb == Some("show")
+            {
+                return Ok(CommandOutput::from_stdout(stdout.to_owned()));
+            }
+            match verb {
+                Some("is-enabled") => {
+                    return Ok(CommandOutput::new(
+                        String::new(),
+                        String::new(),
+                        Some(i32::from(!self.enabled)),
+                    ));
+                }
+                Some("is-active") => {
+                    let (state, code) = if self.active {
+                        ("active", 0)
+                    } else {
+                        ("inactive", 3)
+                    };
+                    return Ok(CommandOutput::new(
+                        format!("{state}\n"),
+                        String::new(),
+                        Some(code),
+                    ));
+                }
+                _ => {}
             }
             Ok(CommandOutput::from_stdout(String::new()))
         }
@@ -1235,6 +1538,263 @@ mod tests {
         );
     }
 
+    /// A `Type=oneshot` unit that ran and exited 0 is `inactive` (exit 3)
+    /// after a successful start; the deploy must confirm it via
+    /// `systemctl show -p Result,SubState` instead of rolling it back.
+    #[test]
+    fn deploy_unit_accepts_oneshot_unit_that_ran_and_exited_cleanly() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner::post_start_activity(false)
+            .with_show_stdout("Result=success\nSubState=dead\n");
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+        let contents = "[Unit]\nDescription=one\n[Service]\nType=oneshot\nExecStart=/bin/true\n";
+
+        mgr.deploy_unit("app.service", contents)
+            .expect("a cleanly finished oneshot unit must count as deployed");
+
+        assert_eq!(
+            runner.argv_at(runner.invocation_count() - 1),
+            (
+                "systemctl".to_owned(),
+                vec![
+                    "show".to_owned(),
+                    "-p".to_owned(),
+                    "Result,SubState".to_owned(),
+                    "--".to_owned(),
+                    "app.service".to_owned()
+                ]
+            ),
+            "the oneshot confirmation must query the start job result"
+        );
+    }
+
+    /// The same oneshot unit whose start job did not succeed must still fail
+    /// and roll back.
+    #[test]
+    fn deploy_unit_rejects_oneshot_unit_whose_job_failed() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner::post_start_activity(false).with_show_stdout("Result=failed\n");
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+        let contents = "[Service]\nType=oneshot\nExecStart=/bin/false\n";
+
+        let err = mgr
+            .deploy_unit("app.service", contents)
+            .expect_err("a failed oneshot start job must fail the deploy");
+
+        assert!(matches!(err, Error::DeployRolledBack { .. }), "got {err:?}");
+    }
+
+    /// A redeploy of an already-enabled unit must skip the no-op enable
+    /// spawn: 4 invocations instead of 5.
+    #[test]
+    fn deploy_unit_skips_enable_when_the_unit_is_already_enabled() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner {
+            enabled: true,
+            ..VerbsRunner::succeeding()
+        };
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        mgr.deploy_unit("app.service", "[Unit]\n")
+            .expect("deploy should succeed");
+
+        let verbs: Vec<Option<String>> = (0..runner.invocation_count())
+            .map(|i| runner.verb_at(i))
+            .collect();
+        assert_eq!(
+            verbs,
+            vec![
+                Some("daemon-reload".to_owned()),
+                Some("is-enabled".to_owned()),
+                Some("start".to_owned()),
+                Some("is-active".to_owned())
+            ],
+            "the enable spawn is a no-op round trip when the unit is already enabled"
+        );
+    }
+
+    /// A successful deploy must not leave its backup sibling behind, and a
+    /// failed deploy that restores the backup must remove it afterwards too.
+    #[test]
+    fn deploy_unit_removes_its_backup_once_the_outcome_is_settled() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        fs::write(dir.path().join("app.service"), "original")
+            .expect("seed unit write should succeed");
+
+        let ok_runner = VerbsRunner::succeeding();
+        ServiceManager::with_units_root(Box::new(ok_runner), dir.path())
+            .deploy_unit("app.service", "replacement")
+            .expect("deploy should succeed");
+        assert!(
+            units_root_entries(&dir)
+                .into_iter()
+                .all(|n| n == "app.service" || n == UNITS_LOCK_FILE || n == LEDGER_FILE),
+            "a successful deploy must delete its spent backup"
+        );
+
+        fs::write(dir.path().join("app.service"), "original")
+            .expect("seed unit write should succeed");
+        let fail_runner = VerbsRunner::failing_verb("start");
+        let mgr = ServiceManager::with_units_root(Box::new(fail_runner), dir.path());
+        let err = mgr
+            .deploy_unit("app.service", "replacement 2")
+            .expect_err("deploy must fail when start fails");
+        assert!(matches!(err, Error::DeployRolledBack { .. }), "got {err:?}");
+        assert!(
+            units_root_entries(&dir)
+                .into_iter()
+                .all(|n| n == "app.service" || n == UNITS_LOCK_FILE || n == LEDGER_FILE),
+            "a rollback that restored the backup must then remove it"
+        );
+        assert_eq!(
+            ActionLedger::in_root(dir.path()).records().unwrap().len(),
+            1,
+            "only the earlier successful deploy is recorded; the rolled-back one is not"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("app.service")).expect("unit file readable"),
+            "original"
+        );
+    }
+
+    /// Repeated installs of the same unit must cap retained backups at
+    /// [`MAX_RETAINED_UNIT_BACKUPS`], keeping the newest.
+    #[test]
+    fn install_unit_caps_retained_backups_per_unit() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let mgr = ServiceManager::with_units_root(Box::new(CannedRunner::empty()), dir.path());
+
+        for round in 0..(MAX_RETAINED_UNIT_BACKUPS + 3) {
+            fs::write(dir.path().join("app.service"), format!("round {round}"))
+                .expect("seed unit write should succeed");
+            mgr.install_unit("app.service", "new contents")
+                .expect("install should succeed");
+        }
+
+        let backups: Vec<String> = units_root_entries(&dir)
+            .into_iter()
+            .filter(|n| n.starts_with("app.service.bak."))
+            .collect();
+        assert_eq!(
+            backups.len(),
+            MAX_RETAINED_UNIT_BACKUPS,
+            "retained backups must be capped at {MAX_RETAINED_UNIT_BACKUPS}: {backups:?}"
+        );
+    }
+
+    /// The ledger record is written only after the post-start activity
+    /// check confirms the unit, never for a deploy that failed to start.
+    #[test]
+    fn deploy_unit_records_the_deployment_after_the_activity_check() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner::succeeding();
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        mgr.deploy_unit("app.service", "[Unit]\n")
+            .expect("deploy should succeed");
+
+        let records = ActionLedger::in_root(dir.path()).records().unwrap();
+        assert_eq!(records.len(), 1, "one record per deploy: {records:?}");
+        assert_eq!(
+            records[0].action,
+            ActionKind::UnitDeployed {
+                unit: String::from("app.service")
+            }
+        );
+    }
+
+    #[test]
+    fn deploy_unit_records_nothing_when_the_unit_never_becomes_active() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner::post_start_activity(false);
+        let mgr = ServiceManager::with_units_root(Box::new(runner), dir.path());
+
+        let err = mgr
+            .deploy_unit("app.service", "dies immediately")
+            .expect_err("a unit that never becomes active must fail the deploy");
+
+        assert!(matches!(err, Error::DeployRolledBack { .. }), "got {err:?}");
+        assert!(
+            !dir.path().join(LEDGER_FILE).exists(),
+            "a deploy that failed the activity check must leave no ledger record"
+        );
+    }
+
+    #[test]
+    fn install_unit_records_nothing() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let mgr = ServiceManager::with_units_root(Box::new(CannedRunner::empty()), dir.path());
+
+        mgr.install_unit("app.service", "[Unit]\n")
+            .expect("install should succeed");
+
+        assert!(
+            !dir.path().join(LEDGER_FILE).exists(),
+            "install_unit starts nothing, so it records nothing"
+        );
+    }
+
+    #[test]
+    fn deploy_unit_survives_a_failing_ledger() {
+        let units = TempDir::new().expect("temp dir creation should succeed");
+        let broken_ledger_dir = TempDir::new().expect("temp dir creation should succeed");
+        let ledger = ActionLedger::at(broken_ledger_dir.path());
+        let runner = VerbsRunner::succeeding();
+        let mgr = ServiceManager::with_action_ledger(Box::new(runner), units.path(), ledger);
+
+        let outcome = mgr.deploy_unit("app.service", "[Unit]\n");
+
+        assert!(
+            outcome.is_ok(),
+            "a failed ledger append must not fail the working deploy: {outcome:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_symlink_backup_restores_over_an_absent_unit_path() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let backup = dir.path().join("app.service.bak.1");
+        std::os::unix::fs::symlink("/dev/null", &backup)
+            .expect("backup symlink creation should succeed");
+        let unit_path = dir.path().join("app.service");
+
+        restore_symlink_backup(&backup, &unit_path)
+            .expect("restoring over a missing unit path must not require a remove first");
+
+        assert!(
+            unit_path
+                .symlink_metadata()
+                .expect("unit metadata should be available")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read_link(&unit_path).expect("restored link target readable"),
+            Path::new("/dev/null")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_symlink_backup_leaves_no_staging_sibling() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let backup = dir.path().join("app.service.bak.1");
+        std::os::unix::fs::symlink("/dev/null", &backup)
+            .expect("backup symlink creation should succeed");
+        let unit_path = dir.path().join("app.service");
+        fs::write(&unit_path, "replaced regular unit").expect("seed unit write should succeed");
+
+        restore_symlink_backup(&backup, &unit_path)
+            .expect("restore over an existing unit should succeed");
+
+        assert_eq!(
+            units_root_entries(&dir),
+            vec!["app.service".to_owned(), "app.service.bak.1".to_owned()],
+            "the staging sibling must be renamed away, never left behind"
+        );
+    }
+
     #[test]
     fn deploy_unit_rolls_back_when_unit_never_becomes_active() {
         let dir = TempDir::new().expect("temp dir creation should succeed");
@@ -1369,10 +1929,14 @@ mod tests {
             !verbs.contains(&Some("disable".to_owned())),
             "a unit enabled before the deploy must stay enabled: {verbs:?}"
         );
+        assert!(
+            !verbs.contains(&Some("enable".to_owned())),
+            "a unit already enabled must not be re-enabled: {verbs:?}"
+        );
         assert_eq!(
             runner.invocation_count(),
-            5,
-            "reload, is-enabled, enable, start, best-effort reload — no disable"
+            4,
+            "reload, is-enabled, start, best-effort reload; enable is skipped and no disable runs"
         );
     }
 
@@ -1567,8 +2131,31 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(
-            mode, 0o644,
-            "the restore must go through the atomic write, which normalizes to unit mode"
+            mode, 0o600,
+            "the restore must preserve the backup's original mode, not normalize to 0o644"
+        );
+    }
+
+    /// A backup containing non-UTF-8 bytes must still be restorable: the
+    /// recovery path reads bytes and writes bytes, never a UTF-8 string.
+    #[cfg(unix)]
+    #[test]
+    fn deploy_unit_restores_a_non_utf8_backup() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let unit_path = dir.path().join("app.service");
+        fs::write(&unit_path, b"original \xff\xfe bytes").expect("seed unit write should succeed");
+        let runner = VerbsRunner::failing_verb("start");
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        let err = mgr
+            .deploy_unit("app.service", "replacement")
+            .expect_err("deploy must fail when start fails");
+
+        assert!(matches!(err, Error::DeployRolledBack { .. }), "got {err:?}");
+        assert_eq!(
+            fs::read(&unit_path).expect("unit file readable"),
+            b"original \xff\xfe bytes",
+            "the non-UTF-8 original must be restored byte for byte"
         );
     }
 

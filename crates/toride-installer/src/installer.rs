@@ -9,12 +9,12 @@
 //!    request is `"latest"`);
 //! 2. **download** the bytes via `reqwest`, following redirects, capped at
 //!    a configurable maximum size;
-//! 3. **verify** — the pinned digest when the tool's descriptor carries one
+//! 3. **verify**: the pinned digest when the tool's descriptor carries one
 //!    (sha256, or sha512 when the digest is 128 hex chars), otherwise a
 //!    sane non-zero size floor (documented below);
-//! 4. **extract** — a `Binary` is placed directly, a `Tarball` is
+//! 4. **extract**: a `Binary` is placed directly, a `Tarball` is
 //!    decompressed (gzip or xz) and the configured entry is read out;
-//! 5. **install** — written atomically (temp + rename) into the install
+//! 5. **install**: written atomically (temp + rename) into the install
 //!    directory and `chmod 0o755` on Unix.
 //!
 //! ## Verification policy
@@ -24,10 +24,10 @@
 //! verified with a **size floor** (default 1 MiB): a download smaller than
 //! the floor is rejected as suspicious (a 404 HTML page, an empty
 //! response, a redirect to a login screen, …). This is NOT a security
-//! guarantee — it is a sanity check. Tools that DO publish checksums —
+//! guarantee: it is a sanity check. Tools that DO publish checksums:
 //! statically as [`crate::Checksum::Digest`], or
 //! per-release as a
-//! [`crate::Checksum::Url`] checksum file — are verified
+//! [`crate::Checksum::Url`] checksum file: are verified
 //! strictly against the published digest (sha256, or sha512 when the
 //! digest is 128 hex chars). Pass `Verifier::Strict` to refuse installs
 //! whose descriptor carries no checksum at all.
@@ -92,7 +92,7 @@ pub const DEFAULT_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from
 ///
 /// Throttling keeps a multi-MiB download from firing one callback per chunk
 /// (which would flood a UI render loop). A final completion callback is
-/// always emitted regardless of this step — see
+/// always emitted regardless of this step: see
 /// [`Installer::with_progress`](Installer::with_progress).
 #[cfg(feature = "http")]
 const PROGRESS_EMIT_STEP: u64 = 256 * 1024;
@@ -103,19 +103,33 @@ const PROGRESS_EMIT_STEP: u64 = 256 * 1024;
 /// policy is applied consistently and is unit-testable. The client follows
 /// redirects (GitHub release downloads redirect to a CDN), sets a
 /// `User-Agent` so hosts that require one accept the request, and carries an
-/// overall request timeout plus a connect-only timeout — reqwest applies no
+/// overall request timeout plus a connect-only timeout: reqwest applies no
 /// timeout by default, so omitting either lets a stalled connection hang the
 /// download future indefinitely.
+///
+/// `pub(crate)`: per-tool resolvers (`tools::mise`) default their clients to
+/// this same policy so resolve and download share one timeout posture.
 #[cfg(feature = "http")]
-fn build_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+pub(crate) fn build_http_client() -> reqwest::Client {
+    let builder = reqwest::Client::builder()
         .user_agent(concat!("toride-installer/", env!("CARGO_PKG_VERSION")))
         // GitHub release downloads redirect to objects.githubusercontent.com.
         .redirect(reqwest::redirect::Policy::limited(10))
         .timeout(DEFAULT_HTTP_TIMEOUT)
-        .connect_timeout(DEFAULT_HTTP_CONNECT_TIMEOUT)
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .connect_timeout(DEFAULT_HTTP_CONNECT_TIMEOUT);
+    match builder.build() {
+        Ok(client) => client,
+        // The UA header cannot cause a build failure; a retry without it
+        // only loses the header, never the timeout policy. A second failure
+        // is a TLS-backend initialization error, which cannot be worked
+        // around here, so it panics loudly instead of silently degrading.
+        Err(_) => reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .timeout(DEFAULT_HTTP_TIMEOUT)
+            .connect_timeout(DEFAULT_HTTP_CONNECT_TIMEOUT)
+            .build()
+            .expect("reqwest client builds once the User-Agent header is dropped"),
+    }
 }
 
 /// Verification strictness.
@@ -123,7 +137,7 @@ fn build_http_client() -> reqwest::Client {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Verifier {
     /// Verify the published digest when the tool's descriptor carries one
-    /// ([`Checksum::Digest`] or [`Checksum::Url`] — sha256, or sha512 for
+    /// ([`Checksum::Digest`] or [`Checksum::Url`]: sha256, or sha512 for
     /// 128-hex digests); otherwise fall back to the documented size-floor
     /// sanity check. This is the default.
     #[default]
@@ -148,7 +162,7 @@ pub struct Installer {
     /// Optional progress callback invoked from the streaming download loop.
     ///
     /// `Arc<dyn Fn>` so a cloned [`Installer`] shares the same callback
-    /// (matching the shared HTTP client). `None` by default — the
+    /// (matching the shared HTTP client). `None` by default: the
     /// no-callback path is byte-for-byte identical to the pre-progress
     /// behavior.
     progress: Option<Arc<dyn Fn(Progress) + Send + Sync>>,
@@ -191,6 +205,13 @@ impl Installer {
         }
     }
 
+    /// The engine's shared HTTP client, so per-tool entry points can hand the
+    /// same connection pool to their resolvers.
+    #[must_use]
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
     /// Override the maximum allowed download size in bytes.
     #[must_use]
     pub const fn with_max_bytes(mut self, max: u64) -> Self {
@@ -218,7 +239,7 @@ impl Installer {
     /// The callback receives a [`Progress`] snapshot carrying the bytes
     /// downloaded so far and, when the server sent `Content-Length`, the
     /// total. Callbacks are throttled (roughly one per 256 KiB of new data)
-    /// and a final callback is always fired on completion — see the
+    /// and a final callback is always fired on completion: see the
     /// [`progress`](crate::progress) module docs for details and the
     /// percent-computation recipe.
     ///
@@ -229,7 +250,7 @@ impl Installer {
     /// The callback runs synchronously on the installing task, inside the
     /// download loop. A panicking callback unwinds through the install and
     /// aborts it (surfaced as the panic, not an [`Error`]); keep it cheap and
-    /// panic-free — e.g. feed a channel rather than doing UI work inline.
+    /// panic-free: e.g. feed a channel rather than doing UI work inline.
     ///
     /// Not `const` because closures cannot be constructed in a const context.
     #[must_use]
@@ -255,7 +276,7 @@ impl Installer {
     /// Install `tool` at `version` for the host [`Target`], using the
     /// tool's built-in resolver ([`Tool`] itself implements
     /// [`ReleaseResolver`] via the default-URL-template path is NOT
-    /// available — supply a resolver instead).
+    /// available: supply a resolver instead).
     ///
     /// In practice you want [`Installer::install_with_resolver`] since
     /// every concrete tool ships a resolver. This entry-point is kept for
@@ -306,7 +327,7 @@ impl Installer {
         //    thread so it does not pin an async worker.
         let expected_digest = self.resolve_expected_digest(tool).await?;
 
-        // 4. compute install path (cheap, can stay on the async task — but the
+        // 4. compute install path (cheap, can stay on the async task: but the
         //    file write below is blocking, so resolve here and move the path in).
         let dir = resolve_install_dir(tool, install_dir)?;
         let dest = dir.join(&tool.bin_name);
@@ -430,7 +451,7 @@ impl Installer {
             let Some(chunk) = chunk else { break };
 
             // Saturating add guards against overflow on a pathologically
-            // large stream — saturating to `u64::MAX` then trips the cap.
+            // large stream: saturating to `u64::MAX` then trips the cap.
             total = total.saturating_add(chunk.len() as u64);
             if total > self.max_bytes {
                 return Err(Error::TooLarge {
@@ -454,7 +475,7 @@ impl Installer {
 
         // Final completion snapshot: always emit so consumers see the exact
         // final byte count (which may be below the next EMIT_STEP threshold)
-        // and can mark the download done. `buf.len()` is authoritative — it
+        // and can mark the download done. `buf.len()` is authoritative: it
         // reflects bytes actually buffered, not the running counter.
         self.emit_progress(buf.len() as u64, declared_len);
 
@@ -578,16 +599,15 @@ impl Installer {
             buf.extend_from_slice(&chunk);
         }
 
-        String::from_utf8(buf).map_err(|_| Error::NoChecksumEntry {
+        String::from_utf8(buf).map_err(|_| Error::ChecksumNotUtf8 {
             url: url.to_owned(),
-            asset: String::new(),
         })
     }
 }
 
 /// Default-URL-template resolver: a `Tool` whose release URL can be
 /// expressed as a format-string over `(target, version)` does not need a
-/// bespoke impl — wrap its template in this and reuse the engine.
+/// bespoke impl: wrap its template in this and reuse the engine.
 ///
 /// (Provided for completeness; the wired mise tool uses its own resolver
 /// because "latest" requires an API call.)
@@ -615,7 +635,7 @@ impl ReleaseResolver for TemplateResolver {
 /// > `~/.local/bin`.
 ///
 /// `pub(crate)` so the offline detector (`crate::status`) can consult the
-/// same precedence installs use — detect's managed location cannot drift
+/// same precedence installs use: detect's managed location cannot drift
 /// from where installs actually land.
 pub(crate) fn resolve_install_dir(
     tool: &Tool,
@@ -674,7 +694,7 @@ fn write_executable(dest: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(not(unix))]
     {
         // No executable-bit concept off Unix; create a temp file in the same
-        // directory, write + flush, then rename (persist) for atomicity — the
+        // directory, write + flush, then rename (persist) for atomicity: the
         // same shape as the Unix branch minus the permissions step.
         let mut tmp = tempfile::Builder::new()
             .tempfile_in(dest.parent().unwrap_or(Path::new(".")))
@@ -793,7 +813,7 @@ fn hex_encode(digest: &[u8]) -> String {
 /// Accepts both coreutils `sha256sum` output (`<hex>  <filename>`, separated
 /// by two spaces; the filename is optional and may be prefixed with `*` to
 /// mark a binary-mode digest) and a bare `<hex>` line. A filename's leading
-/// `./` (as emitted by `find`-style listings — mise's published
+/// `./` (as emitted by `find`-style listings: mise's published
 /// `SHASUMS256.txt` carries `./`-prefixed names) is stripped before
 /// matching. The first matching line wins. Lines whose leading token is not
 /// a 64-character (sha256) or 128-character (sha512) lowercase or
@@ -801,14 +821,14 @@ fn hex_encode(digest: &[u8]) -> String {
 /// file cannot be mistaken for a digest.
 ///
 /// Deliberately ungated (like [`write_executable`]): the shared checksum
-/// parsing primitive, kept available to the offline
-/// (`--no-default-features`) build. Only the engine's `Checksum::Url` arm
-/// calls it today, hence the allowance there.
+/// parsing primitive, exported for sibling crates (toride-mise's GitHub
+/// bootstrap parses the same `SHASUMS256.txt` format). Only the engine's
+/// `Checksum::Url` arm calls it internally, hence the allowance there.
 ///
 /// Returns `None` when no line carries a digest for `asset_name` (or, when
 /// `asset_name` is empty, any bare digest).
 #[cfg_attr(not(feature = "http"), allow(dead_code))]
-fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<String> {
+pub fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<String> {
     fn is_hex_digest(s: &str) -> bool {
         matches!(s.len(), SHA256_HEX_LEN | SHA512_HEX_LEN)
             && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -1069,7 +1089,7 @@ mod tests {
     fn checksum_body_is_case_insensitive_on_digest() {
         let body = format!("{}  mise\n", DIGEST_A.to_uppercase());
         // Normalized to lowercase so the later eq_ignore_ascii_case compare is
-        // robust regardless of the published casing.
+        // regardless of the published casing.
         assert_eq!(
             extract_digest_from_checksum_body(&body, "mise").as_deref(),
             Some(DIGEST_A)
@@ -1154,7 +1174,7 @@ mod engine_tests {
         })
     }
 
-    /// A resolver that returns a constant URL — used to drive the engine
+    /// A resolver that returns a constant URL: used to drive the engine
     /// without touching the network. The test then stubs `download` by
     /// going through `verify`/`write` directly.
     struct ConstResolver {
@@ -1480,7 +1500,7 @@ mod engine_tests {
     #[tokio::test]
     async fn checksum_url_verify_rejects_tampered_download() {
         // The checksum file describes the *real* artifact, but the bytes we
-        // "downloaded" were tampered with — verification MUST fail.
+        // "downloaded" were tampered with: verification MUST fail.
         let real = b"REAL-ARTIFACT-BYTES";
         let digest = hex_sha256(real);
         let body = format!("{digest}  mise-1.0-linux-x64\n");
@@ -1529,6 +1549,32 @@ mod engine_tests {
     }
 
     #[tokio::test]
+    async fn checksum_url_verify_rejects_non_utf8_file_as_its_own_error() {
+        // A checksum body with invalid UTF-8 is an encoding failure, not a
+        // lookup miss: it must surface as ChecksumNotUtf8, not
+        // NoChecksumEntry with an empty asset name.
+        let url = serve_body_once(vec![0xff, 0xfe, 0x00, 0xd8]).await;
+
+        let installer = Installer::new();
+        let tool = Tool {
+            name: "mise".into(),
+            checksum: Checksum::Url {
+                url,
+                asset_name: "mise-1.0-linux-x64".into(),
+            },
+            ..Default::default()
+        };
+        let err = installer
+            .verify(&tool, "1.0", b"any", "https://x")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::ChecksumNotUtf8 { .. }),
+            "non-UTF-8 checksum body must surface as ChecksumNotUtf8, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn checksum_url_verify_accepts_sha512_file() {
         let artifact = b"REAL-ARTIFACT-BYTES";
         let digest = hex_sha512(artifact);
@@ -1557,7 +1603,7 @@ mod engine_tests {
     ///
     /// Mirrors [`serve_once`](Self::serve_once) but carries an arbitrary
     /// binary body (rather than a textual checksum file) so we can drive a
-    /// real `Installer::download` — and therefore the progress callback —
+    /// real `Installer::download`, and therefore the progress callback:
     /// against a local listener with no external network.
     async fn serve_body_once(body: Vec<u8>) -> String {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -1584,7 +1630,7 @@ mod engine_tests {
         url
     }
 
-    /// A resolver that returns a constant URL — used to point the install
+    /// A resolver that returns a constant URL: used to point the install
     /// pipeline at the local single-shot server.
     struct LocalResolver {
         url: String,
@@ -1603,7 +1649,7 @@ mod engine_tests {
     /// byte counts whose final snapshot reports completion.
     ///
     /// The body (8192 bytes) is well below the 256 KiB throttle step, so the
-    /// loop-internal emit never fires — the callback sequence we assert is
+    /// loop-internal emit never fires: the callback sequence we assert is
     /// the initial `0 / total` emit followed by the final completion emit,
     /// which is the minimal shape any UI can rely on regardless of body size.
     #[tokio::test]
@@ -1623,7 +1669,7 @@ mod engine_tests {
 
         // Drive a real install through the public entry point. The tool is a
         // no-checksum Binary so verify accepts the floor (set to 1 byte) and
-        // extraction is a passthrough — the load-bearing path is `download`.
+        // extraction is a passthrough: the load-bearing path is `download`.
         let tmp = TempDir::new().unwrap();
         let dest_dir = Utf8PathBuf::from_path_buf(tmp.path().to_owned()).unwrap();
         let tool = Tool {
@@ -1679,7 +1725,7 @@ mod engine_tests {
         );
         assert_eq!(last.total, Some(body_len as u64));
 
-        // 5. The installed file matches the served body — sanity check that
+        // 5. The installed file matches the served body: sanity check that
         //    progress reporting did not perturb the byte stream.
         let dest_path = dest_dir.join("demo");
         assert_eq!(fs::read(&dest_path).unwrap(), body);
@@ -1739,7 +1785,7 @@ mod engine_tests {
     }
 
     /// Incremental stream-abort path: the server sends NO `Content-Length`,
-    /// so the pre-check cannot fire — the only bound is the running byte
+    /// so the pre-check cannot fire: the only bound is the running byte
     /// counter inside the chunk loop. The body (32 bytes) crosses the cap
     /// (8 bytes), so the loop must abort the download the instant it crosses
     /// the cap. This is the slow-drip / header-less-server scenario the

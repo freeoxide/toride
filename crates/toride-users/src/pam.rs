@@ -100,11 +100,14 @@ pub fn write_pam_config(path: &Path, rules: &[PamRule], comment: Option<&str>) -
 /// Enable TOTP/2FA for a PAM service by inserting `pam_google_authenticator.so`.
 ///
 /// Adds a `auth required pam_google_authenticator.so` rule to the service
-/// configuration if one is not already present.
+/// configuration if one is not already present. The edit is line-preserving:
+/// `@include`/`@includedir` directives, comments, and every other verbatim
+/// line survive untouched, because rewriting a Debian-style stack from
+/// parsed rules would strip its include chain and lock users out.
 ///
 /// `nullok` is intentionally omitted: with `nullok`, users who lack (or cannot
 /// read) a `.google_authenticator` file skip the module entirely and
-/// authenticate with only a password — which defeats the point of enabling 2FA
+/// authenticate with only a password, which defeats the point of enabling 2FA
 /// on a hardening tool and leaves the entire pre-existing user base password-
 /// only. Without `nullok`, TOTP is mandatory once the rule is in place.
 ///
@@ -122,46 +125,36 @@ pub fn enable_totp_for_service(paths: &UserPaths, service: &str) -> Result<()> {
         )));
     }
 
-    let mut rules = read_pam_config(&pam_path)?;
+    let content = std::fs::read_to_string(&pam_path)?;
 
-    // Check if google_authenticator is already configured
-    if rules
-        .iter()
-        .any(|r| r.module.contains("pam_google_authenticator"))
+    if content
+        .lines()
+        .any(|line| line_references_module(line, "pam_google_authenticator"))
     {
         return Err(Error::PamError(format!(
             "TOTP already enabled for service {service}"
         )));
     }
 
-    // Insert the TOTP rule as the first auth rule. No `nullok`: TOTP is
-    // mandatory once enabled (see the function-level doc comment).
-    let totp_rule = PamRule {
-        management_group: "auth".to_owned(),
-        control: "required".to_owned(),
-        module: "pam_google_authenticator.so".to_owned(),
-        arguments: Vec::new(),
-    };
-
-    // Find the position of the first auth rule
-    let pos = rules
+    let mut lines: Vec<String> = content.lines().map(str::to_owned).collect();
+    let pos = lines
         .iter()
-        .position(|r| r.management_group == "auth")
+        .position(|line| line_is_auth_rule(line))
         .unwrap_or(0);
+    lines.insert(pos, "auth required pam_google_authenticator.so".to_owned());
+    set_managed_marker(&mut lines, "TOTP/2FA enabled");
 
-    rules.insert(pos, totp_rule);
-
-    write_pam_config(
-        &pam_path,
-        &rules,
-        Some("Managed by toride -- TOTP/2FA enabled"),
-    )?;
+    write_pam_lines(&pam_path, &lines, content.ends_with('\n'))?;
 
     tracing::info!("enabled TOTP for PAM service {service}");
     Ok(())
 }
 
 /// Disable TOTP/2FA for a PAM service by removing `pam_google_authenticator.so`.
+///
+/// Line-preserving like [`enable_totp_for_service`]: only the module's rule
+/// lines are removed; `@include` directives, comments, and all other lines
+/// are written back verbatim.
 ///
 /// # Errors
 ///
@@ -176,24 +169,84 @@ pub fn disable_totp_for_service(paths: &UserPaths, service: &str) -> Result<()> 
         )));
     }
 
-    let mut rules = read_pam_config(&pam_path)?;
+    let content = std::fs::read_to_string(&pam_path)?;
 
-    let original_len = rules.len();
-    rules.retain(|r| !r.module.contains("pam_google_authenticator"));
-
-    if rules.len() == original_len {
+    let original_count = content
+        .lines()
+        .filter(|line| line_references_module(line, "pam_google_authenticator"))
+        .count();
+    if original_count == 0 {
         return Err(Error::PamError(format!(
             "TOTP not configured for service {service}"
         )));
     }
 
-    write_pam_config(
-        &pam_path,
-        &rules,
-        Some("Managed by toride -- TOTP/2FA disabled"),
-    )?;
+    let mut lines: Vec<String> = content
+        .lines()
+        .filter(|line| !line_references_module(line, "pam_google_authenticator"))
+        .map(str::to_owned)
+        .collect();
+    set_managed_marker(&mut lines, "TOTP/2FA disabled");
+
+    write_pam_lines(&pam_path, &lines, content.ends_with('\n'))?;
 
     tracing::info!("disabled TOTP for PAM service {service}");
+    Ok(())
+}
+
+/// Whether a raw PAM line is a rule invoking a module whose path contains
+/// `module`; comments, blank lines, and `@include` directives are not rules.
+fn line_references_module(line: &str, module: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('@') {
+        return false;
+    }
+    trimmed
+        .split_whitespace()
+        .nth(2)
+        .is_some_and(|m| m.contains(module))
+}
+
+/// Whether a raw PAM line is a rule in the `auth` management group.
+fn line_is_auth_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('@') {
+        return false;
+    }
+    trimmed.split_whitespace().next() == Some("auth")
+}
+
+/// Place the `# Managed by toride` marker line, replacing the previous marker
+/// so repeated toggles do not accumulate comment lines.
+fn set_managed_marker(lines: &mut Vec<String>, note: &str) {
+    let marker = format!("# Managed by toride -- {note}");
+    match lines
+        .iter()
+        .position(|line| line.starts_with("# Managed by toride"))
+    {
+        Some(index) => lines[index] = marker,
+        None => lines.insert(0, marker),
+    }
+}
+
+/// Write raw PAM lines back to `path` atomically at the conventional 0o644
+/// mode, backing up the existing file first. A trailing newline is written
+/// only when the original file had one.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the backup fails, or [`Error::PamError`] if the
+/// atomic write fails.
+fn write_pam_lines(path: &Path, lines: &[String], trailing_newline: bool) -> Result<()> {
+    let mut content = lines.join("\n");
+    if trailing_newline {
+        content.push('\n');
+    }
+    if path.exists() {
+        crate::backup::backup_file(path, None)?;
+    }
+    toride_fs::atomic_write_with_perms(path, &content, PAM_FILE_MODE)
+        .map_err(|e| Error::PamError(format!("atomic write of {} failed: {e}", path.display())))?;
     Ok(())
 }
 
@@ -325,6 +378,97 @@ mod tests {
             disable_totp_for_service(&paths, "sshd"),
             Err(Error::PamError(_))
         ));
+    }
+
+    /// The lockout blocker: toggling TOTP on a Debian-shaped stack must keep
+    /// every `@include` directive, comment, and non-rule line verbatim.
+    #[test]
+    fn enable_disable_totp_preserves_debian_include_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "#%PAM-1.0\n\
+                    auth required pam_env.so\n\
+                    @include common-auth\n\
+                    account required pam_nologin.so\n\
+                    # site policy\n\
+                    @include common-account\n\
+                    session include common-session-noninteractive\n";
+        let paths = make_service(dir.path(), "sshd", body);
+
+        let backup_dir = tempfile::tempdir().unwrap();
+        let _guard = crate::backup::set_test_backup_dir(backup_dir.path());
+        enable_totp_for_service(&paths, "sshd").unwrap();
+
+        let enabled = std::fs::read_to_string(paths.pam_d.join("sshd")).unwrap();
+        assert!(
+            enabled.contains("auth required pam_google_authenticator.so"),
+            "TOTP rule inserted:\n{enabled}"
+        );
+        let totp_pos = enabled
+            .find("pam_google_authenticator")
+            .expect("TOTP rule present");
+        let first_auth_pos = enabled
+            .find("auth required pam_env.so")
+            .expect("original auth rule present");
+        assert!(
+            totp_pos < first_auth_pos,
+            "TOTP rule must precede the first auth rule:\n{enabled}"
+        );
+        for expected in [
+            "#%PAM-1.0",
+            "@include common-auth",
+            "account required pam_nologin.so",
+            "# site policy",
+            "@include common-account",
+            "session include common-session-noninteractive",
+        ] {
+            assert!(
+                enabled.contains(expected),
+                "enable dropped `{expected}`:\n{enabled}"
+            );
+        }
+
+        disable_totp_for_service(&paths, "sshd").unwrap();
+
+        let disabled = std::fs::read_to_string(paths.pam_d.join("sshd")).unwrap();
+        assert!(
+            !disabled.contains("pam_google_authenticator"),
+            "TOTP rule removed:\n{disabled}"
+        );
+        for expected in [
+            "#%PAM-1.0",
+            "auth required pam_env.so",
+            "@include common-auth",
+            "account required pam_nologin.so",
+            "# site policy",
+            "@include common-account",
+            "session include common-session-noninteractive",
+        ] {
+            assert!(
+                disabled.contains(expected),
+                "disable dropped `{expected}`:\n{disabled}"
+            );
+        }
+    }
+
+    /// Repeated toggles must replace the managed marker, not stack one
+    /// comment line per toggle.
+    #[test]
+    fn managed_marker_does_not_accumulate_across_toggles() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = make_service(dir.path(), "sshd", "auth required pam_unix.so\n");
+
+        let backup_dir = tempfile::tempdir().unwrap();
+        let _guard = crate::backup::set_test_backup_dir(backup_dir.path());
+        enable_totp_for_service(&paths, "sshd").unwrap();
+        disable_totp_for_service(&paths, "sshd").unwrap();
+        enable_totp_for_service(&paths, "sshd").unwrap();
+
+        let written = std::fs::read_to_string(paths.pam_d.join("sshd")).unwrap();
+        assert_eq!(
+            written.matches("# Managed by toride").count(),
+            1,
+            "exactly one managed marker line:\n{written}"
+        );
     }
 
     #[test]

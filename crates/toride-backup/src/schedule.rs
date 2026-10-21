@@ -38,8 +38,8 @@ pub struct ScheduleTimerStatus {
     /// Whether a schedule is installed (same verdict
     /// [`ScheduleManager::is_installed`] returns).
     pub installed: bool,
-    /// Whether the job's systemd timer — or any backup-related timer on the
-    /// host — is active.
+    /// Whether the job's systemd timer: or any backup-related timer on the
+    /// host: is active.
     pub timer_active: bool,
     /// Empty when systemd is present; otherwise the explanatory note (e.g.
     /// "systemd not detected").

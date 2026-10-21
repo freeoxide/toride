@@ -3,15 +3,15 @@
 //! Renders inside the dashboard's content region when
 //! [`Section::Audit`](crate::data::Section) is the active sidebar section. This
 //! mirrors the read-only fail2ban/users template: there is no write path, no
-//! optimistic update, no cooldown, and no loading spinner — every line is a
+//! optimistic update, no cooldown, and no loading spinner: every line is a
 //! pure read.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. auditd status card — running badge + raw `auditctl -s` status text.
-//! 2. Integrity (AIDE) — database initialized, file count, last check.
-//! 3. Audit rules — per-file rule counts from `/etc/audit/rules.d`.
-//! 4. Log sources — `/var/log/audit/*` files + rsyslog/journald backends.
-//! 5. Doctor findings — grouped by severity (Critical > Error > Warning > Info).
+//! 1. auditd status card: running badge + raw `auditctl -s` status text.
+//! 2. Integrity (AIDE): database initialized, file count, last check.
+//! 3. Audit rules: per-file rule counts from `/etc/audit/rules.d`.
+//! 4. Log sources: `/var/log/audit/*` files + rsyslog/journald backends.
+//! 5. Doctor findings: grouped by severity (Critical > Error > Warning > Info).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -86,7 +86,7 @@ pub struct AuditLogSourceEntry {
 /// driven by [`AuditCollector`](crate::toride_audit_data::AuditCollector).
 pub struct AuditContent {
     /// Whether the audit backend produced any data at all. `false` only when a
-    /// collection task panicked (`JoinError`) — a missing binary surfaces as a
+    /// collection task panicked (`JoinError`): a missing binary surfaces as a
     /// Critical finding and keeps `available == true` so the operator sees the
     /// findings panel.
     available: bool,
@@ -237,7 +237,7 @@ impl AuditContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -261,7 +261,7 @@ impl AuditContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -322,7 +322,7 @@ impl AuditContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (`JoinError`) — not when a binary is missing (a missing
+    /// task PANICS (`JoinError`): not when a binary is missing (a missing
     /// binary instead produces a Critical doctor finding, which keeps
     /// `available == true` so the operator sees the findings panel). The reason
     /// string is surfaced here so the operator can see what actually panicked;
@@ -437,7 +437,7 @@ impl AuditContent {
         // human-readable status (`last_check_output`) covering install state,
         // database state, and change count (e.g. "AIDE not installed",
         // "AIDE 0.18.8 · db not initialized", "0 changes", "7 changes"). Render
-        // it as the primary, authoritative "check" signal — it is the honest,
+        // it as the primary, authoritative "check" signal: it is the honest,
         // complete picture and never a stale "not implemented" placeholder.
         let status_line = self
             .integrity
@@ -462,7 +462,7 @@ impl AuditContent {
         // Numeric detail (files + verdict) ONLY when a real `aide --check`
         // actually ran: a passed check, or a check that found changes. When
         // AIDE is not installed / no database exists, the status line above is
-        // the complete and honest picture — extra rows would only mislead (e.g.
+        // the complete and honest picture: extra rows would only mislead (e.g.
         // a spurious "✗ failed" for a check that never ran).
         let show_numeric = self.integrity.last_check_passed == Some(true)
             || self.integrity.file_count.is_some_and(|n| n > 0);
@@ -757,7 +757,7 @@ mod tests {
     /// [`toride_audit::integrity::IntegrityManager::status()`] is the SOLE
     /// producer of `IntegrityStatus` in production and now ALWAYS populates
     /// `last_check_passed` and `last_check_output` (a one-line human-readable
-    /// status) — it never hands the panel a bare `None` that would render as a
+    /// status): it never hands the panel a bare `None` that would render as a
     /// perpetual "(unknown)" / "? unknown" placeholder. Because the backend is
     /// the source of truth, `sample_integrity()` alone cannot catch a regression
     /// on the real-backend path. This test runs the REAL backend output through
@@ -775,7 +775,7 @@ mod tests {
         // host (and CI) the `aide` binary is not installed, so the real backend
         // returns the honest `not_installed()` shape: { initialized: false,
         // file_count: Some(0), last_check_passed: Some(false),
-        // last_check_output: Some("AIDE not installed") } — never `None`.
+        // last_check_output: Some("AIDE not installed") }: never `None`.
         let audit = toride_audit::Audit::with_paths(toride_audit::AuditPaths::default_system())
             .expect("Audit::with_paths only allocates a runner and paths");
         let real_status = audit
@@ -787,7 +787,7 @@ mod tests {
         // `last_check_passed` and `last_check_output` (a human-readable status
         // line). `file_count` is `Some(0)` when AIDE is not installed, `Some(n)`
         // after a real `aide --check`. None of the secondary fields are
-        // hardcoded `None` anymore — the old "not implemented" render branch
+        // hardcoded `None` anymore: the old "not implemented" render branch
         // has retired in favour of rendering the status line verbatim.
         assert!(
             real_status.last_check_passed.is_some(),
@@ -800,7 +800,7 @@ mod tests {
             .expect("backend status() must always populate last_check_output");
 
         // Drive the real-backend output through the same converter the data
-        // layer uses, then render — exactly the production integration path.
+        // layer uses, then render: exactly the production integration path.
         let entry = convert_integrity(real_status);
         let mut c = AuditContent::new();
         c.set_available(true);
@@ -810,7 +810,7 @@ mod tests {
         // Slice out just the Integrity card so the negative assertions below
         // are not tripped by the Log Sources card's legitimate `? unknown`
         // rsyslog/journald rows (those are real probes that genuinely have no
-        // answer on this host — accurate, not misleading).
+        // answer on this host: accurate, not misleading).
         let integrity_card: String = out
             .lines()
             .skip_while(|l| !l.contains("Integrity (AIDE)"))
@@ -818,7 +818,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // The honest status line must be surfaced verbatim — not a placeholder.
+        // The honest status line must be surfaced verbatim: not a placeholder.
         assert!(
             integrity_card.contains(status_line.as_str()),
             "real-backend output must render the status line {status_line:?}, got: {integrity_card}",
@@ -911,7 +911,7 @@ mod tests {
         c.set_available(true);
         c.set_rules(sample_rules());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

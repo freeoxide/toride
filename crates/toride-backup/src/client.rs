@@ -18,7 +18,7 @@
 //!
 //! Every backup command carries the repository passphrase. The passphrase is
 //! forwarded to the backend binary via an environment variable
-//! (`RESTIC_PASSWORD` / `BORG_PASSPHRASE`) — never as a CLI argument — and the
+//! (`RESTIC_PASSWORD` / `BORG_PASSPHRASE`): never as a CLI argument, and the
 //! backend clients mark every such command with
 //! [`CommandSpec::redact`](toride_runner::CommandSpec::redact)`(true)` so the
 //! secret is scrubbed from any error message or log line.
@@ -128,9 +128,9 @@ impl BackupClient {
     /// Run a backup according to the given specification.
     ///
     /// Builds the appropriate backend client ([`crate::restic::ResticClient`]
-    /// or [`crate::borg::BorgClient`]) from the spec — wiring the spec's
+    /// or [`crate::borg::BorgClient`]) from the spec: wiring the spec's
     /// `password_command`, tags, and `extra_env` plus this client's injected
-    /// runner — then executes the real snapshot and assembles a *truthful*
+    /// runner: then executes the real snapshot and assembles a *truthful*
     /// [`BackupReport`] (snapshot count and repository size are queried from
     /// the backend after the snapshot is created).
     ///
@@ -165,8 +165,8 @@ impl BackupClient {
     /// Run retention pruning according to the given specification.
     ///
     /// Builds the appropriate backend client ([`crate::restic::ResticClient`]
-    /// or [`crate::borg::BorgClient`]) from the spec — wiring the spec's
-    /// `password_command`, `extra_env`, and this client's injected runner —
+    /// or [`crate::borg::BorgClient`]) from the spec: wiring the spec's
+    /// `password_command`, `extra_env`, and this client's injected runner:
     /// then executes the real prune command (`restic forget --prune --json` /
     /// `borg prune --list`) and assembles a [`PruneReport`] with the backend's
     /// own removed/kept counts.
@@ -207,10 +207,10 @@ impl BackupClient {
     /// Workflow (all commands sourced from the official restic scripting docs at
     /// <https://restic.readthedocs.io/en/stable/075_scripting.html>):
     ///
-    /// 1. `restic backup --json <sources>` — parses the final `summary` record
+    /// 1. `restic backup --json <sources>`: parses the final `summary` record
     ///    (`message_type:"summary"`, `snapshot_id`, `files_new`, ...).
-    /// 2. `restic snapshots --json` — counts snapshots for `snapshot_count`.
-    /// 3. `restic stats --json` — reads `total_size` for `repo_size_bytes`.
+    /// 2. `restic snapshots --json`: counts snapshots for `snapshot_count`.
+    /// 3. `restic stats --json`: reads `total_size` for `repo_size_bytes`.
     ///
     /// Repository integrity is **not** checked here (`check` is a separate,
     /// expensive operation); `integrity` stays [`IntegrityStatus::NotChecked`].
@@ -296,12 +296,12 @@ impl BackupClient {
     ///
     /// Workflow (command shapes sourced from the official Borg docs):
     ///
-    /// 1. `borg create --stats <repo>::<archive> <sources>` — creates the
+    /// 1. `borg create --stats <repo>::<archive> <sources>`: creates the
     ///    archive (`--stats` emits a human-readable summary on stdout).
     ///    Docs: <https://borgbackup.readthedocs.io/en/stable/usage/create.html>
-    /// 2. `borg list --json <repo>` — counts archives for `snapshot_count`.
+    /// 2. `borg list --json <repo>`: counts archives for `snapshot_count`.
     ///    Docs: <https://borgbackup.readthedocs.io/en/stable/usage/list.html>
-    /// 3. `borg info --json <repo>` — reads cache `total_size` for
+    /// 3. `borg info --json <repo>`: reads cache `total_size` for
     ///    `repo_size_bytes`.
     ///    Docs: <https://borgbackup.readthedocs.io/en/stable/usage/info.html>
     ///
@@ -451,7 +451,7 @@ impl BackupClient {
 
         // Password: prefer the spec's password_command (forwarded via restic's
         // --password-command flag). When no command is configured we cannot
-        // conjure a passphrase, so the backend will prompt interactively —
+        // conjure a passphrase, so the backend will prompt interactively:
         // which is the documented restic behaviour for repos whose password is
         // not supplied out-of-band.
         if let Some(pw_cmd) = &spec.password_command {
@@ -582,8 +582,8 @@ impl BackupClient {
 
     /// Enumerate snapshots (restic) or archives (borg) in a job's repository.
     ///
-    /// Builds the appropriate backend client from the spec — wiring the spec's
-    /// `password_command`, `extra_env`, and this client's injected runner — then
+    /// Builds the appropriate backend client from the spec: wiring the spec's
+    /// `password_command`, `extra_env`, and this client's injected runner: then
     /// runs the documented `restic snapshots --json` / `borg list --json`
     /// command and returns the parsed snapshot/archive count plus the raw JSON
     /// for callers that want the full envelope.
@@ -759,7 +759,7 @@ fn make_borg_archive_name(spec: &BackupSpec) -> String {
 /// The documented envelope (see
 /// <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>) is:
 /// `{repository:{...}, cache:{stats:{total_size, ...}}, encryption:{...}}`.
-/// We parse just the field we need with a file-local serde shape so the
+/// We parse only the field we need with a file-local serde shape so the
 /// crate's public surface is not coupled to borg's exact JSON.
 fn parse_borg_info_total_size(json: &str) -> Option<u64> {
     #[derive(serde::Deserialize)]
@@ -1018,7 +1018,7 @@ mod tests {
         for (i, call) in calls.iter().enumerate() {
             assert!(
                 call.redact,
-                "restic call #{i} must set redact(true) — it carries the repo password"
+                "restic call #{i} must set redact(true): it carries the repo password"
             );
             // The password command must never be a bare positional; it follows
             // the --password-command flag.
@@ -1051,7 +1051,7 @@ mod tests {
     }
 
     /// A failed restic backup (e.g. wrong password) surfaces the error rather
-    /// than fabricating an Ok report — the old behaviour this method replaces.
+    /// than fabricating an Ok report: the old behaviour this method replaces.
     #[test]
     fn backup_restic_failure_propagates_error_no_fabrication() {
         let runner = FakeRunner::new()
@@ -1149,7 +1149,7 @@ mod tests {
             "first arg is the create subcommand"
         );
         assert_eq!(create.args[1], "--stats");
-        // args[2] is "<repo>::<archive>" — verify the repo prefix + :: separator.
+        // args[2] is "<repo>::<archive>": verify the repo prefix + :: separator.
         assert!(
             create.args[2].starts_with("/srv/borg-repo::"),
             "create target must be <repo>::<archive>, got: {}",
@@ -1161,7 +1161,7 @@ mod tests {
         );
         // BORG_PASSCOMMAND env carries the password command (never argv). Borg
         // documents BORG_PASSCOMMAND as the non-interactive way to supply a
-        // passphrase produced by a command — see
+        // passphrase produced by a command: see
         // https://borgbackup.readthedocs.io/en/stable/usage/general.html#environment-variables
         assert_eq!(
             create
@@ -1196,7 +1196,7 @@ mod tests {
     /// We assert the achievable correctness properties through the facade:
     ///   (a) the passphrase command value is delivered via env, NEVER as a
     ///       positional CLI argument (borg has no passphrase flag for good
-    ///       reason — it would leak via `ps`/shell history);
+    ///       reason: it would leak via `ps`/shell history);
     ///   (b) when a *raw* passphrase is supplied (via `BorgClient::with_passphrase`,
     ///       exercised directly below), `borg create` IS marked `redact(true)`
     ///       (`BorgClient::carries_secret` treats the `BORG_PASS`-prefixed
@@ -1313,7 +1313,7 @@ loading indexes..."#,
             "kept count must come from the forget JSON keep array"
         );
 
-        // Exactly one command issued — the real `restic forget --prune`.
+        // Exactly one command issued: the real `restic forget --prune`.
         let calls = runner.calls();
         assert_eq!(
             calls.len(),
@@ -1327,7 +1327,7 @@ loading indexes..."#,
         );
         assert_eq!(call.program, "/usr/bin/restic");
         // The retention policy on restic_spec is default_policy(): 7 daily,
-        // 4 weekly, 6 monthly — all three flags must appear.
+        // 4 weekly, 6 monthly: all three flags must appear.
         assert!(
             call.args.iter().any(|a| a == "forget"),
             "must invoke the forget subcommand: {:?}",

@@ -33,7 +33,7 @@ const CRON_FIELD_EXTRA: &[char] = &['*', '/', ',', '-'];
 /// Returns `true` when `field` matches the safe cron-field allowlist
 /// `^[0-9*/,-]+$` (non-empty, digits or `*` `/` `,` `-`).
 ///
-/// This is a *lexical* guard only — it rejects characters that could break out
+/// This is a *lexical* guard only: it rejects characters that could break out
 /// of the cron line (`;`, whitespace, shell metacharacters, etc.). Range/step
 /// validity is still checked by [`Schedule::validate`] / `cron_to_oncalendar`.
 pub fn is_valid_cron_field(field: &str) -> bool {

@@ -107,7 +107,6 @@ impl MiseCollector {
             Some(rx) => {
                 let result = rx.await.ok();
                 if let Some((ref bundle, used_cache)) = result
-                    && bundle.available
                     && !used_cache
                 {
                     self.cached_bundle = Some(bundle.clone());
@@ -121,7 +120,6 @@ impl MiseCollector {
     }
 
     /// Invalidate the bundle cache so the next collection re-runs the probes.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_bundle = None;
         self.bundle_fresh_at = None;
@@ -327,7 +325,7 @@ fn reason_when_construction_ok_but_unavailable(
     if available {
         None
     } else {
-        Some("mise did not respond — all probes timed out or failed".to_string())
+        Some("mise did not respond: all probes timed out or failed".to_string())
     }
 }
 
@@ -669,7 +667,7 @@ mod tests {
         assert!(
             reason.is_none(),
             "a populated outdated list must keep the section available even \
-             when every other probe failed — the heuristic unions over all \
+             when every other probe failed: the heuristic unions over all \
              five data sources: {reason:?}"
         );
     }

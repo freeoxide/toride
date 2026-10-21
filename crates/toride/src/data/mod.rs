@@ -23,7 +23,7 @@ pub enum ModuleStatus {
     Ready,
     /// Available but reporting elevated findings (warnings/errors).
     Degraded,
-    /// Backend unavailable / not reachable — the section cannot be inspected.
+    /// Backend unavailable / not reachable: the section cannot be inspected.
     Offline,
 }
 
@@ -315,7 +315,7 @@ impl DashboardData {
     /// before the live managed-services snapshot lands.
     ///
     /// NOTE: the old `modules_installed` / `modules_total` / `staged` /
-    /// `updates` / `activity` fields were removed — they were never populated
+    /// `updates` / `activity` fields were removed: they were never populated
     /// with real data (all live data lives in the per-section content structs)
     /// and were pure dead public-API surface. The two dashboard reads that
     /// referenced them now use literal `0` / the live `pending_total` Option.
@@ -359,7 +359,7 @@ impl DashboardData {
                 badge: None,
             },
             SidebarItem {
-                icon: "⚙",
+                icon: "⛨",
                 section: Section::Harden,
                 badge: None,
             },
@@ -389,7 +389,7 @@ impl DashboardData {
                 badge: None,
             },
             SidebarItem {
-                icon: "▣",
+                icon: "▤",
                 section: Section::Backup,
                 badge: None,
             },
@@ -414,7 +414,7 @@ impl DashboardData {
                 badge: None,
             },
             SidebarItem {
-                icon: "◇",
+                icon: "◍",
                 section: Section::About,
                 badge: None,
             },
@@ -495,7 +495,7 @@ mod tests {
 
     #[test]
     fn sidebar_has_no_fabricated_badges() {
-        // No hardcoded badge strings at cold start — every badge is None until
+        // No hardcoded badge strings at cold start: every badge is None until
         // a live collector reports. (The previous mock seeded "78"/"active"/"12".)
         let d = DashboardData::empty();
         for item in &d.sidebar {

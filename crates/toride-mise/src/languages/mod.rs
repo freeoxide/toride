@@ -4,15 +4,15 @@
 //! reference and exposes async methods tailored to a particular runtime or
 //! language toolchain.
 //!
-//! - **node** — Node.js via `NodeHelper`
-//! - **bun** — Bun via `BunHelper`
-//! - **deno** — Deno via `DenoHelper`
-//! - **go** — Go via `GoHelper`
-//! - **python** — Python via `PythonHelper`
-//! - **rust** — Rust via `RustHelper`
-//! - **ruby** — Ruby via `RubyHelper`
-//! - **java** — Java via `JavaHelper`
-//! - **generic** — Arbitrary mise tools via `GenericHelper`
+//! - **node**: Node.js via `NodeHelper`
+//! - **bun**: Bun via `BunHelper`
+//! - **deno**: Deno via `DenoHelper`
+//! - **go**: Go via `GoHelper`
+//! - **python**: Python via `PythonHelper`
+//! - **rust**: Rust via `RustHelper`
+//! - **ruby**: Ruby via `RubyHelper`
+//! - **java**: Java via `JavaHelper`
+//! - **generic**: Arbitrary mise tools via `GenericHelper`
 
 pub mod bun;
 pub mod deno;

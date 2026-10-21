@@ -2,14 +2,14 @@
 //!
 //! Renders inside the dashboard's content region when
 //! [`Section::Backup`](crate::data::Section) is the active sidebar section.
-//! Mirrors the SSH / fail2ban reference MINUS the write path — every line is
+//! Mirrors the SSH / fail2ban reference MINUS the write path: every line is
 //! read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Status panel — dry-run flag, resolved paths.
-//! 2. Binaries card — restic / borg availability inferred from doctor findings.
-//! 3. Schedule card — whether a schedule is installed and the timer is active.
-//! 4. Doctor findings — grouped by severity (Critical > Error > Warning > Info > Ok).
+//! 1. Status panel: dry-run flag, resolved paths.
+//! 2. Binaries card: restic / borg availability inferred from doctor findings.
+//! 3. Schedule card: whether a schedule is installed and the timer is active.
+//! 4. Doctor findings: grouped by severity (Critical > Error > Warning > Info > Ok).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -120,7 +120,7 @@ impl BackupContent {
     /// natural "item count" (it surfaces scalar booleans), so the badge
     /// reflects the timer state: `Some("active")` / `Some("inactive")` when
     /// the backend is available and a timer reading exists, `None` otherwise.
-    /// Never fabricates a status — `None` stays empty at cold start.
+    /// Never fabricates a status: `None` stays empty at cold start.
     #[must_use]
     pub fn badge_status(&self) -> Option<&'static str> {
         if self.available {
@@ -222,7 +222,7 @@ impl BackupContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -245,7 +245,7 @@ impl BackupContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -300,7 +300,7 @@ impl BackupContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (`JoinError`) — not when restic/borg are missing (missing
+    /// task PANICS (`JoinError`): not when restic/borg are missing (missing
     /// binaries produce Critical doctor findings, keeping `available == true`
     /// so the operator sees the findings panel).
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
@@ -463,7 +463,7 @@ impl BackupContent {
         // Informational note explaining a negative reading (e.g. "systemd not
         // detected" on macOS / non-systemd hosts). Rendered as a dim hint so
         // the operator can tell "systemd absent" apart from "no schedule
-        // configured" — previously this note was computed by the backend but
+        // configured": previously this note was computed by the backend but
         // never surfaced, so a false reading was ambiguous.
         if let Some(note) = &self.schedule_note
             && !note.is_empty()
@@ -682,7 +682,7 @@ mod tests {
             out.contains("edge: empty fix string"),
             "title rendered: {out}"
         );
-        // Count `→` arrows — there must be none, since the empty fix is suppressed.
+        // Count `→` arrows: there must be none, since the empty fix is suppressed.
         let arrow_count = out.matches('→').count();
         assert_eq!(arrow_count, 0, "no dangling arrow for empty fix: {out}");
     }
@@ -728,7 +728,7 @@ mod tests {
         c.set_available(true);
         c.set_binaries(Some(true), Some(false));
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 
@@ -757,7 +757,7 @@ mod tests {
         c.set_unavailable_reason(Some("backend panic".into()));
         assert_eq!(c.unavailable_reason(), Some("backend panic"));
 
-        // Recovery: available flips to true first, then a new reason is set —
+        // Recovery: available flips to true first, then a new reason is set:
         // the setter must clear it to None regardless of the passed value.
         c.set_available(true);
         c.set_unavailable_reason(Some("x".into()));

@@ -1,7 +1,7 @@
 //! Convert `ufw-kit` library types to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that imports `ufw_kit` types
-//! — mirroring `fail2ban_convert.rs`'s role as the single boundary between
+//!: mirroring `fail2ban_convert.rs`'s role as the single boundary between
 //! backend and presentation. Each function handles errors gracefully: malformed
 //! input is skipped with a `tracing::warn!` and a placeholder, never propagated
 //! (the read-only section must never crash the TUI).

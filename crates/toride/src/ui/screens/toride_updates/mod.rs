@@ -2,16 +2,16 @@
 //!
 //! Renders inside the dashboard's content region when
 //! [`Section::Updates`](crate::data::Section) is the active sidebar section.
-//! Mirrors the SSH / fail2ban reference but WITHOUT any write path — every line
+//! Mirrors the SSH / fail2ban reference but WITHOUT any write path: every line
 //! is read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Status panel — package-manager badge, auto-update enabled/active badges,
+//! 1. Status panel: package-manager badge, auto-update enabled/active badges,
 //!    last-run timestamp.
-//! 2. Pending updates summary — security / total counts.
-//! 3. Schedule card — detected schedule (daily/weekly/monthly/custom).
-//! 4. Service / timer card — systemd unit activity.
-//! 5. Doctor findings — grouped by severity
+//! 2. Pending updates summary: security / total counts.
+//! 3. Schedule card: detected schedule (daily/weekly/monthly/custom).
+//! 4. Service / timer card: systemd unit activity.
+//! 5. Doctor findings: grouped by severity
 //!    (Critical > Important > Warning > Info > Ok).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
@@ -213,7 +213,7 @@ impl UpdatesContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -237,7 +237,7 @@ impl UpdatesContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -753,7 +753,7 @@ mod tests {
         c.set_available(true);
         c.set_status("apt".into(), true, true, 1, 2, None);
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

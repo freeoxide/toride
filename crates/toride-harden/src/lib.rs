@@ -19,16 +19,16 @@
 //!
 //! # Module layout
 //!
-//! - [`sysctl`] — read/write sysctl parameters
-//! - [`profile`] — CIS/STIG hardening profiles (Desktop, Server, Router)
-//! - [`shm`] — shared memory mount hardening
-//! - [`kernel`] — kernel security parameters (ASLR, `kptr_restrict`, etc.)
-//! - [`parse`] — parse sysctl output and config files
-//! - [`render`] — render sysctl config files
-//! - [`validate`] — validate sysctl keys, values, and specs
-//! - [`diff`] — diff current vs. desired sysctl state
-//! - [`backup`] — pre-mutation backup of sysctl config files
-//! - [`report`] — structured report of applied/skipped parameters
+//! - [`sysctl`]: read/write sysctl parameters
+//! - [`profile`]: CIS/STIG hardening profiles (Desktop, Server, Router)
+//! - [`shm`]: shared memory mount hardening
+//! - [`kernel`]: kernel security parameters (ASLR, `kptr_restrict`, etc.)
+//! - [`parse`]: parse sysctl output and config files
+//! - [`render`]: render sysctl config files
+//! - [`validate`]: validate sysctl keys, values, and specs
+//! - [`diff`]: diff current vs. desired sysctl state
+//! - [`backup`]: pre-mutation backup of sysctl config files
+//! - [`report`]: structured report of applied/skipped parameters
 //!
 //! ## Feature flags
 //!
@@ -48,8 +48,6 @@
 #![allow(clippy::return_self_not_must_use)]
 #![allow(clippy::module_name_repetitions)]
 
-// ── Always-available modules ───────────────────────────────────────────
-
 pub mod backup;
 pub mod diff;
 pub mod error;
@@ -63,8 +61,6 @@ pub mod shm;
 pub mod spec;
 pub mod sysctl;
 pub mod validate;
-
-// ── Feature-gated modules ──────────────────────────────────────────────
 
 #[cfg(feature = "client")]
 pub mod client;
@@ -80,8 +76,6 @@ pub mod service;
 
 #[cfg(feature = "cli")]
 pub mod cli;
-
-// ── Crate-level re-exports ─────────────────────────────────────────────
 
 pub use error::{Error, Result};
 pub use profile::HardeningProfile;
