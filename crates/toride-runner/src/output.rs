@@ -65,6 +65,21 @@ impl CommandOutput {
     }
 }
 
+/// Decode captured bytes to a [`String`] without copying when they are
+/// already valid UTF-8, falling back to lossy decoding (invalid sequences
+/// become U+FFFD, surrounding bytes preserved) otherwise.
+///
+/// This is the crate-wide decode step behind the documented lossy-UTF-8
+/// contract of [`CommandOutput`]; the zero-copy fast path exists because
+/// `from_utf8_lossy(..).into_owned()` would pay a full duplicate of every
+/// captured stream even when nothing needs replacing.
+pub(crate) fn decode_lossy(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    }
+}
+
 #[cfg(feature = "serde")]
 impl serde::Serialize for CommandOutput {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -102,5 +117,21 @@ impl<'de> serde::Deserialize<'de> for CommandOutput {
             exit_code: h.exit_code,
             success: h.success,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_lossy;
+
+    /// Valid UTF-8 must decode without a copy or a change; invalid bytes
+    /// must still produce the documented lossy replacement.
+    #[test]
+    fn decode_lossy_preserves_valid_and_replaces_invalid_bytes() {
+        let valid = decode_lossy(Vec::from("héllo world"));
+        assert_eq!(valid, "héllo world");
+
+        let invalid = decode_lossy(vec![0xff, b'a', 0xfe]);
+        assert_eq!(invalid, "\u{fffd}a\u{fffd}");
     }
 }

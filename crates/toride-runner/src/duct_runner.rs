@@ -256,17 +256,14 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
     // it (duct's wait returns a reference into the handle).
     let output = handle.into_output().map_err(|e| wait_failed(spec, &e))?;
 
-    let stdout = if spec.output_mode == OutputMode::Capture {
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    } else {
-        String::new()
-    };
-    let stderr = if spec.output_mode == OutputMode::Capture {
-        String::from_utf8_lossy(&output.stderr).into_owned()
-    } else {
-        String::new()
-    };
     let exit_code = output.status.code();
+    let (stdout_bytes, stderr_bytes) = if spec.output_mode == OutputMode::Capture {
+        (output.stdout, output.stderr)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let stdout = crate::output::decode_lossy(stdout_bytes);
+    let stderr = crate::output::decode_lossy(stderr_bytes);
 
     if options.log_commands {
         let displayed = displayed();
@@ -278,9 +275,9 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
         );
     }
 
-    Ok(crate::display::scrub_output(
+    Ok(crate::display::scrub_output_owned(
         spec,
-        &CommandOutput::new(stdout, stderr, exit_code),
+        CommandOutput::new(stdout, stderr, exit_code),
     ))
 }
 
@@ -590,8 +587,8 @@ fn run_duct_command_limited(
                 check_stdin_writer(&shared_handle, stdin_rx, spec, &displayed)?;
             }
 
-            let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-            let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+            let stdout = crate::output::decode_lossy(stdout_bytes);
+            let stderr = crate::output::decode_lossy(stderr_bytes);
 
             if options.log_commands {
                 let displayed = displayed();
@@ -602,9 +599,9 @@ fn run_duct_command_limited(
                     started_at.elapsed().as_millis(),
                 );
             }
-            Ok(crate::display::scrub_output(
+            Ok(crate::display::scrub_output_owned(
                 spec,
-                &CommandOutput::new(stdout, stderr, exit_code),
+                CommandOutput::new(stdout, stderr, exit_code),
             ))
         }
     }

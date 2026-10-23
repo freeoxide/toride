@@ -194,10 +194,9 @@ impl AsyncStreamingRunner for ConfiguredTokioRunner {
         let output = run_streaming_command(spec, sink, self.options.default_timeout)
             .instrument(span)
             .await?;
-        // Honor the redact flag on the *returned* captured output (the emitted
-        // chunks/lines are already scrubbed inline; scrub the final aggregate
-        // too for parity with the non-streaming run path).
-        Ok(crate::display::scrub_output(spec, &output))
+        // The emitted chunks/lines are already scrubbed inline; scrub the
+        // final aggregate too for parity with the non-streaming run path.
+        Ok(crate::display::scrub_output_owned(spec, output))
     }
 }
 
@@ -241,9 +240,7 @@ async fn run_tokio_with_options(
     let output = Box::pin(run_tokio_command(spec, timeout, options))
         .instrument(span)
         .await?;
-    // Honor the redact flag on the *returned* output too (parity with
-    // DuctRunner): scrub secret values from captured stdout/stderr.
-    Ok(crate::display::scrub_output(spec, &output))
+    Ok(crate::display::scrub_output_owned(spec, output))
 }
 
 async fn run_tokio_command(
@@ -328,8 +325,8 @@ async fn run_tokio_command(
         })?;
         let exit_code = status.code();
 
-        let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-        let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+        let stdout = crate::output::decode_lossy(stdout_bytes);
+        let stderr = crate::output::decode_lossy(stderr_bytes);
         Ok::<CommandOutput, Error>(CommandOutput::new(stdout, stderr, exit_code))
     };
 
@@ -672,8 +669,8 @@ fn finish_under_cap(
     (stdout_bytes, stderr_bytes): (Vec<u8>, Vec<u8>),
     options: &TokioRunnerOptions,
 ) -> CommandOutput {
-    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+    let stdout = crate::output::decode_lossy(stdout_bytes);
+    let stderr = crate::output::decode_lossy(stderr_bytes);
     if options.log_commands {
         log_command_completion(spec, options, exit_code);
     }
@@ -905,8 +902,8 @@ async fn run_streaming_command(
 
         sink.on_event(CommandEvent::Exited { exit_code }).await?;
 
-        let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-        let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+        let stdout = crate::output::decode_lossy(stdout_bytes);
+        let stderr = crate::output::decode_lossy(stderr_bytes);
 
         Ok::<CommandOutput, Error>(CommandOutput::new(stdout, stderr, exit_code))
     };
@@ -1150,10 +1147,9 @@ impl AsyncStreamingRunner for TokioRunner {
         let output = run_streaming_command(spec, sink, options.default_timeout)
             .instrument(span)
             .await?;
-        // Honor the redact flag on the *returned* captured output (the emitted
-        // chunks/lines are already scrubbed inline; scrub the final aggregate
-        // too for parity with the non-streaming run path).
-        Ok(crate::display::scrub_output(spec, &output))
+        // The emitted chunks/lines are already scrubbed inline; scrub the
+        // final aggregate too for parity with the non-streaming run path.
+        Ok(crate::display::scrub_output_owned(spec, output))
     }
 }
 

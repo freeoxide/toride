@@ -367,6 +367,28 @@ pub fn scrub_output(spec: &CommandSpec, output: &CommandOutput) -> CommandOutput
     )
 }
 
+/// Ownership-taking sibling of [`scrub_output`] used by the real runners on
+/// their success paths: when `spec.redact()` is `false` the captured output
+/// is returned as-is instead of paying a full clone of megabytes of stdout
+/// and stderr. Under redaction the scrubbing semantics are identical to
+/// [`scrub_output`].
+pub(crate) fn scrub_output_owned(spec: &CommandSpec, output: CommandOutput) -> CommandOutput {
+    if !spec.redact {
+        return output;
+    }
+    let CommandOutput {
+        stdout,
+        stderr,
+        exit_code,
+        ..
+    } = output;
+    CommandOutput::new(
+        redact_output(spec, &stdout),
+        redact_output(spec, &stderr),
+        exit_code,
+    )
+}
+
 /// Replace secret *values* in `text` with `"***"`, honoring `spec.redact`.
 ///
 /// This is the value-replacement core shared by [`scrub_stderr`] (which then
@@ -1251,5 +1273,28 @@ mod tests {
             "normal-length secret must be scrubbed: {scrubbed_real}"
         );
         assert!(scrubbed_real.contains("***"));
+    }
+
+    /// The runners' ownership-taking scrub must agree with the public
+    /// [`scrub_output`]: unchanged output when redaction is off, scrubbed
+    /// values when it is on.
+    #[test]
+    fn scrub_output_owned_matches_scrub_output() {
+        let clean = CommandSpec::new("cmd").args(["--token", "hunter2"]);
+        let output = CommandOutput::new("plain out".to_owned(), "plain err".to_owned(), Some(0));
+        let owned = scrub_output_owned(&clean, output.clone());
+        assert_eq!(owned.stdout, "plain out", "no scrubbing when redact is off");
+        assert_eq!(owned.stderr, "plain err");
+        assert_eq!(owned.exit_code, Some(0));
+        assert!(owned.success);
+
+        let redacting = clean.redact(true);
+        let secret_output =
+            CommandOutput::new("token hunter2 here".to_owned(), String::new(), Some(0));
+        let owned = scrub_output_owned(&redacting, secret_output.clone());
+        let borrowed = scrub_output(&redacting, &secret_output);
+        assert_eq!(owned.stdout, borrowed.stdout, "scrubbed text must match");
+        assert!(!owned.stdout.contains("hunter2"), "{}", owned.stdout);
+        assert_eq!(owned.exit_code, Some(0));
     }
 }
