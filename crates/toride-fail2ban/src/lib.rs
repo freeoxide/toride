@@ -1,6 +1,10 @@
 //! Fail2ban-style intrusion prevention library for toride: log parsing,
 //! IP banning, and automated response via iptables/nftables/pf/firewalld.
 
+#![cfg_attr(
+    all(feature = "jail-lifecycle", feature = "regex-test"),
+    doc = include_str!("../README.md")
+)]
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![expect(

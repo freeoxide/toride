@@ -28,7 +28,8 @@ Besides managing an existing Fail2Ban installation, the `config` feature
   iptables (comment-tagged, self-deleting unban loops), nftables (elements
   with `timeout <ban-time>s`), pf, and firewalld.
 
-```rust
+```rust,no_run
+# fn main() -> Result<(), toride_fail2ban::Error> {
 use std::path::PathBuf;
 use toride_fail2ban::config::ResolvedJail;
 use toride_fail2ban::jail::Jail;
@@ -57,6 +58,8 @@ let mut jail = Jail::new(config, store, None, Firewall::Iptables, Box::new(runne
 // ExecutionMode::Execute to apply the platform ban commands.
 let result = jail.scan(ExecutionMode::DryRun)?;
 println!("{} new bans from {} lines", result.new_bans.len(), result.lines_scanned);
+# Ok(())
+# }
 ```
 
 The engine is a first-class feature of this crate. Whether it should stay in
@@ -92,7 +95,8 @@ The jail-lifecycle surface in this example (`spec`, `ensure_jail`) requires the
 toride-fail2ban = { version = "0.2", features = ["jail-lifecycle"] }
 ```
 
-```rust
+```rust,no_run
+# fn main() -> Result<(), toride_fail2ban::Error> {
 use toride_fail2ban::{Fail2Ban, spec::{JailSpec, FilterSpec, ActionSpec}};
 
 // Connect to the system Fail2Ban installation.
@@ -105,7 +109,7 @@ f2b.test_config()?;
 let jail = JailSpec::builder()
     .name("myapp".parse()?)
     .filter(FilterSpec::named("myapp-filter")?)
-    .action(ActionSpec::stock("nftables-multiport")?)
+    .actions(vec![ActionSpec::stock("nftables-multiport")?])
     .log_paths(vec!["/var/log/myapp/access.log".parse()?])
     .bantime("10m".parse()?)
     .findtime("5m".parse()?)
@@ -130,13 +134,16 @@ f2b.unban_ip("myapp", "203.0.113.50")?;
 // unban_ip, the command steps of ensure_jail) logs and returns success
 // without spawning a process. Config files are still written.
 let f2b_dry = Fail2Ban::system()?.with_dry_run(true);
+# Ok(())
+# }
 ```
 
 ## Doctor examples
 
 The [`Doctor`] runs structured diagnostic checks and returns a [`DoctorReport`] with typed [`Finding`] values.
 
-```rust
+```rust,no_run
+# fn main() -> Result<(), toride_fail2ban::Error> {
 use toride_fail2ban::{Fail2Ban, doctor::DoctorScope, report::Severity};
 
 let f2b = Fail2Ban::system()?;
@@ -165,6 +172,8 @@ for (severity, findings) in &by_severity {
 // Run a single category.
 let binary_report = f2b.doctor(DoctorScope::Binary)?;
 let jail_report = f2b.doctor(DoctorScope::Jail("sshd".into()))?;
+# Ok(())
+# }
 ```
 
 Available scopes: `All`, `Binary`, `Service`, `Config`, `Jail(name)`, `LogPath`, `Journal`, `Regex`, `Action`, `Permission`, `Safety`, `Proxy`.
@@ -173,14 +182,15 @@ Available scopes: `All`, `Binary`, `Service`, `Config`, `Jail(name)`, `LogPath`,
 
 [`ensure_jail`] writes config, validates, and reloads. When a step fails, the [`ApplyReport`] contains findings that describe what went wrong. The [`IniManager`] creates timestamped backups (`.bak-{timestamp}`) before overwriting; restoring is manual (copy the backup over the `.local` file), there is no automatic restore today.
 
-```rust
-use toride_fail2ban::{Fail2Ban, spec::JailSpec};
+```rust,no_run
+# fn main() -> Result<(), toride_fail2ban::Error> {
+use toride_fail2ban::{Fail2Ban, spec::{FilterSpec, JailSpec}};
 
 let f2b = Fail2Ban::system()?;
 
 let jail = JailSpec::builder()
     .name("myapp".parse()?)
-    .filter(/* ... */)
+    .filter(FilterSpec::named("myapp-filter")?)
     .bantime("10m".parse()?)
     .findtime("5m".parse()?)
     .build();
@@ -200,6 +210,8 @@ if !report.test_passed {
 // Remove a managed jail entirely (a backup of the removed file is kept).
 let remove_report = f2b.remove_jail("myapp")?;
 println!("Removed {} file(s)", remove_report.files_removed.len());
+# Ok(())
+# }
 ```
 
 ## Preset examples
@@ -219,7 +231,8 @@ For now, build specs manually using [`JailSpec::builder()`] with the values from
 
 The [`RegexTester`] wraps `fail2ban-regex` to validate filter patterns against sample log lines. It uses the actual `fail2ban-regex` binary (not Rust's regex crate) because Fail2Ban uses Python regex syntax.
 
-```rust
+```rust,no_run
+# fn main() -> Result<(), toride_fail2ban::Error> {
 use toride_fail2ban::Fail2Ban;
 
 let f2b = Fail2Ban::system()?;
@@ -268,6 +281,8 @@ let result = tester.test_ignoreregex(
     "10.0.0.1 - - [GET /healthz] health-check 10.0.0.1",
 )?;
 // result.lines_matched > 0 means the line would be ignored by Fail2Ban.
+# Ok(())
+# }
 ```
 
 ## App logging format guide
@@ -280,13 +295,13 @@ Your application must log the real client IP address in each log line. The IP mu
 
 Good:
 
-```
+```text
 2024-01-15 10:30:00 [ERROR] Authentication failed for user "admin" from 203.0.113.50
 ```
 
 Bad (proxy IP only):
 
-```
+```text
 2024-01-15 10:30:00 [ERROR] Authentication failed for user "admin" from 10.0.0.1
 ```
 
@@ -305,6 +320,7 @@ ignoreregex =
 In Rust, construct the filter spec with a validated [`RegexLine`]:
 
 ```rust
+# fn main() -> Result<(), toride_fail2ban::Error> {
 use toride_fail2ban::spec::{FilterSpec, RegexLine};
 
 let filter = FilterSpec::builder()
@@ -313,6 +329,8 @@ let filter = FilterSpec::builder()
         RegexLine::new(r#"^.*Authentication failed.*from <HOST>.*$"#)?,
     ])
     .build();
+# Ok(())
+# }
 ```
 
 ## Proxy / real-IP warning
@@ -360,7 +378,7 @@ Solutions:
 The crate is designed for testability through the [`Runner`] trait. Inject a [`FakeRunner`] in tests to avoid needing a real Fail2Ban installation:
 
 ```rust
-use toride_fail2ban::command::{FakeRunner, CommandOutput, Runner};
+use toride_fail2ban::command::{CommandOutput, FakeRunner};
 use toride_fail2ban::Fail2Ban;
 
 let mut fake = FakeRunner::new();

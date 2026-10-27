@@ -80,10 +80,6 @@ impl<'a> RegexTester<'a> {
         &self.binary
     }
 
-    // -----------------------------------------------------------------------
-    // Public API
-    // -----------------------------------------------------------------------
-
     /// Test a single log line against a raw failregex pattern.
     ///
     /// Runs `fail2ban-regex '{log_line}' '{regex}'` and parses the output for
@@ -204,10 +200,6 @@ impl<'a> RegexTester<'a> {
     ) -> Result<RegexTestResult> {
         self.run_regex(&["-l", &maxlines.to_string(), log_line, regex])
     }
-
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
 
     /// Execute `fail2ban-regex` with the given arguments and parse output.
     ///

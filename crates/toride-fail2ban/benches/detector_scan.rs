@@ -37,7 +37,7 @@ fn assert_fixture_shape() {
     assert_eq!(result.lines_scanned, EXPECTED_LINES);
     assert_eq!(result.matches_found, EXPECTED_FAILED_PASSWORD_MATCHES);
     assert_eq!(
-        result.new_bans.len(),
+        result.candidates.len(),
         EXPECTED_FAILED_PASSWORD_MATCHES as usize,
         "every named-group match should yield a ban candidate"
     );
@@ -51,9 +51,6 @@ fn assert_fixture_shape() {
     let result = detector.scan().expect("fixture scans cleanly");
     assert_eq!(result.matches_found, EXPECTED_INVALID_USER_MATCHES);
 
-    // Decy-username fixture: the first IP-looking token is attacker-chosen
-    // (a bare IPv4 literal as username); the fallback must ban the real
-    // source address after it, never the decoy.
     let mut detector = LogDetector::new(
         "fixture-check",
         std::path::Path::new(DECOY_FIXTURE_LOG),
@@ -63,17 +60,15 @@ fn assert_fixture_shape() {
     let result = detector.scan().expect("decoy fixture scans cleanly");
     assert_eq!(result.lines_scanned, EXPECTED_LINES);
     assert_eq!(result.matches_found, EXPECTED_DECOY_MATCHES);
-    assert_eq!(result.new_bans.len(), EXPECTED_DECOY_MATCHES as usize);
-    for ban in &result.new_bans {
+    assert_eq!(result.candidates.len(), EXPECTED_DECOY_MATCHES as usize);
+    for candidate in &result.candidates {
         assert!(
-            ban.ip.to_string().starts_with("203.0.113."),
+            candidate.ip.to_string().starts_with("203.0.113."),
             "bans must target the real source address, not the decoy username: {}",
-            ban.ip
+            candidate.ip
         );
     }
 
-    // A newline-free file larger than the line cap must abort with the
-    // LogFileError guard instead of buffering the whole file.
     let oversized = tempfile::tempdir().expect("temp dir for oversized fixture");
     let oversized_path = oversized.path().join("oversized.log");
     std::fs::write(&oversized_path, vec![b'x'; 1_048_577]).expect("write oversized fixture");

@@ -98,10 +98,6 @@ impl<'a> FirewallChecker<'a> {
         Self { runner }
     }
 
-    // -----------------------------------------------------------------------
-    // Binary availability probes
-    // -----------------------------------------------------------------------
-
     /// Check whether the `nft` binary is available on the system.
     ///
     /// Runs `nft --version` and returns `true` if the command exits
@@ -124,10 +120,6 @@ impl<'a> FirewallChecker<'a> {
     pub fn check_ip6tables_available(&self) -> Result<bool> {
         Ok(self.runner.run("ip6tables", &["--version"])?.success)
     }
-
-    // -----------------------------------------------------------------------
-    // State probes
-    // -----------------------------------------------------------------------
 
     /// Check whether an nft set exists in the Fail2Ban table.
     ///
@@ -154,10 +146,6 @@ impl<'a> FirewallChecker<'a> {
         let args = &["-n", "-L", chain];
         Ok(self.runner.run("iptables", args)?.success)
     }
-
-    // -----------------------------------------------------------------------
-    // Aggregate diagnosis
-    // -----------------------------------------------------------------------
 
     /// Run all firewall-related diagnostic checks based on the configured
     /// actions and return a list of [`Finding`] values.
@@ -217,10 +205,6 @@ impl<'a> FirewallChecker<'a> {
 
         findings
     }
-
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
 
     /// Run nftables-specific diagnostic probes and append findings, one set
     /// of checks per jail (`addr-set-<jail>` and `addr6-set-<jail>`).
@@ -313,8 +297,6 @@ impl<'a> FirewallChecker<'a> {
         reason = "sequential probe chain, splitting obscures flow"
     )]
     fn diagnose_iptables(&self, jails: &[String], findings: &mut Vec<Finding>) {
-        // --- iptables (IPv4) ------------------------------------------------
-
         match self.check_iptables_available() {
             Ok(true) => {
                 for jail in jails {
@@ -386,8 +368,6 @@ impl<'a> FirewallChecker<'a> {
             }
         }
 
-        // --- ip6tables (IPv6) -----------------------------------------------
-
         match self.check_ip6tables_available() {
             Ok(true) => {
                 findings.push(Finding::new(
@@ -423,10 +403,6 @@ impl<'a> FirewallChecker<'a> {
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Feature-gated deep-inspection stubs
-    // -----------------------------------------------------------------------
 
     /// Parse the full nftables ruleset from JSON output into structured types.
     ///

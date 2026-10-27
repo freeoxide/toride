@@ -139,10 +139,6 @@ pub struct IniManager {
 }
 
 impl IniManager {
-    // -----------------------------------------------------------------------
-    // Constructors
-    // -----------------------------------------------------------------------
-
     /// Create a new manager for the given Fail2Ban config directory using the
     /// default namespace ([`DEFAULT_NAMESPACE`]).
     ///
@@ -178,10 +174,6 @@ impl IniManager {
             namespace: namespace.to_owned(),
         })
     }
-
-    // -----------------------------------------------------------------------
-    // Path helpers
-    // -----------------------------------------------------------------------
 
     /// Returns the path for a managed jail config file.
     ///
@@ -222,10 +214,6 @@ impl IniManager {
     fn lock_file(&self) -> PathBuf {
         self.config_dir.join(".fail2ban-kit.lock")
     }
-
-    // -----------------------------------------------------------------------
-    // Write operations (Apply workflow)
-    // -----------------------------------------------------------------------
 
     /// Write a jail config file from the given spec.
     ///
@@ -269,10 +257,6 @@ impl IniManager {
         self.atomic_write(&path, &content)
     }
 
-    // -----------------------------------------------------------------------
-    // Remove operations (Remove workflow)
-    // -----------------------------------------------------------------------
-
     /// Remove a managed jail config file.
     ///
     /// Follows the remove workflow:
@@ -306,10 +290,6 @@ impl IniManager {
         let path = self.action_path(name);
         self.managed_remove(&path)
     }
-
-    // -----------------------------------------------------------------------
-    // Query operations
-    // -----------------------------------------------------------------------
 
     /// Scan all config directories and return files that contain the managed
     /// header and match the current namespace.
@@ -413,10 +393,6 @@ impl IniManager {
         let path = self.action_path(name);
         Self::read_file(&path)
     }
-
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
 
     /// Acquire an exclusive advisory write lock and run the given closure.
     ///

@@ -42,10 +42,6 @@ pub struct Fail2BanClient<'a> {
 }
 
 impl<'a> Fail2BanClient<'a> {
-    // -----------------------------------------------------------------------
-    // Constructors
-    // -----------------------------------------------------------------------
-
     /// Create a new client by locating `fail2ban-client` on `$PATH`.
     ///
     /// # Errors
@@ -63,10 +59,6 @@ impl<'a> Fail2BanClient<'a> {
     pub fn with_binary(runner: &'a dyn Runner, binary: PathBuf) -> Self {
         Self { runner, binary }
     }
-
-    // -----------------------------------------------------------------------
-    // Health / discovery
-    // -----------------------------------------------------------------------
 
     /// Check that the Fail2Ban server is reachable.
     ///
@@ -87,10 +79,6 @@ impl<'a> Fail2BanClient<'a> {
         Ok(line)
     }
 
-    // -----------------------------------------------------------------------
-    // Config validation
-    // -----------------------------------------------------------------------
-
     /// Validate the current Fail2Ban configuration without reloading.
     ///
     /// Runs `fail2ban-client --test`.
@@ -98,10 +86,6 @@ impl<'a> Fail2BanClient<'a> {
         let _out = self.run_cmd(&["--test"])?;
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // Reload / restart
-    // -----------------------------------------------------------------------
 
     /// Reload the entire Fail2Ban configuration.
     ///
@@ -132,10 +116,6 @@ impl<'a> Fail2BanClient<'a> {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Status / statistics
-    // -----------------------------------------------------------------------
-
     /// Return overall Fail2Ban status as raw output.
     ///
     /// Runs `fail2ban-client status`. Returns the raw stdout so the caller
@@ -165,10 +145,6 @@ impl<'a> Fail2BanClient<'a> {
         self.status()
     }
 
-    // -----------------------------------------------------------------------
-    // Banned IPs
-    // -----------------------------------------------------------------------
-
     /// List all currently banned IPs across all jails.
     ///
     /// Runs `fail2ban-client banned`. Returns raw output.
@@ -185,10 +161,6 @@ impl<'a> Fail2BanClient<'a> {
         Ok(out.stdout.trim().to_string())
     }
 
-    // -----------------------------------------------------------------------
-    // Manual ban / unban
-    // -----------------------------------------------------------------------
-
     /// Manually ban an IP address in the given jail.
     ///
     /// Runs `fail2ban-client set <jail> banip <ip>`.
@@ -204,10 +176,6 @@ impl<'a> Fail2BanClient<'a> {
         let _out = self.run_cmd(&["set", jail, "unbanip", ip])?;
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // Ignore IP management (runtime only)
-    // -----------------------------------------------------------------------
 
     /// Add an IP or CIDR to the ignore list for a jail at runtime.
     ///
@@ -227,10 +195,6 @@ impl<'a> Fail2BanClient<'a> {
         let _out = self.run_cmd(&["set", jail, "delignoreip", ip])?;
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // Global getters
-    // -----------------------------------------------------------------------
 
     /// Return the current log target path.
     ///
@@ -256,10 +220,6 @@ impl<'a> Fail2BanClient<'a> {
         Ok(out.stdout.trim().to_string())
     }
 
-    // -----------------------------------------------------------------------
-    // Utilities
-    // -----------------------------------------------------------------------
-
     /// Convert a Fail2Ban duration string to seconds.
     ///
     /// Runs `fail2ban-client --str2sec <value>` and returns the result.
@@ -269,10 +229,6 @@ impl<'a> Fail2BanClient<'a> {
         let out = self.run_cmd(&["--str2sec", value])?;
         Ok(out.stdout.trim().to_string())
     }
-
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
 
     /// Run `fail2ban-client` with the given arguments.
     ///

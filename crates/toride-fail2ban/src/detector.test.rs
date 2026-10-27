@@ -148,7 +148,7 @@ fn scan_empty_file_returns_zero_counts() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 0);
     assert_eq!(result.matches_found, 0);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
@@ -163,9 +163,9 @@ Failed password from 10.0.0.2 port 22
 
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 2);
-    assert_eq!(result.new_bans.len(), 2);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates.len(), 2);
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.2");
 }
 
 #[test]
@@ -180,7 +180,7 @@ connection established
 
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 0);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
@@ -198,7 +198,7 @@ line three\n\
     let second = detector.scan().expect("second scan");
     assert_eq!(second.lines_scanned, 0);
     assert_eq!(second.matches_found, 0);
-    assert_eq!(second.new_bans, Vec::new());
+    assert_eq!(second.candidates, Vec::new());
 }
 
 #[test]
@@ -235,28 +235,23 @@ Failed from 10.0.0.2
         detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 3);
-    assert_eq!(result.new_bans.len(), 3);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[2].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates.len(), 3);
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[2].ip.to_string(), "10.0.0.2");
 }
 
 #[test]
-fn scan_ban_entry_has_correct_jail_name() {
-    let content = "Failed from 10.0.0.1\n";
+fn scan_candidate_carries_ip_and_line_number() {
+    let content = "Failed from 10.0.0.1\nFailed from 10.0.0.2\n";
     let (mut detector, _tmp) =
         detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
-    assert_eq!(result.new_bans[0].jail_name, "test-jail");
-}
-
-#[test]
-fn scan_ban_entry_prefix_is_32_for_ipv4() {
-    let content = "Failed from 10.0.0.1\n";
-    let (mut detector, _tmp) =
-        detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
-    let result = detector.scan().unwrap();
-    assert_eq!(result.new_bans[0].prefix, 32);
+    assert_eq!(result.candidates.len(), 2);
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[0].line_number, 1);
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates[1].line_number, 2);
 }
 
 #[test]
@@ -295,7 +290,7 @@ fn scan_match_without_ip_produces_no_ban_but_counts_match() {
     let (mut detector, _tmp) = detector_with_content(content, r"error.*");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert!(result.new_bans.is_empty(), "no IP means no ban entry");
+    assert!(result.candidates.is_empty(), "no IP means no ban entry");
 }
 
 #[test]
@@ -388,7 +383,7 @@ fn edge_case_very_long_line() {
     let result = detector.scan().unwrap();
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
 }
 
 #[test]
@@ -413,7 +408,7 @@ fn edge_case_no_trailing_newline_at_eof() {
     let result = detector.scan().unwrap();
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
 }
 
 #[test]
@@ -422,7 +417,7 @@ fn edge_case_pattern_with_no_capture_groups() {
     let (mut detector, _tmp) = detector_with_content(content, r"error: .*");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
@@ -434,7 +429,7 @@ fn edge_case_pattern_with_multiple_named_groups() {
     );
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
 }
 
 #[test]
@@ -452,7 +447,7 @@ fn edge_case_match_line_ip_with_invalid_octets() {
     let (mut detector, _tmp) = detector_with_content(content, r"connection from .* failed");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
@@ -507,7 +502,7 @@ fn scan_result_types_are_correct() {
     let content = "match\n";
     let (mut detector, _tmp) = detector_with_content(content, "match");
     let result = detector.scan().unwrap();
-    let _bans: Vec<crate::types::BanEntry> = result.new_bans;
+    let _candidates: Vec<MatchCandidate> = result.candidates;
     let _scanned: u64 = result.lines_scanned;
     let _found: u32 = result.matches_found;
     let _dur: std::time::Duration = result.scan_duration;
@@ -520,7 +515,10 @@ fn scan_regex_matching_empty_string() {
     let result = detector.scan().expect("scan should not hang or fail");
     assert_eq!(result.lines_scanned, 3);
     assert_eq!(result.matches_found, 3);
-    assert!(result.new_bans.is_empty(), "no capture group means no bans");
+    assert!(
+        result.candidates.is_empty(),
+        "no capture group means no bans"
+    );
 }
 
 #[test]
@@ -568,8 +566,8 @@ fn scan_crlf_line_endings() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 2);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.2");
 }
 
 #[test]
@@ -580,9 +578,9 @@ fn scan_mixed_line_endings() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 3);
     assert_eq!(result.matches_found, 3);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.2");
-    assert_eq!(result.new_bans[2].ip.to_string(), "10.0.0.3");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates[2].ip.to_string(), "10.0.0.3");
 }
 
 #[test]
@@ -609,7 +607,7 @@ fn scan_very_long_line_100kb() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
 }
 
 #[test]
@@ -627,7 +625,7 @@ fn scan_file_with_only_empty_lines() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 5);
     assert_eq!(result.matches_found, 0);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
