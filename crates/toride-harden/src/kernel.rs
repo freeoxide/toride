@@ -76,8 +76,11 @@ pub fn read_kptr_restrict(runner: &dyn Runner) -> Result<String> {
 }
 
 /// Check if `kptr_restrict` is enabled.
+///
+/// Both `1` and `2` are enabled states, matching the doctor's
+/// classification.
 pub fn is_kptr_restrict_enabled(runner: &dyn Runner) -> bool {
-    matches!(read_kptr_restrict(runner).as_deref(), Ok("1"))
+    matches!(read_kptr_restrict(runner).as_deref(), Ok("1" | "2"))
 }
 
 /// Read `dmesg_restrict` status.

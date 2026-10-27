@@ -8,7 +8,7 @@ use crate::client::HardenClient;
 use crate::doctor::doctor;
 use crate::error::{Error, Result};
 use crate::profile::HardeningProfile;
-use crate::spec::HardenSpec;
+use crate::spec::{HardenSpec, SysctlParam};
 use clap::{Parser, Subcommand};
 
 /// System hardening via sysctl kernel parameters and security profiles.
@@ -101,7 +101,7 @@ impl Cli {
                 dry_run,
                 no_backup,
             } => run_apply(client, profile, *dry_run, *no_backup),
-            Commands::Status { verbose } => run_status(client, default_spec(), *verbose),
+            Commands::Status { verbose } => run_status(client, &default_spec(), *verbose),
             Commands::Diff { profile } => {
                 let diff = client.diff(&spec_for(profile)?)?;
                 println!("{diff}");
@@ -133,15 +133,13 @@ impl Cli {
             }
             Commands::Restore { timestamp } => {
                 let snapshot = load_backup_from_disk(&paths, timestamp)?;
-                restore_backup(&paths, &snapshot)?;
+                restore_backup(client.runner(), &paths, &snapshot)?;
                 println!("Restored backup: {timestamp}");
                 Ok(())
             }
         }
     }
 }
-
-// ── Dispatch helpers ────────────────────────────────────────────────────
 
 /// Resolve a profile name string into a [`HardeningProfile`].
 fn profile_for(name: &str) -> Result<HardeningProfile> {
@@ -198,14 +196,20 @@ fn run_apply(client: &HardenClient, profile: &str, dry_run: bool, no_backup: boo
     Ok(())
 }
 
-fn run_status(client: &HardenClient, spec: HardenSpec, verbose: bool) -> Result<()> {
-    let rows = client.status(&spec)?;
+fn run_status(client: &HardenClient, spec: &HardenSpec, verbose: bool) -> Result<()> {
+    // One status sweep answers both arms; the non-verbose path derives the
+    // changed set from the rows it already has instead of a second pass.
+    let rows = client.status(spec)?;
     if verbose {
         for (param, current) in &rows {
             println!("{} = {} (desired {})", param.key, current, param.value);
         }
     } else {
-        let changed = client.check(&spec)?;
+        let changed: Vec<&SysctlParam> = rows
+            .iter()
+            .filter(|(param, current)| current != &param.value)
+            .map(|(param, _)| param)
+            .collect();
         if changed.is_empty() {
             println!("All {} parameter(s) at desired value.", rows.len());
         } else {
@@ -280,9 +284,6 @@ mod tests {
         let cli = parse_args(["toride-harden", "profiles"]).unwrap();
         assert!(matches!(cli.command, Commands::Profiles));
     }
-
-    // ── Dispatch tests: parse a Commands variant AND prove it reaches the
-    //    real client via a FakeRunner-backed HardenClient. ───────────────
 
     use toride_runner::fake::FakeRunner;
 

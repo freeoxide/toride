@@ -14,8 +14,10 @@ const SHM_REQUIRED_OPTIONS: &[&str] = &["nosuid", "nodev", "noexec"];
 
 /// Check shared memory mounts for security issues.
 ///
-/// Returns a list of mount info entries for all `tmpfs` mounts that
-/// appear to be shared memory mounts (`/dev/shm`, `/run/shm`, etc.).
+/// Returns a list of mount info entries for all `tmpfs` mounts at the
+/// shared-memory targets: `/dev/shm`, `/run/shm`, and paths directly
+/// beneath them. A mount whose target merely contains `shm`
+/// (`/mnt/cache-shm`) is not shared memory and is not reported.
 ///
 /// # Errors
 ///
@@ -31,13 +33,22 @@ pub fn check_shm_mounts(runner: &dyn Runner) -> Result<Vec<MountInfo>> {
     let output = runner.run_checked(&spec)?;
     let all_mounts = parse_findmnt_output(&output.stdout);
 
-    // Filter to shm-like mounts
     let shm_mounts: Vec<MountInfo> = all_mounts
         .into_iter()
-        .filter(|m| m.target == "/dev/shm" || m.target == "/run/shm" || m.target.contains("shm"))
+        .filter(|m| is_shm_target(&m.target))
         .collect();
 
     Ok(shm_mounts)
+}
+
+/// Whether a mount target is a shared-memory path.
+fn is_shm_target(target: &str) -> bool {
+    ["/dev/shm", "/run/shm"].iter().any(|&root| {
+        target == root
+            || target
+                .strip_prefix(root)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
 }
 
 /// Check if a mount has all required security options.
@@ -160,5 +171,17 @@ mod tests {
         assert!(entry.contains("nodev"));
         assert!(entry.contains("noexec"));
         assert!(entry.contains("/dev/shm"));
+    }
+
+    #[test]
+    fn shm_targets_exclude_substring_matches() {
+        // Regression: /mnt/cache-shm matched via `contains("shm")` and drew
+        // nosuid/nodev/noexec warnings for a non-shared-memory mount.
+        assert!(is_shm_target("/dev/shm"));
+        assert!(is_shm_target("/run/shm"));
+        assert!(is_shm_target("/dev/shm/container"));
+        assert!(!is_shm_target("/mnt/cache-shm"));
+        assert!(!is_shm_target("/dev/shmother"));
+        assert!(!is_shm_target("/run/shmbackup"));
     }
 }

@@ -17,10 +17,14 @@ fn server_spec() -> HardenSpec {
         .build()
 }
 
-fn counting_rig() -> (FakeRunner, HardenClient) {
-    let fake = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
-        "1\n",
-    ));
+fn counting_rig(spec: &HardenSpec) -> (FakeRunner, HardenClient) {
+    let output = spec
+        .all_parameters()
+        .iter()
+        .map(|param| format!("{} = 1", param.key))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fake = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(output));
     let client = HardenClient::with_runner(Box::new(fake.clone()));
     (fake, client)
 }
@@ -34,7 +38,7 @@ fn sysctl_spawn_count(fake: &FakeRunner) -> usize {
 
 fn oracle() {
     let spec = server_spec();
-    let (fake, client) = counting_rig();
+    let (fake, client) = counting_rig(&spec);
 
     let rows = client
         .status(&spec)
@@ -42,17 +46,18 @@ fn oracle() {
     assert_eq!(rows.len(), spec.all_parameters().len());
     assert!(
         rows.iter().all(|(_, value)| value == "1"),
-        "every per-key read parses the scripted value"
+        "every parameter value comes from the scripted `sysctl -a` output"
     );
 
     let spawns = sysctl_spawn_count(&fake);
     assert_eq!(
-        spawns, 24,
-        "status() spawns one `sysctl -n <key>` per Server-profile parameter today; the read_all target is 1"
+        spawns, 1,
+        "status() must cover every Server-profile parameter with one `sysctl -a` read \
+         (it previously spawned one `sysctl -n <key>` per parameter)"
     );
     assert_eq!(
         spec.all_parameters().len(),
-        24,
+        25,
         "the Server profile's parameter set is the spawn-count denominator"
     );
 }
@@ -68,7 +73,7 @@ fn status_spawn_count(c: &mut Criterion) {
     group.bench_function("status_server_profile", |b| {
         b.iter(|| {
             let spec = server_spec();
-            let (_fake, client) = counting_rig();
+            let (_fake, client) = counting_rig(&spec);
             let rows = client.status(black_box(&spec)).expect("status answers");
             black_box(rows.len())
         });

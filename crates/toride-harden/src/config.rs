@@ -27,15 +27,21 @@ pub fn read_dropin(paths: &HardenPaths, name: &str) -> Result<Vec<SysctlParam>> 
 
 /// Write a sysctl.d drop-in file with the given parameters.
 ///
-/// Creates the parent directory if it does not exist.
+/// Creates the parent directory if it does not exist. The parameters are
+/// validated by the renderer (keys, values, single-line descriptions) before
+/// anything is written, so unvalidated text cannot reach a root-parsed file.
 ///
 /// # Errors
 ///
-/// Returns [`Error::ConfigWrite`] if the file cannot be written.
+/// Returns [`Error::ConfigWrite`] if the file cannot be written or a
+/// parameter fails validation.
 pub fn write_dropin(paths: &HardenPaths, name: &str, params: &[SysctlParam]) -> Result<()> {
     let path = paths
         .dropin_path(name)
         .ok_or_else(|| Error::ConfigWrite(format!("invalid drop-in name: {name}")))?;
+
+    // Render (and validate) before touching the filesystem.
+    let content = render_sysctl_d_dropin(name, params)?;
 
     // Ensure directory exists
     if let Some(parent) = path.parent() {
@@ -43,7 +49,6 @@ pub fn write_dropin(paths: &HardenPaths, name: &str, params: &[SysctlParam]) -> 
             .map_err(|e| Error::ConfigWrite(format!("cannot create {}: {e}", parent.display())))?;
     }
 
-    let content = render_sysctl_d_dropin(name, params);
     toride_fs::atomic_write_with_perms(&path, &content, 0o644)
         .map_err(|e| Error::ConfigWrite(format!("cannot write {}: {e}", path.display())))?;
 
@@ -71,10 +76,10 @@ pub fn list_dropins(paths: &HardenPaths) -> Result<Vec<String>> {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "conf") {
-            if let Some(stem) = path.file_stem() {
-                names.push(stem.to_string_lossy().to_string());
-            }
+        if path.extension().is_some_and(|ext| ext == "conf")
+            && let Some(stem) = path.file_stem()
+        {
+            names.push(stem.to_string_lossy().to_string());
         }
     }
 
@@ -111,7 +116,6 @@ pub fn read_all_dropins(paths: &HardenPaths) -> Result<Vec<SysctlParam>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn write_and_read_dropin() {
@@ -127,7 +131,9 @@ mod tests {
         let read_params = read_dropin(&paths, "99-hardening").unwrap();
 
         assert_eq!(read_params.len(), 2);
-        assert_eq!(read_params[0].key, "kernel.kptr_restrict");
+        // The renderer sorts by key, so the round trip comes back sorted.
+        assert_eq!(read_params[0].key, "kernel.aslr");
+        assert_eq!(read_params[1].key, "kernel.kptr_restrict");
     }
 
     #[test]

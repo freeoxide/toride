@@ -4,7 +4,7 @@
 //! kernel hardening parameters. It wraps the lower-level modules behind
 //! a convenient API.
 
-use crate::backup::{create_backup, save_backup_to_disk};
+use crate::backup::{create_backup_with_runtime, save_backup_to_disk};
 use crate::diff::{changed_params, diff_sysctl};
 use crate::error::Result;
 use crate::paths::HardenPaths;
@@ -122,15 +122,22 @@ impl HardenClient {
     /// When `skip_backup` is `true`, the pre-mutation backup is skipped
     /// (the CLI `--no-backup` flag drives this); otherwise a backup is
     /// created and persisted exactly as in
-    /// [`apply_params`](Self::apply_params).
+    /// [`apply_params`](Self::apply_params). The snapshot records both the
+    /// config files and the pre-apply runtime values of the affected keys,
+    /// so a later restore also rolls the runtime values back.
     pub fn apply_params_with_options(
         &self,
         params: &[SysctlParam],
         skip_backup: bool,
     ) -> Result<HardenReport> {
+        // Seed the current values with one `sysctl -a` read; per-key reads
+        // remain only as the fallback for keys the aggregate output lacks.
+        let current_values = sysctl::read_all_map(self.runner.as_ref());
+
         // Create backup before any changes, unless the caller opted out.
         if !skip_backup {
-            let snapshot = create_backup(&self.paths)?;
+            let keys: Vec<String> = params.iter().map(|p| p.key.clone()).collect();
+            let snapshot = create_backup_with_runtime(self.runner.as_ref(), &self.paths, &keys)?;
             save_backup_to_disk(&self.paths, &snapshot)?;
         }
 
@@ -139,13 +146,17 @@ impl HardenClient {
         let mut failed = Vec::new();
 
         for param in params {
-            match self.apply_param(param) {
+            let outcome = match current_values.get(param.key.as_str()) {
+                Some(current) if current.as_str() == param.value => Ok(false),
+                _ => sysctl::write_sysctl(self.runner.as_ref(), &param.key, &param.value)
+                    .map(|()| true),
+            };
+            match outcome {
                 Ok(true) => applied.push(param.clone()),
                 Ok(false) => skipped.push(param.clone()),
                 Err(e) => {
-                    // Continue applying the remaining parameters, but record
-                    // the failure so it is surfaced in the report (previously
-                    // it was only logged, making a partial apply look clean).
+                    // Keep applying the remaining parameters; the failure is
+                    // surfaced in the report rather than aborting the apply.
                     tracing::warn!("failed to apply {}: {e}", param.key);
                     failed.push((param.clone(), e.to_string()));
                 }
@@ -164,13 +175,20 @@ impl HardenClient {
 
     /// Get the current status of all hardened parameters.
     ///
-    /// Returns the current values of all parameters in the given spec.
+    /// Returns the current values of all parameters in the given spec. All
+    /// values come from one `sysctl -a` spawn; keys missing from that
+    /// output fall back to a single per-key read.
     pub fn status(&self, spec: &HardenSpec) -> Result<Vec<(SysctlParam, String)>> {
-        let mut results = Vec::new();
+        let params = spec.all_parameters();
+        let current_values = sysctl::read_all_map(self.runner.as_ref());
 
-        for param in spec.all_parameters() {
-            let current = sysctl::read_sysctl(self.runner.as_ref(), &param.key)
-                .unwrap_or_else(|_| "<unreadable>".into());
+        let mut results = Vec::with_capacity(params.len());
+        for param in params {
+            let current = match current_values.get(param.key.as_str()) {
+                Some(value) => value.clone(),
+                None => sysctl::read_sysctl(self.runner.as_ref(), &param.key)
+                    .unwrap_or_else(|_| "<unreadable>".into()),
+            };
             results.push((param, current));
         }
 
@@ -179,10 +197,19 @@ impl HardenClient {
 
     /// Compute a diff between current and desired state.
     ///
-    /// Returns a unified diff string showing what would change.
+    /// Returns a unified diff string showing what would change. The current
+    /// side is filtered to the desired keys first, mirroring
+    /// [`check`](Self::check), so unrelated kernel tunables are not
+    /// rendered as removed.
     pub fn diff(&self, spec: &HardenSpec) -> Result<String> {
-        let current = sysctl::read_all(self.runner.as_ref())?;
+        let all = sysctl::read_all(self.runner.as_ref())?;
         let desired = spec.all_parameters();
+        let desired_keys: std::collections::HashSet<&str> =
+            desired.iter().map(|p| p.key.as_str()).collect();
+        let current: Vec<(String, String)> = all
+            .into_iter()
+            .filter(|(key, _)| desired_keys.contains(key.as_str()))
+            .collect();
         Ok(diff_sysctl(&current, &desired))
     }
 
@@ -204,5 +231,122 @@ impl HardenClient {
     /// Harden shared memory mounts.
     pub fn harden_shm(&self) -> Result<()> {
         shm::harden_shm(self.runner.as_ref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::SysctlParam;
+    use toride_runner::fake::FakeRunner;
+
+    fn read_all_runner(output: &str) -> FakeRunner {
+        FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(output))
+    }
+
+    #[test]
+    fn diff_filters_current_side_to_desired_keys() {
+        // Regression: the full `sysctl -a` output rendered as the old side
+        // marked every unrelated tunable as removed.
+        let runner = read_all_runner(
+            "kernel.kptr_restrict = 0\nvm.swappiness = 60\nnet.core.somaxconn = 4096\n",
+        );
+        let client = HardenClient::with_runner(Box::new(runner));
+        let spec = HardenSpec::builder()
+            .params(vec![SysctlParam::new(
+                "kernel.kptr_restrict",
+                "1",
+                "Restrict kptr",
+            )])
+            .build();
+
+        let diff = client.diff(&spec).unwrap();
+        assert!(
+            diff.contains("-kernel.kptr_restrict = 0"),
+            "the changed desired key must appear: {diff}"
+        );
+        assert!(
+            !diff.contains("vm.swappiness"),
+            "unrelated keys must not be rendered as removed: {diff}"
+        );
+        assert!(
+            !diff.contains("net.core.somaxconn"),
+            "unrelated keys must not be rendered as removed: {diff}"
+        );
+    }
+
+    #[test]
+    fn status_reads_all_params_with_one_sysctl_spawn() {
+        let all = "kernel.kptr_restrict = 1\nkernel.dmesg_restrict = 1\nnet.ipv4.ip_forward = 0\n";
+        let runner = read_all_runner(all);
+        let client = HardenClient::with_runner(Box::new(runner.clone()));
+        let spec = HardenSpec::builder()
+            .params(vec![
+                SysctlParam::new("kernel.kptr_restrict", "1", ""),
+                SysctlParam::new("kernel.dmesg_restrict", "1", ""),
+                SysctlParam::new("net.ipv4.ip_forward", "0", ""),
+            ])
+            .build();
+
+        let rows = client.status(&spec).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|(_, value)| value != "<unreadable>"));
+
+        let spawns = runner
+            .calls()
+            .iter()
+            .filter(|spec| spec.program == "sysctl")
+            .count();
+        assert_eq!(
+            spawns, 1,
+            "status must cover every parameter with one `sysctl -a` spawn"
+        );
+    }
+
+    #[test]
+    fn status_falls_back_per_key_when_read_all_lacks_a_key() {
+        let runner = FakeRunner::new()
+            .push_response(toride_runner::CommandOutput::from_stdout(
+                "kernel.kptr_restrict = 1\n",
+            ))
+            .push_response(toride_runner::CommandOutput::from_stdout("0\n"));
+        let client = HardenClient::with_runner(Box::new(runner));
+        let spec = HardenSpec::builder()
+            .params(vec![
+                SysctlParam::new("kernel.kptr_restrict", "1", ""),
+                SysctlParam::new("net.ipv4.ip_forward", "0", ""),
+            ])
+            .build();
+
+        let rows = client.status(&spec).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].1, "0");
+    }
+
+    #[test]
+    fn apply_params_seeds_current_values_from_one_read() {
+        // Every param is already at its desired value, so apply performs the
+        // single `sysctl -a` read and no `sysctl -w` writes.
+        let all = "kernel.kptr_restrict = 1\nkernel.dmesg_restrict = 1\n";
+        let runner = read_all_runner(all);
+        let client = HardenClient::with_runner(Box::new(runner.clone()));
+
+        let report = client
+            .apply_params_with_options(
+                &[
+                    SysctlParam::new("kernel.kptr_restrict", "1", ""),
+                    SysctlParam::new("kernel.dmesg_restrict", "1", ""),
+                ],
+                true,
+            )
+            .unwrap();
+        assert_eq!(report.applied.len(), 0);
+        assert_eq!(report.skipped.len(), 2);
+
+        let writes = runner
+            .calls()
+            .iter()
+            .any(|spec| spec.program == "sysctl" && spec.args.contains(&"-w".to_string()));
+        assert!(!writes, "no write is needed when values already match");
     }
 }

@@ -51,6 +51,15 @@ pub fn read_all(runner: &dyn Runner) -> Result<Vec<(String, String)>> {
     Ok(parse_sysctl_output(&output.stdout))
 }
 
+/// Read all sysctl parameters into a lookup map, one spawn total.
+///
+/// A failed `sysctl -a` yields an empty map rather than an error, so
+/// callers fall back to per-key reads only when the aggregate read is
+/// unavailable.
+pub fn read_all_map(runner: &dyn Runner) -> std::collections::HashMap<String, String> {
+    read_all(runner).unwrap_or_default().into_iter().collect()
+}
+
 /// Apply a sysctl parameter if it differs from the current value.
 ///
 /// Returns `true` if the value was changed, `false` if it was already set.
