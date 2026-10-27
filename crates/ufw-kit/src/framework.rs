@@ -157,7 +157,6 @@ pub fn write_framework_file(
     backup_dir: Option<&Path>,
 ) -> Result<Option<String>> {
     with_file_lock(path, || {
-        // Read existing content for rollback
         let previous = if path.exists() {
             Some(
                 std::fs::read_to_string(path)
@@ -167,7 +166,6 @@ pub fn write_framework_file(
             None
         };
 
-        // Backup existing file if requested
         if let Some(dir) = backup_dir {
             if let Some(existing) = &previous {
                 std::fs::create_dir_all(dir)
@@ -224,8 +222,6 @@ pub fn rollback_framework_file(path: &Path, previous: Option<&str>) -> Result<()
     }
     Ok(())
 }
-
-// Rollback manager
 
 /// A recorded framework operation for rollback purposes.
 #[derive(Debug, Clone)]
@@ -305,7 +301,6 @@ impl RollbackManager {
         let new_content = remove_block(&content, id)?;
 
         if is_identical(&content, &new_content) {
-            // Nothing changed: no rollback entry needed
             return Ok(());
         }
 
@@ -325,7 +320,6 @@ impl RollbackManager {
     pub fn rollback_all(&self) -> Result<usize> {
         let mut count = 0;
 
-        // Rollback in reverse order
         for entry in self.entries.iter().rev() {
             rollback_framework_file(&entry.path, entry.previous_content.as_deref())?;
             count += 1;
@@ -360,7 +354,6 @@ impl RollbackManager {
     }
 }
 
-/// Check if two strings are identical (shared with diff module, inlined here).
 fn is_identical(a: &str, b: &str) -> bool {
     a == b
 }

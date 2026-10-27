@@ -83,12 +83,10 @@ impl HardenSpec {
     pub fn all_parameters(&self) -> Vec<SysctlParam> {
         let mut params: Vec<SysctlParam> = Vec::new();
 
-        // Profile parameters act as defaults.
         if let Some(profile) = self.profile {
             params.extend(profile.params());
         }
 
-        // Explicit parameters override profile defaults for the same key.
         params.extend(self.parameters.iter().cloned());
 
         dedup_by_key_last_wins(&mut params);

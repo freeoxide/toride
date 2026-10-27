@@ -164,8 +164,7 @@ fn server_params() -> Vec<SysctlParam> {
     let mut params = desktop_params();
 
     // The direct-apply path writes every entry in order, so the inherited
-    // desktop ptrace_scope must be dropped before the stricter server value
-    // is pushed or the same key is written twice.
+    // desktop value must be dropped before the stricter one is pushed.
     params.retain(|p| p.key != "kernel.yama.ptrace_scope");
     params.push(SysctlParam::new(
         "kernel.yama.ptrace_scope",
@@ -223,7 +222,6 @@ fn server_params() -> Vec<SysctlParam> {
 fn router_params() -> Vec<SysctlParam> {
     let mut params = server_params();
 
-    // Remove the ip_forward=0 entry and replace with ip_forward=1
     params.retain(|p| p.key != "net.ipv4.ip_forward");
     params.push(SysctlParam::new(
         "net.ipv4.ip_forward",

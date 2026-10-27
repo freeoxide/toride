@@ -8,8 +8,6 @@ use std::net::IpAddr;
 
 use crate::error::{Error, Result};
 
-// Enums
-
 /// Firewall rule action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
@@ -388,8 +386,6 @@ impl fmt::Display for UfwReport {
 /// uses `Important` where earlier versions of ufw-kit used `Error`.
 pub use toride_diagnostic_types::Severity;
 
-// Structs: Rule Specs
-
 /// A typed firewall rule specification.
 ///
 /// Use the builder to construct rules:
@@ -482,11 +478,9 @@ impl RuleSpec {
 
     /// Validate this rule spec.
     pub fn validate(&self) -> Result<()> {
-        // Validate ports
         self.from_port.validate()?;
         self.to_port.validate()?;
 
-        // Protocol is required for port ranges and port lists (UFW constraint)
         if self.protocol == ProtocolFilter::Any
             && (self.to_port.requires_protocol() || self.from_port.requires_protocol())
         {
@@ -495,7 +489,6 @@ impl RuleSpec {
             ));
         }
 
-        // Validate protocol + port combos
         if let ProtocolFilter::Specific(proto) = &self.protocol {
             if proto.rejects_ports() {
                 let has_ports = !matches!(self.to_port, PortSpec::Any)
@@ -506,11 +499,9 @@ impl RuleSpec {
             }
         }
 
-        // Validate protocol + address consistency
         if let ProtocolFilter::Specific(proto) = &self.protocol {
             match proto {
                 Protocol::Ipv6 => {
-                    // All addresses must be IPv6
                     for (label, addr) in [("from", &self.from_addr), ("to", &self.to_addr)] {
                         if let Address::Ip(ip) = addr {
                             if ip.is_ipv4() {
@@ -529,7 +520,6 @@ impl RuleSpec {
                     }
                 }
                 Protocol::Igmp => {
-                    // All addresses must be IPv4
                     for (label, addr) in [("from", &self.from_addr), ("to", &self.to_addr)] {
                         if let Address::Ip(ip) = addr {
                             if ip.is_ipv6() {
@@ -551,29 +541,24 @@ impl RuleSpec {
             }
         }
 
-        // Validate interface name
         if let Some(iface) = &self.interface {
             validate_interface(iface)?;
         }
 
-        // Validate comment
         if let Some(comment) = &self.comment {
             validate_comment(comment)?;
         }
 
-        // Validate app profile name
         if let Some(name) = &self.app_profile {
             validate_app_name(name)?;
         }
 
-        // App profile rules must not specify protocol
         if self.app_profile.is_some() && self.protocol != ProtocolFilter::Any {
             return Err(Error::Validation(
                 "app profile rules must not specify a protocol".into(),
             ));
         }
 
-        // App profile and port are mutually exclusive
         if self.app_profile.is_some()
             && (!matches!(self.to_port, PortSpec::Any) || !matches!(self.from_port, PortSpec::Any))
         {
@@ -582,7 +567,6 @@ impl RuleSpec {
             ));
         }
 
-        // Limit should be TCP-only in common usage
         if self.action == Action::Limit {
             if let ProtocolFilter::Specific(proto) = &self.protocol {
                 if *proto != Protocol::Tcp {
@@ -698,8 +682,6 @@ impl RuleSpecBuilder {
         self.spec
     }
 }
-
-// Structs: Route Rule Spec
 
 /// A typed route rule specification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -822,8 +804,6 @@ impl RouteRuleSpecBuilder {
     }
 }
 
-// Structs: Status
-
 /// Parsed UFW status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UfwStatus {
@@ -867,8 +847,6 @@ pub struct ParsedRule {
     /// Whether this is a route rule.
     pub is_route: bool,
 }
-
-// Structs: Command
 
 /// Specification for a command to execute.
 #[derive(Debug, Clone)]
@@ -928,8 +906,6 @@ pub struct CommandResult {
     pub exit_code: Option<i32>,
 }
 
-// Structs: Doctor
-
 /// A single finding from a doctor check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
@@ -973,8 +949,6 @@ pub enum DoctorScope {
     /// Only routing/forwarding checks.
     Routing,
 }
-
-// Structs: App Profile
 
 /// A typed application profile specification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1077,8 +1051,6 @@ fn validate_app_port(port: &AppPort) -> Result<()> {
     Ok(())
 }
 
-// Structs: Config
-
 /// UFW configuration from `/etc/default/ufw`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UfwConfig {
@@ -1127,8 +1099,6 @@ pub struct SshCheckResult {
     /// Ports that were checked.
     pub checked_ports: Vec<u16>,
 }
-
-// Structs: Options
 
 /// Options for enabling UFW.
 #[derive(Debug, Clone)]
@@ -1186,8 +1156,6 @@ pub struct DeleteOptions {
     pub allow_numbered_delete: bool,
 }
 
-// Structs: Framework
-
 /// A managed block within a UFW framework file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameworkRuleBlock {
@@ -1198,8 +1166,6 @@ pub struct FrameworkRuleBlock {
     /// Whether this is for IPv6.
     pub ipv6: bool,
 }
-
-// Structs: Backup
 
 /// A backup bundle of UFW configuration.
 #[derive(Debug, Clone)]
@@ -1218,8 +1184,6 @@ pub struct BackupBundle {
     pub framework_files: Vec<(String, String)>,
 }
 
-// Structs: Apply Report
-
 /// Result of applying a change.
 #[derive(Debug, Clone)]
 pub struct ApplyReport {
@@ -1234,8 +1198,6 @@ pub struct ApplyReport {
     /// Any warnings generated.
     pub warnings: Vec<String>,
 }
-
-// Validation helpers
 
 /// Validate an interface name.
 pub(crate) fn validate_interface(name: &str) -> Result<()> {
@@ -1252,7 +1214,6 @@ pub(crate) fn validate_interface(name: &str) -> Result<()> {
             "interface name contains invalid character: {name}"
         )));
     }
-    // Reject shell metacharacters
     if name.contains(|c: char| {
         matches!(
             c,
@@ -1290,7 +1251,6 @@ fn validate_comment(comment: &str) -> Result<()> {
 fn check_comment_for_secrets(comment: &str) -> Result<()> {
     let lower = comment.to_ascii_lowercase();
 
-    // Check for key=value patterns where value is non-whitespace
     for pattern in &[
         "password=",
         "passwd=",
@@ -1301,7 +1261,6 @@ fn check_comment_for_secrets(comment: &str) -> Result<()> {
     ] {
         if let Some(pos) = lower.find(pattern) {
             let after = &comment[pos + pattern.len()..];
-            // If there is a non-empty run of non-whitespace after the =, reject
             let value_part = after.split_whitespace().next().unwrap_or("");
             if !value_part.is_empty() {
                 return Err(Error::InvalidComment(
@@ -1311,7 +1270,6 @@ fn check_comment_for_secrets(comment: &str) -> Result<()> {
         }
     }
 
-    // Check for base64-looking strings of 20+ chars
     let mut base64_run = 0usize;
     for ch in comment.chars() {
         if ch.is_ascii_alphanumeric() || ch == '+' || ch == '/' || ch == '=' {
@@ -1331,7 +1289,6 @@ fn check_comment_for_secrets(comment: &str) -> Result<()> {
         ));
     }
 
-    // Check for long hex strings (32+ hex chars in a row)
     let mut hex_run = 0usize;
     for ch in comment.chars() {
         if ch.is_ascii_hexdigit() {
@@ -1380,8 +1337,6 @@ pub fn validate_comment_for_secrets_doctor(comment: &str) -> bool {
     check_comment_for_secrets(comment).is_err()
 }
 
-// Structs: Show Reports
-
 /// A listening port entry from `ufw show listening`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -1399,8 +1354,6 @@ pub struct AddedRule {
     /// The full normalized rule text.
     pub raw: String,
 }
-
-// Conversions
 
 impl From<u16> for PortSpec {
     fn from(port: u16) -> Self {

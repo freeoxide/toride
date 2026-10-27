@@ -252,7 +252,7 @@ fn check_service(ufw: &Ufw) -> Vec<Finding> {
                     }
                 }
 
-                check_boot_integration(&mut findings);
+                check_boot_integration(runner, &mut findings);
             }
 
             if let Some(policy) = &status.default_incoming {
@@ -282,6 +282,7 @@ fn check_service(ufw: &Ufw) -> Vec<Finding> {
 #[allow(clippy::too_many_lines)]
 fn check_config(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let runner = ufw.runner();
 
     let config_files = [
         "/etc/default/ufw",
@@ -292,7 +293,7 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
     ];
 
     for path in &config_files {
-        if std::path::Path::new(path).exists() {
+        if runner.file_exists(path) {
             findings.push(Finding {
                 id: intern_id(format!("cfg:{}:exists", path.replace('/', ":"))),
                 severity: Severity::Ok,
@@ -311,10 +312,10 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
         }
     }
 
-    let default_ufw_config = read_default_ufw_config();
+    let default_ufw_config = read_default_ufw_config(runner);
     let ipv6_enabled = default_ufw_config.ipv6.unwrap_or(false);
 
-    let ufw_conf = read_ufw_conf();
+    let ufw_conf = read_ufw_conf(runner);
 
     if let (Some(default_enabled), Some(conf_enabled)) =
         (default_ufw_config.enabled, ufw_conf.enabled)
@@ -356,7 +357,7 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
     if ipv6_enabled {
         let ipv6_files = ["/etc/ufw/before6.rules", "/etc/ufw/after6.rules"];
         for path in &ipv6_files {
-            if std::path::Path::new(path).exists() {
+            if runner.file_exists(path) {
                 findings.push(Finding {
                     id: intern_id(format!("cfg:{}:exists", path.replace('/', ":"))),
                     severity: Severity::Ok,
@@ -378,33 +379,26 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
         }
     }
 
-    let app_dir = std::path::Path::new("/etc/ufw/applications.d");
-    if app_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(app_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        let has_section = content
-                            .lines()
-                            .any(|l| l.trim().starts_with('[') && l.trim().ends_with(']'));
-                        if has_section && !content.contains("Managed by ufw-kit") {
-                            findings.push(Finding {
-                                id: intern_id(format!("cfg:app:{name}:no-managed-header")),
-                                severity: Severity::Info,
-                                title: format!("App profile {name} lacks managed header"),
-                                detail: format!("The app profile at {} has a section header but no 'Managed by ufw-kit' header.", path.display()),
-                                fix: None,
-                            });
-                        }
-                    }
-                }
+    let app_dir = "/etc/ufw/applications.d";
+    for name in runner.list_dir(app_dir) {
+        let path = format!("{app_dir}/{name}");
+        if let Ok(content) = runner.read_file(&path) {
+            let has_section = content
+                .lines()
+                .any(|l| l.trim().starts_with('[') && l.trim().ends_with(']'));
+            if has_section && !content.contains("Managed by ufw-kit") {
+                findings.push(Finding {
+                    id: intern_id(format!("cfg:app:{name}:no-managed-header")),
+                    severity: Severity::Info,
+                    title: format!("App profile {name} lacks managed header"),
+                    detail: format!(
+                        "The app profile at {path} has a section header but no 'Managed by ufw-kit' header."
+                    ),
+                    fix: None,
+                });
             }
         }
     }
-
-    let _ = ufw;
 
     findings
 }
@@ -583,9 +577,7 @@ fn check_rules(ufw: &Ufw) -> Vec<Finding> {
         Ok(status) => {
             for rule in &status.rules {
                 // Only an inbound allow from an unrestricted source exposes
-                // the port; `allow out 22/tcp` or a source-scoped rule does
-                // not. Port 22 is Info because the dedicated ssh checks
-                // cover it.
+                // the port; port 22 stays Info because the ssh checks cover it.
                 if !status::rule_is_allow(rule)
                     || !status::rule_is_inbound(rule)
                     || !status::rule_source_unrestricted(rule)
@@ -767,10 +759,9 @@ fn analyze_ssh_rule_details(ssh_rules: &[&ParsedRule], findings: &mut Vec<Findin
         });
     }
 
-    let scoped_to_interface = ssh_rules.iter().any(|rule| {
-        let raw = rule.raw.to_lowercase();
-        raw.contains("on ") || raw.contains("in on ") || raw.contains("out on ")
-    });
+    let scoped_to_interface = ssh_rules
+        .iter()
+        .any(|rule| rule.raw.to_lowercase().contains("on "));
     if scoped_to_interface {
         findings.push(Finding {
             id: "ssh:interface-scoped",
@@ -823,7 +814,8 @@ fn analyze_ssh_rule_details(ssh_rules: &[&ParsedRule], findings: &mut Vec<Findin
 fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    let ipv6_enabled = read_ipv6_enabled_from_config();
+    let runner = ufw.runner();
+    let ipv6_enabled = read_ipv6_enabled_from_config(runner);
 
     if ipv6_enabled {
         findings.push(Finding {
@@ -857,7 +849,7 @@ fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
 
         if let Ok(status) = ufw.status_verbose_arc() {
             let v4_incoming = status.default_incoming;
-            let config = read_default_ufw_config();
+            let config = read_default_ufw_config(runner);
 
             if let (Some(v4_pol), Some(ipv6_pol_str)) = (&v4_incoming, &config.default_input_policy)
             {
@@ -992,9 +984,8 @@ fn check_logging(ufw: &Ufw) -> Vec<Finding> {
 
     let log_paths = ["/var/log/ufw.log", "/var/log/syslog", "/var/log/kern.log"];
     for log_path in &log_paths {
-        if let Ok(meta) = std::fs::metadata(log_path) {
-            let nbytes = meta.len();
-            check_log_file_size(log_path, nbytes, &mut findings);
+        if let Some(meta) = ufw.runner().file_metadata(log_path) {
+            check_log_file_size(log_path, meta.len, &mut findings);
             break;
         }
     }
@@ -1116,6 +1107,7 @@ fn parse_profile_ports(info: &str) -> Vec<String> {
 
 fn check_permissions(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let runner = ufw.runner();
 
     let paths_to_check = [
         "/etc/ufw",
@@ -1128,62 +1120,53 @@ fn check_permissions(ufw: &Ufw) -> Vec<Finding> {
     ];
 
     for path in &paths_to_check {
-        check_path_permissions(path, &mut findings);
+        check_path_permissions(runner, path, &mut findings);
     }
 
-    check_file_ownership(&mut findings);
+    check_file_ownership(runner, &mut findings);
 
     check_secrets_in_comments(ufw, &mut findings);
 
     findings
 }
 
-fn check_path_permissions(path: &str, findings: &mut Vec<Finding>) {
-    match std::fs::metadata(path) {
-        #[cfg(unix)]
-        Ok(meta) => {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = meta.permissions().mode();
-            if mode & 0o002 != 0 {
-                findings.push(Finding {
-                    id: intern_id(format!("perm:{}:world-writable", path.replace('/', ":"))),
-                    severity: Severity::Warning,
-                    title: format!("{path} is world-writable"),
-                    detail: format!(
-                        "{path} has permissions {:o}, which is world-writable.",
-                        mode & 0o777
-                    ),
-                    fix: Some(format!("Fix permissions: sudo chmod o-w {path}")),
-                });
-            } else {
-                findings.push(Finding {
-                    id: intern_id(format!("perm:{}:ok", path.replace('/', ":"))),
-                    severity: Severity::Ok,
-                    title: format!("{path} permissions OK"),
-                    detail: format!("{path} has permissions {:o}.", mode & 0o777),
-                    fix: None,
-                });
-            }
-        }
-        #[cfg(not(unix))]
-        Ok(_) => {
-            findings.push(Finding {
-                id: intern_id(format!("perm:{}:skip", path.replace('/', ":"))),
-                severity: Severity::Info,
-                title: format!("Cannot check {path} permissions"),
-                detail: "Permission checks require Unix.".into(),
-                fix: None,
-            });
-        }
-        Err(_) => {
-            findings.push(Finding {
-                id: intern_id(format!("perm:{}:missing", path.replace('/', ":"))),
-                severity: Severity::Info,
-                title: format!("{path} not found"),
-                detail: format!("{path} does not exist."),
-                fix: None,
-            });
-        }
+fn check_path_permissions(
+    runner: &dyn crate::command::CommandRunner,
+    path: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let Some(meta) = runner.file_metadata(path) else {
+        findings.push(Finding {
+            id: intern_id(format!("perm:{}:missing", path.replace('/', ":"))),
+            severity: Severity::Info,
+            title: format!("{path} not found"),
+            detail: format!("{path} does not exist."),
+            fix: None,
+        });
+        return;
+    };
+    match meta.mode {
+        Some(mode) if mode & 0o002 != 0 => findings.push(Finding {
+            id: intern_id(format!("perm:{}:world-writable", path.replace('/', ":"))),
+            severity: Severity::Warning,
+            title: format!("{path} is world-writable"),
+            detail: format!("{path} has permissions {mode:o}, which is world-writable."),
+            fix: Some(format!("Fix permissions: sudo chmod o-w {path}")),
+        }),
+        Some(mode) => findings.push(Finding {
+            id: intern_id(format!("perm:{}:ok", path.replace('/', ":"))),
+            severity: Severity::Ok,
+            title: format!("{path} permissions OK"),
+            detail: format!("{path} has permissions {mode:o}."),
+            fix: None,
+        }),
+        None => findings.push(Finding {
+            id: intern_id(format!("perm:{}:skip", path.replace('/', ":"))),
+            severity: Severity::Info,
+            title: format!("Cannot check {path} permissions"),
+            detail: "Permission checks are not available through this runner.".into(),
+            fix: None,
+        }),
     }
 }
 
@@ -1216,8 +1199,8 @@ fn check_log_file_size(log_path: &str, nbytes: u64, findings: &mut Vec<Finding>)
     }
 }
 
-fn read_ipv6_enabled_from_config() -> bool {
-    read_default_ufw_config().ipv6.unwrap_or(false)
+fn read_ipv6_enabled_from_config(runner: &dyn crate::command::CommandRunner) -> bool {
+    read_default_ufw_config(runner).ipv6.unwrap_or(false)
 }
 
 fn is_active_ssh_session() -> bool {
@@ -1257,15 +1240,17 @@ fn detect_ssh_ports(runner: &dyn crate::command::CommandRunner) -> Vec<u16> {
     ports
 }
 
-fn read_default_ufw_config() -> crate::spec::UfwConfig {
-    std::fs::read_to_string("/etc/default/ufw")
+fn read_default_ufw_config(runner: &dyn crate::command::CommandRunner) -> crate::spec::UfwConfig {
+    runner
+        .read_file("/etc/default/ufw")
         .ok()
         .map(|content| crate::config::parse_default_ufw(&content))
         .unwrap_or_default()
 }
 
-fn read_ufw_conf() -> crate::spec::UfwConf {
-    std::fs::read_to_string("/etc/ufw/ufw.conf")
+fn read_ufw_conf(runner: &dyn crate::command::CommandRunner) -> crate::spec::UfwConf {
+    runner
+        .read_file("/etc/ufw/ufw.conf")
         .ok()
         .map(|content| crate::config::parse_ufw_conf(&content))
         .unwrap_or_default()
@@ -1324,16 +1309,14 @@ fn is_valid_port_spec(spec: &str) -> bool {
     true
 }
 
-fn check_boot_integration(findings: &mut Vec<Finding>) {
+fn check_boot_integration(runner: &dyn crate::command::CommandRunner, findings: &mut Vec<Finding>) {
     let systemd_paths = [
         "/etc/systemd/system/ufw.service",
         "/lib/systemd/system/ufw.service",
         "/etc/systemd/system/multi-user.target.wants/ufw.service",
     ];
 
-    let found = systemd_paths
-        .iter()
-        .any(|p| std::path::Path::new(p).exists());
+    let found = systemd_paths.iter().any(|p| runner.file_exists(p));
 
     if found {
         findings.push(Finding {
@@ -1463,33 +1446,24 @@ fn check_dual_stack_coverage(rules: &[crate::spec::ParsedRule], findings: &mut V
     }
 }
 
-fn check_file_ownership(findings: &mut Vec<Finding>) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-
-        let paths = ["/etc/ufw", "/etc/default/ufw", "/etc/ufw/ufw.conf"];
-        for path in &paths {
-            if let Ok(meta) = std::fs::metadata(path) {
-                let uid = meta.uid();
-                if uid != 0 {
-                    findings.push(Finding {
-                        id: intern_id(format!("perm:{}:not-root-owned", path.replace('/', ":"))),
-                        severity: Severity::Warning,
-                        title: format!("{path} is not owned by root"),
-                        detail: format!(
-                            "{path} is owned by UID {uid} instead of root (UID 0). \
-                             UFW config files should be owned by root to prevent tampering.",
-                        ),
-                        fix: Some(format!("Fix ownership: sudo chown root:root {path}")),
-                    });
-                }
-            }
+fn check_file_ownership(runner: &dyn crate::command::CommandRunner, findings: &mut Vec<Finding>) {
+    let paths = ["/etc/ufw", "/etc/default/ufw", "/etc/ufw/ufw.conf"];
+    for path in &paths {
+        if let Some(meta) = runner.file_metadata(path)
+            && let Some(uid) = meta.uid
+            && uid != 0
+        {
+            findings.push(Finding {
+                id: intern_id(format!("perm:{}:not-root-owned", path.replace('/', ":"))),
+                severity: Severity::Warning,
+                title: format!("{path} is not owned by root"),
+                detail: format!(
+                    "{path} is owned by UID {uid} instead of root (UID 0). \
+                     UFW config files should be owned by root to prevent tampering.",
+                ),
+                fix: Some(format!("Fix ownership: sudo chown root:root {path}")),
+            });
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = findings;
     }
 }
 
@@ -1631,31 +1605,67 @@ fn check_routing(ufw: &Ufw) -> Vec<Finding> {
 #[cfg(feature = "framework")]
 fn check_framework(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let runner = ufw.runner();
     let paths = crate::paths::UfwPaths::default();
 
-    check_framework_file(&paths.before_rules, "before.rules", false, &mut findings);
-    check_framework_file(&paths.after_rules, "after.rules", false, &mut findings);
+    check_framework_file(
+        runner,
+        &paths.before_rules,
+        "before.rules",
+        false,
+        &mut findings,
+    );
+    check_framework_file(
+        runner,
+        &paths.after_rules,
+        "after.rules",
+        false,
+        &mut findings,
+    );
 
-    let ipv6_enabled = read_ipv6_enabled_from_config();
+    let ipv6_enabled = read_ipv6_enabled_from_config(runner);
     if ipv6_enabled {
-        check_framework_file(&paths.before6_rules, "before6.rules", true, &mut findings);
-        check_framework_file(&paths.after6_rules, "after6.rules", true, &mut findings);
+        check_framework_file(
+            runner,
+            &paths.before6_rules,
+            "before6.rules",
+            true,
+            &mut findings,
+        );
+        check_framework_file(
+            runner,
+            &paths.after6_rules,
+            "after6.rules",
+            true,
+            &mut findings,
+        );
     }
 
-    let _ = ufw;
     findings
 }
 
 #[cfg(feature = "framework")]
 #[allow(clippy::too_many_lines)]
 fn check_framework_file(
+    runner: &dyn crate::command::CommandRunner,
     path: &std::path::Path,
     name: &str,
     is_ipv6: bool,
     findings: &mut Vec<Finding>,
 ) {
-    let content = match crate::framework::read_framework_file(path) {
-        Ok(c) if c.is_empty() => {
+    let path_str = path.display().to_string();
+    if !runner.file_exists(&path_str) {
+        findings.push(Finding {
+            id: intern_id(format!("fw:{name}:empty")),
+            severity: Severity::Warning,
+            title: format!("{name} is empty or missing"),
+            detail: format!("Framework file {name} is empty or does not exist."),
+            fix: Some(format!("Restore {name} from a backup or reinstall ufw.")),
+        });
+        return;
+    }
+    let content = match runner.read_file(&path_str) {
+        Ok(content) if content.is_empty() => {
             findings.push(Finding {
                 id: intern_id(format!("fw:{name}:empty")),
                 severity: Severity::Warning,
@@ -1665,7 +1675,7 @@ fn check_framework_file(
             });
             return;
         }
-        Ok(c) => c,
+        Ok(content) => content,
         Err(e) => {
             findings.push(Finding {
                 id: intern_id(format!("fw:{name}:read-error")),

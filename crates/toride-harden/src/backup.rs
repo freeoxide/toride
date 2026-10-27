@@ -2,10 +2,16 @@
 //!
 //! Before applying hardening changes, this module snapshots the current
 //! sysctl configuration so that changes can be rolled back if needed.
+//! The pre-apply snapshot also records the runtime values of the affected
+//! keys, because `apply` mutates runtime values via `sysctl -w` and a
+//! file-only restore would leave the kernel hardened while reporting
+//! success.
 
 use crate::error::Result;
 use crate::paths::HardenPaths;
+use crate::sysctl;
 use std::fmt::Write as _;
+use toride_runner::Runner;
 
 /// Sentinel token embedded in every section delimiter so a real sysctl.conf
 /// comment of the shape `# === my section ===` cannot be mistaken for a
@@ -32,26 +38,26 @@ pub struct BackupSnapshot {
     pub sysctl_conf: Option<String>,
     /// Contents of `/etc/sysctl.d/` drop-in files (name, content).
     pub dropins: Vec<(String, String)>,
+    /// Pre-apply runtime values of the affected keys (`key = value` pairs),
+    /// restored via `sysctl -w` so a rollback also undoes runtime changes.
+    pub runtime_values: Vec<(String, String)>,
 }
 
 /// Create a backup of the current sysctl configuration.
 ///
 /// Reads `/etc/sysctl.conf` and all `.conf` files in `/etc/sysctl.d/`.
-/// Returns a snapshot that can be used for restoration.
+/// Returns a snapshot that can be used for restoration. Runtime values are
+/// not recorded; use [`create_backup_with_runtime`] for the pre-apply path.
 ///
 /// # Errors
 ///
 /// Returns an error if the backup directory cannot be created.
 /// Individual file read failures are captured as `None` in the snapshot.
 pub fn create_backup(paths: &HardenPaths) -> Result<BackupSnapshot> {
-    // High-resolution wall-clock time plus an on-disk uniqueness guard so
-    // repeated invocations never overwrite a prior backup.
     let timestamp = unique_timestamp(paths);
 
-    // Read main sysctl.conf
     let sysctl_conf = std::fs::read_to_string(&paths.sysctl_conf).ok();
 
-    // Read all drop-in files
     let mut dropins = Vec::new();
     if paths.sysctl_d.is_dir()
         && let Ok(entries) = std::fs::read_dir(&paths.sysctl_d)
@@ -72,7 +78,6 @@ pub fn create_backup(paths: &HardenPaths) -> Result<BackupSnapshot> {
         }
     }
 
-    // Sort drop-ins for deterministic output
     dropins.sort_by(|a, b| a.0.cmp(&b.0));
 
     tracing::info!(
@@ -84,29 +89,70 @@ pub fn create_backup(paths: &HardenPaths) -> Result<BackupSnapshot> {
         timestamp,
         sysctl_conf,
         dropins,
+        runtime_values: Vec::new(),
     })
+}
+
+/// Create a pre-apply backup that also records runtime values.
+///
+/// One `sysctl -a` read covers all `keys`; keys missing from the aggregate
+/// output fall back to a single per-key read, and unreadable keys are
+/// skipped (a value that cannot be read cannot be restored either).
+///
+/// # Errors
+///
+/// As [`create_backup`].
+pub fn create_backup_with_runtime(
+    runner: &dyn Runner,
+    paths: &HardenPaths,
+    keys: &[String],
+) -> Result<BackupSnapshot> {
+    let mut snapshot = create_backup(paths)?;
+
+    let all = sysctl::read_all_map(runner);
+    for key in keys {
+        let value = match all.get(key.as_str()) {
+            Some(value) => Some(value.clone()),
+            None => sysctl::read_sysctl(runner, key).ok(),
+        };
+        if let Some(value) = value {
+            snapshot.runtime_values.push((key.clone(), value));
+        }
+    }
+
+    Ok(snapshot)
 }
 
 /// Restore sysctl configuration from a backup snapshot.
 ///
-/// Writes back the main sysctl.conf and all drop-in files.
+/// Writes back the main sysctl.conf and all drop-in files, then re-applies
+/// the recorded pre-apply runtime values via `sysctl -w` so a hardened
+/// kernel does not stay hardened after a restore.
 ///
 /// # Errors
 ///
-/// Returns an error if any file cannot be written.
-pub fn restore_backup(paths: &HardenPaths, snapshot: &BackupSnapshot) -> Result<()> {
-    // Restore main sysctl.conf
+/// Returns an error if any file cannot be written or a runtime value
+/// cannot be re-applied.
+pub fn restore_backup(
+    runner: &dyn Runner,
+    paths: &HardenPaths,
+    snapshot: &BackupSnapshot,
+) -> Result<()> {
     if let Some(content) = &snapshot.sysctl_conf {
         toride_fs::atomic_write_with_perms(&paths.sysctl_conf, content, SYSCTL_CONF_MODE)?;
         tracing::info!("backup: restored {}", paths.sysctl_conf.display());
     }
 
-    // Restore drop-in files
     for (name, content) in &snapshot.dropins {
         if let Some(path) = paths.dropin_path(name) {
             toride_fs::atomic_write_with_perms(&path, content, SYSCTL_CONF_MODE)?;
             tracing::info!("backup: restored {}", path.display());
         }
+    }
+
+    for (key, value) in &snapshot.runtime_values {
+        sysctl::write_sysctl(runner, key, value)?;
+        tracing::info!("backup: restored runtime {key}={value}");
     }
 
     tracing::info!("backup: restoration complete");
@@ -140,6 +186,14 @@ pub fn save_backup_to_disk(paths: &HardenPaths, snapshot: &BackupSnapshot) -> Re
         let _ = writeln!(content, "# {SECTION_SENTINEL} === {name} ===");
         content.push_str(file_content);
         content.push_str("\n\n");
+    }
+
+    if !snapshot.runtime_values.is_empty() {
+        let _ = writeln!(content, "# {SECTION_SENTINEL} === runtime ===");
+        for (key, value) in &snapshot.runtime_values {
+            let _ = writeln!(content, "{key} = {value}");
+        }
+        content.push('\n');
     }
 
     toride_fs::atomic_write_with_perms(&path, &content, BACKUP_FILE_MODE)?;
@@ -225,6 +279,7 @@ fn parse_backup(content: &str) -> Result<BackupSnapshot> {
 
     let mut sysctl_conf: Option<String> = None;
     let mut dropins: Vec<(String, String)> = Vec::new();
+    let mut runtime_values: Vec<(String, String)> = Vec::new();
 
     // Walk the body line-by-line, accumulating section content between markers.
     let mut current_section: Option<String> = None;
@@ -246,7 +301,13 @@ fn parse_backup(content: &str) -> Result<BackupSnapshot> {
         if let Some(name) = name {
             // Flush the previous section.
             if let Some(prev) = current_section.take() {
-                push_section(&mut sysctl_conf, &mut dropins, &prev, &current_lines);
+                push_section(
+                    &mut sysctl_conf,
+                    &mut dropins,
+                    &mut runtime_values,
+                    &prev,
+                    &current_lines,
+                );
                 current_lines.clear();
             }
             current_section = Some(name.to_string());
@@ -257,7 +318,13 @@ fn parse_backup(content: &str) -> Result<BackupSnapshot> {
 
     // Flush trailing section (the writer always appends "\n\n" after content).
     if let Some(name) = current_section {
-        push_section(&mut sysctl_conf, &mut dropins, &name, &current_lines);
+        push_section(
+            &mut sysctl_conf,
+            &mut dropins,
+            &mut runtime_values,
+            &name,
+            &current_lines,
+        );
     }
 
     // Drop-ins are sorted deterministically on write; mirror that here.
@@ -267,6 +334,7 @@ fn parse_backup(content: &str) -> Result<BackupSnapshot> {
         timestamp,
         sysctl_conf,
         dropins,
+        runtime_values,
     })
 }
 
@@ -278,6 +346,7 @@ fn parse_backup(content: &str) -> Result<BackupSnapshot> {
 fn push_section(
     sysctl_conf: &mut Option<String>,
     dropins: &mut Vec<(String, String)>,
+    runtime_values: &mut Vec<(String, String)>,
     name: &str,
     lines: &[&str],
 ) {
@@ -295,6 +364,12 @@ fn push_section(
 
     if name == "/etc/sysctl.conf" {
         *sysctl_conf = Some(body);
+    } else if name == "runtime" {
+        for line in body.lines() {
+            if let Some((key, value)) = line.split_once('=') {
+                runtime_values.push((key.trim().to_string(), value.trim().to_string()));
+            }
+        }
     } else {
         dropins.push((name.to_string(), body));
     }
@@ -303,11 +378,10 @@ fn push_section(
 /// Generate a high-resolution timestamp string without depending on chrono.
 ///
 /// The timestamp combines whole seconds with a zero-padded millisecond
-/// component, so backups created within the same wall-clock second no longer
-/// collide (the previous second-resolution format silently overwrote prior
-/// backups). Callers that need a guaranteed-unique on-disk name should pass
-/// the result through [`unique_timestamp`], which appends a monotonic counter
-/// suffix only when an actual collision is detected on disk.
+/// component, so backups created within the same wall-clock second do not
+/// collide. Callers that need a guaranteed-unique on-disk name should pass
+/// the result through [`unique_timestamp`], which appends a counter suffix
+/// only when an actual collision is detected on disk.
 fn chrono_independent_timestamp() -> String {
     let duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -385,9 +459,10 @@ mod tests {
             timestamp: "12345".into(),
             sysctl_conf: Some("kernel.aslr = 2\n".into()),
             dropins: vec![("99-test".into(), "kernel.kptr_restrict = 1\n".into())],
+            runtime_values: Vec::new(),
         };
 
-        restore_backup(&paths, &snapshot).unwrap();
+        restore_backup(&toride_runner::fake::FakeRunner::new(), &paths, &snapshot).unwrap();
 
         let content = std::fs::read_to_string(root.join("etc/sysctl.conf")).unwrap();
         assert!(content.contains("kernel.aslr = 2"));
@@ -406,6 +481,7 @@ mod tests {
                 ("99-hardening".into(), "kernel.kptr_restrict = 1\n".into()),
                 ("zz-custom".into(), "fs.protected_hardlinks = 1\n".into()),
             ],
+            runtime_values: Vec::new(),
         };
 
         save_backup_to_disk(&paths, &original).unwrap();
@@ -427,6 +503,7 @@ mod tests {
             timestamp: "42".into(),
             sysctl_conf: None,
             dropins: vec![("only".into(), "vm.swappiness = 10\n".into())],
+            runtime_values: Vec::new(),
         };
 
         save_backup_to_disk(&paths, &original).unwrap();
@@ -486,15 +563,101 @@ mod tests {
             timestamp: "999".into(),
             sysctl_conf: Some("kernel.randomize_va_space = 2\n".into()),
             dropins: vec![("99-rt".into(), "kernel.dmesg_restrict = 1\n".into())],
+            runtime_values: Vec::new(),
         };
 
         save_backup_to_disk(&paths, &original).unwrap();
         let loaded = load_backup_from_disk(&paths, "999").unwrap();
-        restore_backup(&paths, &loaded).unwrap();
+        restore_backup(&toride_runner::fake::FakeRunner::new(), &paths, &loaded).unwrap();
 
         let conf = std::fs::read_to_string(root.join("etc/sysctl.conf")).unwrap();
         assert!(conf.contains("kernel.randomize_va_space = 2"));
         let dropin = std::fs::read_to_string(root.join("etc/sysctl.d/99-rt.conf")).unwrap();
         assert!(dropin.contains("kernel.dmesg_restrict = 1"));
+    }
+
+    #[test]
+    fn restore_reapplies_recorded_runtime_values() {
+        // Regression: a file-only restore left every sysctl hardened at
+        // runtime while reporting success.
+        use toride_runner::fake::FakeRunner;
+
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = HardenPaths::with_root(dir.path());
+
+        let snapshot = BackupSnapshot {
+            timestamp: "42".into(),
+            sysctl_conf: None,
+            dropins: Vec::new(),
+            runtime_values: vec![
+                ("kernel.kptr_restrict".into(), "0".into()),
+                ("net.ipv4.ip_forward".into(), "1".into()),
+            ],
+        };
+
+        let runner = FakeRunner::new()
+            .push_response(toride_runner::CommandOutput::from_stdout("0\n"))
+            .push_response(toride_runner::CommandOutput::from_stdout("1\n"));
+        restore_backup(&runner, &paths, &snapshot).unwrap();
+
+        let calls = runner.calls();
+        let writes: Vec<String> = calls
+            .iter()
+            .filter(|spec| spec.program == "sysctl" && spec.args.contains(&"-w".to_string()))
+            .map(|spec| spec.args.last().cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            writes,
+            vec![
+                "kernel.kptr_restrict=0".to_string(),
+                "net.ipv4.ip_forward=1".to_string(),
+            ],
+            "restore must re-apply pre-apply runtime values via sysctl -w"
+        );
+    }
+
+    #[test]
+    fn runtime_values_round_trip_through_disk() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = HardenPaths::with_root(dir.path());
+
+        let original = BackupSnapshot {
+            timestamp: "7".into(),
+            sysctl_conf: None,
+            dropins: Vec::new(),
+            runtime_values: vec![("kernel.kptr_restrict".into(), "0".into())],
+        };
+
+        save_backup_to_disk(&paths, &original).unwrap();
+        let loaded = load_backup_from_disk(&paths, "7").unwrap();
+        assert_eq!(loaded.runtime_values, original.runtime_values);
+    }
+
+    #[test]
+    fn create_backup_with_runtime_records_values_from_one_read() {
+        use toride_runner::fake::FakeRunner;
+
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = HardenPaths::with_root(dir.path());
+
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
+            "kernel.kptr_restrict = 0\nnet.ipv4.ip_forward = 1\n",
+        ));
+        let snapshot =
+            create_backup_with_runtime(&runner, &paths, &["kernel.kptr_restrict".into()]).unwrap();
+
+        assert_eq!(
+            snapshot.runtime_values,
+            vec![("kernel.kptr_restrict".to_string(), "0".to_string())]
+        );
+        assert_eq!(
+            runner
+                .calls()
+                .iter()
+                .filter(|spec| spec.program == "sysctl" && spec.args.contains(&"-a".to_string()))
+                .count(),
+            1,
+            "runtime values come from one sysctl -a read"
+        );
     }
 }
