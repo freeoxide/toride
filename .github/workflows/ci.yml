@@ -210,6 +210,31 @@ jobs:
         run: |
           cargo clippy -p toride-registry -p toride-installer --all-targets --features http -- -D warnings
           cargo test -p toride-registry -p toride-installer --all-targets --features http
+      - name: Lint and test the non-default config feature
+        run: |
+          cargo clippy -p toride-updates --all-targets --features config -- -D warnings
+          cargo test -p toride-updates --all-targets --features config
+
+  ufw-kit-features:
+    name: ufw-kit feature gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ufw-kit-features
+      - name: Lint and test the non-default ssh feature
+        run: |
+          cargo clippy -p ufw-kit --all-targets --features ssh -- -D warnings
+          cargo test -p ufw-kit --all-targets --features ssh
+      - name: Lint and test the full feature set
+        run: |
+          cargo clippy -p ufw-kit --all-targets --all-features -- -D warnings
+          cargo test -p ufw-kit --all-targets --all-features
 
   check:
     name: Check (${{ matrix.os }})
