@@ -695,13 +695,14 @@ pub fn compare_host_key_lines(
 /// separators `ssh_config(5)` accepts, comparing the keyword
 /// case-insensitively without allocating.
 fn config_directive_value<'a>(trimmed: &'a str, keyword: &str) -> Option<&'a str> {
-    if trimmed.len() <= keyword.len() {
+    let bytes = trimmed.as_bytes();
+    if bytes.len() <= keyword.len() {
         return None;
     }
-    if !trimmed[..keyword.len()].eq_ignore_ascii_case(keyword) {
+    if !bytes[..keyword.len()].eq_ignore_ascii_case(keyword.as_bytes()) {
         return None;
     }
-    let separator = trimmed.as_bytes()[keyword.len()];
+    let separator = bytes[keyword.len()];
     if separator != b' ' && separator != b'\t' && separator != b'=' {
         return None;
     }
@@ -2074,6 +2075,30 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         assert_eq!(
             detect_verify_host_key_dns("VerifyHostKeyDNS = ask"),
             DnsVerifyStatus::Ask
+        );
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_multibyte_line_does_not_panic() {
+        // Six euros are 18 bytes, so byte 16 (the VerifyHostKeyDNS keyword
+        // length) falls inside the sixth character.
+        let line = format!("{} yes", "€".repeat(6));
+        assert_eq!(
+            detect_verify_host_key_dns(&line),
+            DnsVerifyStatus::Unknown,
+            "a multi-byte line must be skipped, not sliced at a non-boundary"
+        );
+    }
+
+    #[test]
+    fn find_user_known_hosts_file_multibyte_host_line_does_not_panic() {
+        // The emoji occupies bytes 2..6, so byte 4 (the Host keyword
+        // length) falls inside it.
+        let content = "ab😀 x\nUserKnownHostsFile /custom\n";
+        assert_eq!(
+            find_user_known_hosts_file_in_config(content, "web"),
+            Some("/custom".to_owned()),
+            "the global directive must survive a multi-byte Host-ish line"
         );
     }
 

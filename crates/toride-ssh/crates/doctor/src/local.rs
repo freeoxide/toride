@@ -2390,25 +2390,11 @@ impl Check for AgentIdentityCheck<'_> {
                 })
                 .collect();
 
-            let futs: Vec<BoxedFpFuture<'_>> = targets
+            let pub_paths: Vec<std::path::PathBuf> = targets
                 .iter()
-                .map(|(_, _, pub_path)| {
-                    let pub_path = pub_path.clone();
-                    let fut: BoxedFpFuture<'_> = Box::pin(async move {
-                        tokio::task::spawn_blocking(move || {
-                            duct::cmd("ssh-keygen", ["-lf", pub_path.to_str().unwrap_or("")])
-                                .stderr_null()
-                                .read()
-                                .ok()
-                        })
-                        .await
-                        .ok()
-                        .flatten()
-                    });
-                    fut
-                })
+                .map(|(_, _, pub_path)| pub_path.clone())
                 .collect();
-            let fp_outputs = join_all_bounded(MAX_CONCURRENT_CHECKS, futs).await;
+            let fp_outputs = probe_identity_fingerprints(&pub_paths, &ssh_keygen_lf_probe).await;
 
             let mut diagnostics = Vec::new();
             for ((raw_path, expanded, _pub_path), fp_output) in targets.iter().zip(fp_outputs) {
@@ -2787,8 +2773,43 @@ const MAX_CONCURRENT_CHECKS: usize = 8;
 type BoxedCheckFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + 'a>>;
 
-type BoxedFpFuture<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>>;
+/// One probe future: the raw `ssh-keygen -lf` stdout when the command ran.
+pub type KeygenProbeFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>;
+
+/// Probe injected into [`probe_identity_fingerprints`], standing in for one
+/// `ssh-keygen -lf` invocation.
+pub type KeygenProbe<'a> = &'a (dyn Fn(&std::path::Path) -> KeygenProbeFuture + Send + Sync);
+
+/// Real probe: spawn `ssh-keygen -lf <pub_path>` and return its stdout.
+fn ssh_keygen_lf_probe(pub_path: &std::path::Path) -> KeygenProbeFuture {
+    let pub_path = pub_path.to_path_buf();
+    Box::pin(async move {
+        tokio::task::spawn_blocking(move || {
+            duct::cmd("ssh-keygen", ["-lf", pub_path.to_str().unwrap_or("")])
+                .stderr_null()
+                .read()
+                .ok()
+        })
+        .await
+        .ok()
+        .flatten()
+    })
+}
+
+/// Run one probe per public-key path under the doctor-wide concurrency
+/// bound, returning each probe's raw output in input order.
+///
+/// `probe` replaces the `ssh-keygen -lf` spawn so tests and benches can
+/// measure the fan-out without the binary.
+pub async fn probe_identity_fingerprints(
+    pub_paths: &[std::path::PathBuf],
+    probe: KeygenProbe<'_>,
+) -> Vec<Option<String>> {
+    let futs: Vec<KeygenProbeFuture> = pub_paths.iter().map(|path| probe(path)).collect();
+    join_all_bounded(MAX_CONCURRENT_CHECKS, futs).await
+}
+
 pub async fn run_all<'a>(
     paths: &'a SshPaths,
     runner: &'a dyn toride_ssh_core::CliRunner,

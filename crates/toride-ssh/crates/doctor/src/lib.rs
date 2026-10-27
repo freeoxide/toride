@@ -13,6 +13,8 @@ use toride_ssh_core::CliRunner;
 use toride_ssh_core::paths::SshPaths;
 use toride_ssh_core::{Diagnostic, Result};
 
+pub use local::{KeygenProbe, KeygenProbeFuture, probe_identity_fingerprints};
+
 /// SSH diagnostic operations (local and remote).
 ///
 /// Obtained from [`SshManager::doctor()`](crate::DoctorService::new).

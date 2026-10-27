@@ -40,5 +40,9 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 name = "remote_checks"
 harness = false
 
+[[bench]]
+name = "local_checks"
+harness = false
+
 [lints]
 workspace = true
