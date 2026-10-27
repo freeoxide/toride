@@ -16,29 +16,46 @@ pub struct ControlSession {
     pub established: SystemTime,
 }
 
-/// List active `ControlMaster` sessions by scanning for control sockets.
-///
-/// Scans the SSH directory (and any `ControlPath` pattern locations) for Unix
-/// domain socket files that resemble OpenSSH `ControlMaster` sockets, then
-/// verifies each is still alive using `ssh -O check`.
-///
-/// # Common socket patterns
-///
-/// OpenSSH places control sockets at the path specified by `ControlPath` in
-/// `~/.ssh/config`. The default location varies by distro but common patterns
-/// include:
-///
-/// - `~/.ssh/cm-%r@%h:%p`
-/// - `~/.ssh/ctrl-%C`
-/// - `/tmp/ssh-%r@%h:%p-*`
-///
-/// This function scans `ssh_dir` and `/tmp` for files that look like control
-/// sockets.
+/// A pinned, `Send` verification future as produced by [`VerifyFn`].
 // Boxing keeps one concrete `Send` future type for the fan-out
 // (rust-lang/rust#110338).
-type BoxedVerifyFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Option<bool>> + Send>>;
+pub type BoxedVerifyFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<bool>> + Send>>;
 
+/// Verifier injected into [`list_sessions_with`]: `Some(true)` means a live
+/// master, `Some(false)` a dead socket, `None` that `ssh` is unavailable.
+pub type VerifyFn<'a> = &'a (dyn Fn(PathBuf) -> BoxedVerifyFuture + Send + Sync);
+
+/// List active `ControlMaster` sessions by scanning for control sockets.
+///
+/// Scans `ssh_dir` and `/tmp` for Unix domain socket files that resemble
+/// OpenSSH `ControlMaster` sockets, then verifies each is still alive via
+/// `ssh -O check`. OpenSSH places control sockets at the `ControlPath`
+/// pattern from `~/.ssh/config`; common patterns include `~/.ssh/cm-%r@%h:%p`,
+/// `~/.ssh/ctrl-%C`, and `/tmp/ssh-%r@%h:%p-*`.
+///
+/// # Errors
+///
+/// Returns [`toride_ssh_core::Error::Io`] if `ssh_dir` cannot be read.
 pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
+    list_sessions_with(ssh_dir, &|socket_path| {
+        Box::pin(verify_control_session(socket_path))
+    })
+    .await
+}
+
+/// [`list_sessions`](fn@list_sessions) with an injected verifier.
+///
+/// The verifier replaces the `ssh -O check` spawn so tests and benches can
+/// measure the bounded fan-out without a real `ssh` binary.
+///
+/// # Errors
+///
+/// Returns [`toride_ssh_core::Error::Io`] if `ssh_dir` cannot be read.
+pub async fn list_sessions_with(
+    ssh_dir: &Path,
+    verify: VerifyFn<'_>,
+) -> Result<Vec<ControlSession>> {
     let mut candidates = Vec::new();
 
     if ssh_dir.exists() {
@@ -69,7 +86,7 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         .iter()
         .map(|socket_path| {
             let socket_path = socket_path.clone();
-            let fut: BoxedVerifyFuture = Box::pin(verify_control_session(socket_path));
+            let fut: BoxedVerifyFuture = verify(socket_path);
             fut
         })
         .collect();

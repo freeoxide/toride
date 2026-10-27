@@ -42,6 +42,10 @@ const KEYSCAN_HOST_KEY_LINE: &str =
 
 const REMOTE_AUTHORIZED_KEYS: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB8Qm0kQx9pN2rBench7vJw4uZ1yT0hKqM5sEdRfGh6L deploy@toride-bench\n";
 
+/// Deltas under 20 percent are shared-host regime drift, matching the
+/// campaign's bench gate tolerance; larger ones still fail as regressions.
+const NOISE_THRESHOLD: f64 = 0.20;
+
 #[derive(Default)]
 struct CountingFakeRunner {
     total: AtomicUsize,
@@ -169,9 +173,10 @@ fn remote_checks(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("remote_checks");
-    group.warm_up_time(std::time::Duration::from_millis(500));
-    group.measurement_time(std::time::Duration::from_secs(2));
-    group.sample_size(20);
+    group.noise_threshold(NOISE_THRESHOLD);
+    group.warm_up_time(std::time::Duration::from_secs(1));
+    group.measurement_time(std::time::Duration::from_secs(8));
+    group.sample_size(100);
     group.bench_function("run_all", |b| {
         b.iter(|| {
             rt.block_on(service.run_remote_checks(black_box("localhost")))

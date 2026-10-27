@@ -11,9 +11,12 @@ const FIXTURE: &str = include_str!("../../../tests/fixtures/known_hosts_markers.
 
 const CONFIG_LINES: usize = 200;
 
-const SAMPLE_SIZE: usize = 30;
-const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
-const WARM_UP_TIME: Duration = Duration::from_millis(500);
+const SAMPLE_SIZE: usize = 100;
+const MEASUREMENT_TIME: Duration = Duration::from_secs(8);
+const WARM_UP_TIME: Duration = Duration::from_secs(1);
+/// Deltas under 20 percent are shared-host regime drift, matching the
+/// campaign's bench gate tolerance; larger ones still fail as regressions.
+const NOISE_THRESHOLD: f64 = 0.20;
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -96,6 +99,7 @@ fn known_hosts_fingerprint_pass(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("known_hosts/config_scan");
+    group.noise_threshold(NOISE_THRESHOLD);
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);
@@ -138,6 +142,7 @@ fn known_hosts_fingerprint_pass(c: &mut Criterion) {
     group.finish();
 
     let mut group = c.benchmark_group("known_hosts/fingerprint_pass");
+    group.noise_threshold(NOISE_THRESHOLD);
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);

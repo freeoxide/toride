@@ -776,8 +776,15 @@ fn expand_known_hosts_path(raw: &str) -> PathBuf {
 /// Detect the `VerifyHostKeyDNS` setting from SSH config content.
 ///
 /// Scans for the directive at both the global level and inside `Host`
-/// blocks and returns the first recognized value.
-pub(crate) fn detect_verify_host_key_dns(config_content: &str) -> DnsVerifyStatus {
+/// blocks and returns the first recognized value. Accepts the
+/// `keyword value`, `keyword<TAB>value`, and `keyword=value` separators
+/// `ssh_config(5)` allows, comparing case-insensitively without
+/// allocating a lowered copy of the line.
+///
+/// Shared scanner: `toride-ssh-doctor` routes its `VerifyHostKeyDNS`
+/// check through this function instead of keeping a twin.
+#[must_use]
+pub fn detect_verify_host_key_dns(config_content: &str) -> DnsVerifyStatus {
     for line in config_content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#') || trimmed.is_empty() {

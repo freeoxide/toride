@@ -2,11 +2,12 @@
 
 pub mod askpass;
 mod client;
-mod session;
+pub mod session;
 
 pub use askpass::AskpassHandler;
 pub use client::list_identities;
 pub use session::ControlSession;
+pub use session::{BoxedVerifyFuture, VerifyFn, list_sessions, list_sessions_with};
 
 use std::path::Path;
 
@@ -121,7 +122,8 @@ impl<'a> AgentService<'a> {
 
     /// Remove all keys from the SSH agent (`ssh-add -D`).
     ///
-    /// Returns the number of keys removed (best-effort; some agents don't report count).
+    /// `ssh-add -D` does not report how many keys it dropped, so this
+    /// returns `Ok(())` on success rather than a count.
     ///
     /// # Errors
     ///

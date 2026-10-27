@@ -73,13 +73,9 @@ impl AskpassHandler {
         Ok(Self { script_path })
     }
 
-    /// Create a new askpass handler writing its script into `dir`.
-    ///
-    /// This is primarily a testing seam: passing a dedicated
-    /// [`tempfile::TempDir`] path isolates each test's script from the shared
-    /// system temp directory, eliminating cross-test interference (and the
-    /// resulting `ETXTBSY` / "Text file busy" flakes) under parallel test
-    /// load. The handler still owns cleanup of the script file on drop.
+    /// Test seam: isolates each test's script in a dedicated
+    /// [`tempfile::TempDir`], avoiding cross-test interference and the
+    /// resulting `ETXTBSY` flakes under parallel test load.
     #[cfg(test)]
     fn new_in_dir(passphrase: &str, dir: &std::path::Path) -> Result<Self> {
         let script_path = Self::create_script_in(passphrase, dir)?;
@@ -211,26 +207,9 @@ impl AskpassHandler {
                  echo !PASSPHRASE!\r\n"
             );
 
-            // Write via a hidden sibling + `MoveFileEx` (atomic rename), the
-            // Windows analogue of the Unix branch, so the destination is
-            // never opened for writing and name collisions never clobber
-            // another handler's script.
-            //
-            // We use `OpenOptions::create_new(true)` (`CREATE_NEW`) so a name
-            // collision fails loudly instead of silently overwriting, then
-            // `fsync` and atomically rename the sibling into place. After the
-            // rename, the destination has never been opened for writing by the
-            // process, so no concurrent reader can observe a half-written file
-            // or hit a sharing violation.
-            //
-            // ACL hardening: unlike the Unix `0o700` mode, we do not pin an
-            // explicit DACL here. `%TEMP%` / `%USERPROFILE%` are created with
-            // an ACL that grants access only to the current user (and
-            // administrators) by default, which is the same effective
-            // protection. Tightening the per-file ACL would require a Windows
-            // ACL crate; we rely on the per-user temp-directory ACL instead.
-            // The `create_new` guard above is the load-bearing safety
-            // improvement over `std::fs::write`.
+            // Staged sibling + atomic rename: `create_new` (`CREATE_NEW`)
+            // fails loudly on collisions, the destination is never opened
+            // for writing, and the per-user `%TEMP%` ACL matches Unix 0o700.
             let tmp_path = {
                 let mut name = filename.clone();
                 name.push_str(".tmp");
@@ -256,29 +235,22 @@ impl AskpassHandler {
             let _ = file.sync_all();
             drop(file);
 
-            // Atomically publish the script at its final path. A same-volume
-            // `rename` is atomic on Windows (MoveFileEx with
-            // MOVEFILE_REPLACE_EXISTING is not used, so a pre-existing
-            // destination surfaces as an error rather than a silent
-            // overwrite).
+            // Same-volume `rename` is atomic and never replaces: a
+            // pre-existing destination surfaces as an error, not a clobber.
             std::fs::rename(&tmp_path, &bat_path).map_err(|e| {
-                // Best-effort cleanup of the temp file if rename failed.
                 let _ = std::fs::remove_file(&tmp_path);
                 Error::CommandFailed(format!(
                     "failed to publish askpass script {}: {e}",
                     bat_path.display()
                 ))
             })?;
-            // The actual written file is the .bat, not the extensionless
-            // original; publish it so Drop cleanup removes the correct file.
+            // The published file is the `.bat`; publish it so Drop cleanup
+            // removes the correct path.
             script_path = bat_path;
         }
 
-        // The script has been written and flushed on both platforms; the
-        // cleartext passphrase is no longer needed in this frame. Overwrite our
-        // owned copy so it is not left resident in memory (or in the freed
-        // allocation) any longer than necessary. The caller still owns the
-        // original `&str` and is responsible for its lifetime.
+        // Scrub the owned passphrase copy now that the flushed script is on
+        // disk; the caller still owns the original `&str`.
         passphrase_buf.zeroize();
 
         Ok(script_path)
@@ -405,13 +377,9 @@ mod tests {
         handler.cleanup();
     }
 
-    /// Run the askpass script, retrying on `ETXTBSY` ("Text file busy").
-    ///
-    /// On Linux, `execve(2)` returns `ETXTBSY` when the file has an open
-    /// writer, and the kernel's `i_writecount` accounting can transiently
-    /// report one under concurrent fork/exec load even after an atomic
-    /// write+rename. The race is transient, so this retries with a short
-    /// backoff instead of weakening the tests' assertions.
+    /// Run the askpass script, retrying on `ETXTBSY`: Linux `i_writecount`
+    /// accounting can transiently report a writer under concurrent fork/exec
+    /// load even after an atomic write+rename, so retry with backoff.
     #[cfg(unix)]
     fn run_script_retrying_busy(path: &std::path::Path) -> std::process::Output {
         let mut backoff = std::time::Duration::from_micros(100);

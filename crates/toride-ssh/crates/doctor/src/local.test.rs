@@ -1892,6 +1892,18 @@ async fn verify_host_key_dns_enabled() {
 }
 
 #[tokio::test]
+async fn verify_host_key_dns_enabled_equals_form() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config"), "VerifyHostKeyDNS=yes\n").unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "verify_host_key_dns");
+    assert!(
+        matches.iter().any(|d| d.message.contains("set to 'yes'")),
+        "the shared scanner must accept Keyword=value, got: {matches:?}"
+    );
+}
+
+#[tokio::test]
 async fn verify_host_key_dns_disabled() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("config"), "VerifyHostKeyDNS no\n").unwrap();

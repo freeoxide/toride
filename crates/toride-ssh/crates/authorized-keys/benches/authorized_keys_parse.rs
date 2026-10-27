@@ -10,9 +10,12 @@ use toride_ssh_core::SshPaths;
 
 const FIXTURE: &str = include_str!("../tests/fixtures/authorized_keys.txt");
 
-const SAMPLE_SIZE: usize = 30;
-const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
-const WARM_UP_TIME: Duration = Duration::from_millis(500);
+const SAMPLE_SIZE: usize = 100;
+const MEASUREMENT_TIME: Duration = Duration::from_secs(8);
+const WARM_UP_TIME: Duration = Duration::from_secs(1);
+/// Deltas under 20 percent are shared-host regime drift, matching the
+/// campaign's bench gate tolerance; larger ones still fail as regressions.
+const NOISE_THRESHOLD: f64 = 0.20;
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -41,6 +44,7 @@ fn authorized_keys_pass(c: &mut Criterion) {
     assert_eq!(entries.len(), 6, "fixture must yield 6 entries");
 
     let mut group = c.benchmark_group("authorized_keys/parse_fingerprint");
+    group.noise_threshold(NOISE_THRESHOLD);
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);
@@ -111,6 +115,7 @@ fn authorized_keys_pass(c: &mut Criterion) {
     assert_eq!(removed_again, 0, "a spent fingerprint removes nothing");
 
     let mut group = c.benchmark_group("authorized_keys/remove");
+    group.noise_threshold(NOISE_THRESHOLD);
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);

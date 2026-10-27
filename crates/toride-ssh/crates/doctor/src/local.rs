@@ -10,6 +10,8 @@ use toride_ssh_core::Result;
 use toride_ssh_core::fanout::join_all_bounded;
 use toride_ssh_core::paths::SshPaths;
 use toride_ssh_core::{Diagnostic, DiagnosticSeverity as Severity};
+use toride_ssh_known_hosts::DnsVerifyStatus;
+use toride_ssh_known_hosts::detect_verify_host_key_dns;
 
 async fn cached_config_ast(
     config_path: std::path::PathBuf,
@@ -25,35 +27,6 @@ async fn cached_config_content(
     tokio::task::spawn_blocking(move || load_cached_content(&config_path))
         .await
         .map_err(|e| std::io::Error::other(e.to_string()))?
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DnsVerifyStatus {
-    Unknown,
-    Disabled,
-    Enabled,
-    Ask,
-}
-
-fn detect_verify_host_key_dns(config_content: &str) -> DnsVerifyStatus {
-    for line in config_content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') || trimmed.is_empty() {
-            continue;
-        }
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("verifyhostkeydns") {
-            let value = trimmed["verifyhostkeydns".len()..].trim();
-            if value.eq_ignore_ascii_case("yes") || value == "true" {
-                return DnsVerifyStatus::Enabled;
-            } else if value.eq_ignore_ascii_case("no") || value == "false" {
-                return DnsVerifyStatus::Disabled;
-            } else if value.eq_ignore_ascii_case("ask") {
-                return DnsVerifyStatus::Ask;
-            }
-        }
-    }
-    DnsVerifyStatus::Unknown
 }
 
 const PRIVATE_KEY_HEADER_READ_SIZE: usize = 4096;
