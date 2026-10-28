@@ -202,6 +202,9 @@ pub struct PortQuery {
     /// Filter by protocol.
     pub protocol: Option<PortProtocol>,
     /// Filter by process name (case-insensitive substring match).
+    ///
+    /// [`PortQuery::process_name`] stores the needle lowercased;
+    /// [`PortQuery::matches`] compares it against lowercased entry names.
     pub process_name: Option<String>,
     /// Filter by PID.
     pub pid: Option<u32>,
@@ -233,9 +236,12 @@ impl PortQuery {
     }
 
     /// Filter by process name (case-insensitive substring).
+    ///
+    /// The needle is lowercased once here, not on every
+    /// [`matches`](Self::matches) call.
     #[must_use]
     pub fn process_name(mut self, name: impl Into<String>) -> Self {
-        self.process_name = Some(name.into());
+        self.process_name = Some(name.into().to_lowercase());
         self
     }
 
@@ -262,8 +268,9 @@ impl PortQuery {
 
     /// Check if an entry matches this query.
     ///
-    /// The process-name needle is lowercased once per call, not once per
-    /// candidate entry.
+    /// The process-name needle arrives pre-lowered from the
+    /// [`process_name`](Self::process_name) builder; only entry names are
+    /// lowercased here, and only when a needle is present.
     pub fn matches(&self, entry: &PortEntry) -> bool {
         if let Some(port) = self.port
             && entry.local_port != port
@@ -275,12 +282,11 @@ impl PortQuery {
         {
             return false;
         }
-        if let Some(ref name) = self.process_name {
-            let needle = name.to_lowercase();
+        if let Some(needle) = self.process_name.as_deref() {
             let matches_name = entry
                 .process_name
                 .as_ref()
-                .is_some_and(|pn| pn.to_lowercase().contains(&needle));
+                .is_some_and(|pn| pn.to_lowercase().contains(needle));
             if !matches_name {
                 return false;
             }
@@ -701,6 +707,12 @@ mod tests {
         assert!(PortQuery::new().process_name("ssh").matches(&entry));
         assert!(PortQuery::new().process_name("SSHD").matches(&entry));
         assert!(!PortQuery::new().process_name("nginx").matches(&entry));
+    }
+
+    #[test]
+    fn port_query_process_name_needle_stored_lowercased() {
+        let q = PortQuery::new().process_name("SSHD");
+        assert_eq!(q.process_name.as_deref(), Some("sshd"));
     }
 
     #[test]
