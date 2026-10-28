@@ -15,8 +15,10 @@
 //!    are probed; the newest existing one's mtime becomes `last_check`.
 //! 4. **Version**: `aide --version` is parsed for a version string.
 //! 5. **Check**: `aide --check` is run best-effort (allowed to fail); its
-//!    output is parsed by [`crate::integrity_parse::parse_aide_check`] to
-//!    derive `file_count` (added + removed + changed) and `last_check_passed`.
+//!    output is parsed by [`crate::integrity_parse::parse_aide_check`] and the
+//!    verdict is combined with the exit status (non-zero with no change
+//!    evidence means the check never completed) to derive `file_count` and
+//!    `last_check_passed`.
 //!
 //! Every field of the returned [`IntegrityStatus`] reflects a real probe, so
 //! the presentation layer never has to render a "not implemented" placeholder.
@@ -65,11 +67,13 @@ pub struct IntegrityStatus {
     /// Number of files AIDE reported as changed/added/removed on the last
     /// `aide --check`. `Some(0)` means the check ran and the filesystem
     /// matched the database; `None` means the count is genuinely unknown
-    /// (AIDE absent, database missing, or unparseable check output).
+    /// (AIDE absent, database missing, or a check that exited non-zero
+    /// without reporting changes, i.e. one that never completed).
     pub file_count: Option<usize>,
     /// Whether the last integrity check passed. `Some(true)`/`Some(false)`
     /// from a real `aide --check`; `Some(false)` when AIDE is not installed
-    /// (monitoring not active). Never `None` after [`IntegrityManager::status`].
+    /// or the check did not complete (monitoring not active or not verified).
+    /// Never `None` after [`IntegrityManager::status`].
     pub last_check_passed: Option<bool>,
     /// A one-line human-readable status summarizing the probe: version,
     /// install state, database state, and change count.
@@ -332,25 +336,34 @@ impl<'a> IntegrityManager<'a> {
         let version = self.aide_version();
 
         // 5. Best-effort `aide --check` to derive file_count + passed.
-        //    `aide --check` exits non-zero when changes are detected, so use
-        //    `run` (not `run_checked`) and parse the combined output.
-        let (file_count, last_check_passed) = match self.aide_check_output() {
+        //    `aide --check` exits non-zero both for detected changes and for
+        //    its own failures (config error, unreadable database), so the
+        //    verdict combines the parsed change evidence with the exit status.
+        let (file_count, last_check_passed, check_failed) = match self.aide_check_output() {
             Some(output) => {
                 let combined = output.combined_output();
                 match crate::integrity_parse::parse_aide_check(&combined) {
                     Ok(parsed) => {
-                        let changed = parsed.added + parsed.removed + parsed.changed;
-                        (Some(changed), Some(parsed.passed))
+                        let summary = parsed.added + parsed.removed + parsed.changed;
+                        let detected = if summary == 0 && !parsed.changes.is_empty() {
+                            parsed.changes.len()
+                        } else {
+                            summary
+                        };
+                        if !parsed.passed {
+                            (Some(detected), Some(false), false)
+                        } else if output.success {
+                            (Some(detected), Some(true), false)
+                        } else {
+                            (None, Some(false), true)
+                        }
                     }
-                    Err(_) => (Some(0), Some(output.success)),
+                    Err(_) => (None, Some(false), true),
                 }
             }
-            None => {
-                // Check could not run (e.g. no DB yet). If the DB exists we
-                // still report a definite `false` (not yet verified); if not,
-                // the not-initialized state is itself a definite `false`.
-                (None, Some(database_initialized && config_present))
-            }
+            // The check never ran (spawn failure, no database): not verified,
+            // count unknown.
+            None => (None, Some(false), true),
         };
 
         // 6. Assemble a one-line human-readable status string.
@@ -359,6 +372,7 @@ impl<'a> IntegrityManager<'a> {
             config_present,
             database_initialized,
             file_count,
+            check_failed,
             last_check,
         );
 
@@ -438,12 +452,12 @@ fn extract_version(combined: &str) -> Option<String> {
 }
 
 /// Build the one-line human-readable status summarizing the probe.
-#[allow(clippy::too_many_arguments)]
 fn build_status_line(
     version: Option<&str>,
     config_present: bool,
     database_initialized: bool,
     file_count: Option<usize>,
+    check_failed: bool,
     last_check: Option<SystemTime>,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -464,6 +478,9 @@ fn build_status_line(
         }
     } else {
         parts.push("db not initialized".to_owned());
+    }
+    if check_failed {
+        parts.push("check failed".to_owned());
     }
 
     if let Some(ts) = last_check.and_then(system_time_to_rfc3339) {
@@ -878,8 +895,8 @@ mod tests {
     }
 
     #[test]
-    fn status_line_when_not_initialized() {
-        let line = build_status_line(Some("0.18.8"), false, false, None, None);
+    fn status_line_when_changes_detected() {
+        let line = build_status_line(Some("0.18.8"), false, false, None, false, None);
         assert!(line.contains("AIDE 0.18.8"), "line = {line}");
         assert!(line.contains("no config"), "line = {line}");
         assert!(line.contains("db not initialized"), "line = {line}");
@@ -887,14 +904,140 @@ mod tests {
 
     #[test]
     fn status_line_when_clean_check() {
-        let line = build_status_line(None, true, true, Some(0), None);
+        let line = build_status_line(None, true, true, Some(0), false, None);
         assert!(line.contains("0 changes"), "line = {line}");
     }
 
     #[test]
-    fn status_line_when_changes_detected() {
-        let line = build_status_line(None, true, true, Some(7), None);
-        assert!(line.contains("7 changes"), "line = {line}");
+    fn status_line_when_check_failed() {
+        let line = build_status_line(None, true, true, None, true, None);
+        assert!(line.contains("check failed"), "line = {line}");
+        assert!(!line.contains("0 changes"), "line = {line}");
+    }
+
+    /// An `aide --check` that dies on an error banner (config error, unreadable
+    /// database, permission failure) must not read as a clean pass: the check
+    /// never completed, so the count is unknown and the verdict is failed.
+    /// AIDE's real exit code for a configuration error abort is 17.
+    #[test]
+    fn with_binary_errored_check_reports_failed_and_unknown_count() {
+        let tmp = TempDir::new().unwrap();
+        let paths = override_paths_with_db(tmp.path());
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_response(CommandOutput::from_stderr(
+                "aide: error: /etc/aide.conf:12: configuration error, aborting",
+                17,
+            ));
+        let mgr = IntegrityManager::with_binary(
+            &runner,
+            &paths,
+            PathBuf::from("/opt/toride-fixtures/aide"),
+        );
+
+        let s = mgr.status().unwrap();
+        assert_eq!(
+            s.last_check_passed,
+            Some(false),
+            "a check that errored out did not pass"
+        );
+        assert_eq!(
+            s.file_count, None,
+            "no count exists when the check never completed"
+        );
+        let line = s.last_check_output.unwrap_or_default();
+        assert!(
+            !line.contains("0 changes"),
+            "line must not claim a clean count: {line}"
+        );
+        assert!(line.contains("check failed"), "line = {line}");
+    }
+
+    /// A check whose exit is non-zero *because changes were found* (AIDE exits
+    /// 4 for changed files) keeps its parsed counts: this is a genuine failed
+    /// integrity check, not an incomplete one.
+    #[test]
+    fn with_binary_changed_files_nonzero_exit_reports_counts_and_failed() {
+        let tmp = TempDir::new().unwrap();
+        let paths = override_paths_with_db(tmp.path());
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_response(CommandOutput::new(
+                "Added entries:\t\t0\nRemoved entries:\t\t0\nChanged entries:\t\t3\n".to_owned(),
+                String::new(),
+                Some(4),
+            ));
+        let mgr = IntegrityManager::with_binary(
+            &runner,
+            &paths,
+            PathBuf::from("/opt/toride-fixtures/aide"),
+        );
+
+        let s = mgr.status().unwrap();
+        assert_eq!(
+            s.file_count,
+            Some(3),
+            "changed count comes from the summary"
+        );
+        assert_eq!(s.last_check_passed, Some(false));
+    }
+
+    /// Change markers without a summary line (older AIDE, truncated capture)
+    /// still yield a count: the per-line marker count stands in for the
+    /// missing summary total.
+    #[test]
+    fn with_binary_markers_without_summary_count_the_markers() {
+        let tmp = TempDir::new().unwrap();
+        let paths = override_paths_with_db(tmp.path());
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_response(CommandOutput::new(
+                "f!! /etc/passwd\nf>p /etc/shadow\n".to_owned(),
+                String::new(),
+                Some(4),
+            ));
+        let mgr = IntegrityManager::with_binary(
+            &runner,
+            &paths,
+            PathBuf::from("/opt/toride-fixtures/aide"),
+        );
+
+        let s = mgr.status().unwrap();
+        assert_eq!(
+            s.file_count,
+            Some(2),
+            "marker count replaces the absent summary"
+        );
+        assert_eq!(s.last_check_passed, Some(false));
+    }
+
+    /// A check whose spawn itself fails (runner error) never ran: the verdict
+    /// is failed and the count unknown, even with db and config present.
+    #[test]
+    fn with_binary_check_spawn_failure_reports_failed_and_unknown_count() {
+        let tmp = TempDir::new().unwrap();
+        let paths = override_paths_with_db(tmp.path());
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_result(Err(toride_runner::Error::CommandFailed {
+                program: "aide".into(),
+                args: "--check".into(),
+                exit_code: None,
+                stderr: "spawn failed".into(),
+            }));
+        let mgr = IntegrityManager::with_binary(
+            &runner,
+            &paths,
+            PathBuf::from("/opt/toride-fixtures/aide"),
+        );
+
+        let s = mgr.status().unwrap();
+        assert_eq!(s.file_count, None);
+        assert_eq!(
+            s.last_check_passed,
+            Some(false),
+            "a check that could not run has not passed"
+        );
     }
 
     #[test]

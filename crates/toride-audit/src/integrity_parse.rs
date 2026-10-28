@@ -64,10 +64,15 @@ pub struct AideCheckResult {
 ///
 /// Attempts to extract summary counts from the AIDE output. Falls back
 /// to scanning for change indicators if the summary line is not found.
+/// The check's exit status is not visible here: a text with no summary and
+/// no markers parses as `passed: true`, which only means "this text shows no
+/// changes"; the caller must combine it with the exit status before
+/// reporting a verdict.
 ///
 /// # Errors
 ///
-/// Returns [`crate::Error::AideError`] if the output cannot be parsed.
+/// Never returns `Err` in the current implementation; the `Result` wrapper
+/// keeps the parse seam total for a stricter future parser.
 pub fn parse_aide_check(output: &str) -> crate::Result<AideCheckResult> {
     let mut result = AideCheckResult {
         passed: true,
