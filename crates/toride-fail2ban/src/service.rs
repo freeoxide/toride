@@ -30,10 +30,6 @@
 //!   enables lower-latency service control and richer structured metadata from
 //!   systemd properties.  **Not yet implemented.**
 //!
-//! - **Optional `service-manager` feature:** A portable service management
-//!   abstraction that works across init systems (OpenRC, runit, s6, etc.), not
-//!   only systemd.  **Not yet implemented.**
-//!
 //! # Non-systemd environments
 //!
 //! In v1 the service manager targets `systemctl` exclusively.  For non-systemd

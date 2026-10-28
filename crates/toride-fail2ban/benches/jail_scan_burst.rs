@@ -25,6 +25,10 @@ const SAMPLE_SIZE: usize = 30;
 const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
 const WARM_UP_TIME: Duration = Duration::from_millis(500);
 
+/// Matches the campaign gate: only >= 20% deltas count as regressions;
+/// fsync-per-iteration store writes drift with disk writeback state.
+const GATE_NOISE_TOLERANCE: f64 = 0.20;
+
 struct NoopRunner {
     dry_run: bool,
 }
@@ -126,6 +130,7 @@ fn jail_scan_burst(c: &mut Criterion) {
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);
     group.throughput(Throughput::Bytes(log_bytes));
+    group.noise_threshold(GATE_NOISE_TOLERANCE);
 
     group.bench_function("scan_and_persist_10k_dry_run", |b| {
         b.iter(|| {

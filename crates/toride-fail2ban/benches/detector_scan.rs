@@ -26,6 +26,10 @@ const NAMED_GROUP_IP_PATTERN: &str =
 
 const FALLBACK_IPV4_PATTERN: &str = r"Invalid user \S+ from \S+";
 
+/// Matches the campaign gate: only >= 20% deltas count as regressions;
+/// idle-host run-to-run swings of this bench reach ~10%.
+const GATE_NOISE_TOLERANCE: f64 = 0.20;
+
 fn assert_fixture_shape() {
     let mut detector = LogDetector::new(
         "fixture-check",
@@ -90,6 +94,7 @@ fn bench_detector_scan(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("detector_scan");
     group.throughput(Throughput::Bytes(log_bytes));
+    group.noise_threshold(GATE_NOISE_TOLERANCE);
 
     group.bench_function("named_group_ip/ssh_failed_password_10k", |b| {
         b.iter_batched(
