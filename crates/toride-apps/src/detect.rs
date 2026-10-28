@@ -430,10 +430,13 @@ impl MultiSourceDetector {
     /// Detect every name in `names` in one pass: exactly one listing per
     /// attached backend shared across the whole batch (filtered in memory
     /// per name), one batched `file` arch probe over every `$PATH`
-    /// candidate, and one merge pass. Each returned [`Detection`] carries
-    /// the name it answers; per name the hits and their order match
-    /// [`Detector::detect`] on that name. A backend whose listing fails
-    /// contributes no hits for any name, same as the single-name probe.
+    /// candidate, and one merge pass per name. Each returned
+    /// [`Detection`] carries the name it answers; per name the hits and
+    /// their order match [`Detector::detect`] on that name, and hits
+    /// never merge across names: two names sharing one canonical binary
+    /// (a symlink alias like `vi` -> `vim`) each keep their own hit. A
+    /// backend whose listing fails contributes no hits for any name,
+    /// same as the single-name probe.
     #[must_use]
     pub fn detect_many(&self, names: &[&str]) -> Vec<Detection> {
         if names.is_empty() {
@@ -454,19 +457,20 @@ impl MultiSourceDetector {
         }
         let arch = self.batched_arch_mismatches(&probe_keys);
         let listings = self.backend_listings(names);
-        let mut hits: Vec<Detection> = Vec::new();
+        let mut merged: Vec<Detection> = Vec::new();
         for ((name, candidates), shims) in names.iter().zip(candidates_per_name).zip(shims_per_name)
         {
-            hits.extend(Self::detections_from_candidates(name, &candidates, &arch));
-            hits.extend(shims);
+            let mut per_name = Self::detections_from_candidates(name, &candidates, &arch);
+            per_name.extend(shims);
             for (source, apps) in &listings {
-                hits.extend(hits_from_rows(
+                per_name.extend(hits_from_rows(
                     source,
                     apps.iter().filter(|app| app.id == *name).cloned(),
                 ));
             }
+            merged.extend(merge_by_canonical_path(per_name));
         }
-        merge_by_canonical_path(hits)
+        merged
     }
 
     /// One listing per attached backend, restricted to `names`, in the
@@ -1169,6 +1173,46 @@ mod tests {
             .build();
         assert_eq!(detector.detect_many(&[]), Vec::<Detection>::new());
         assert_eq!(fake.calls().len(), 0, "no names, no listings");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_many_keeps_one_hit_per_name_for_names_sharing_a_canonical_binary() {
+        let dir = temp_dir("detect-many-alias");
+        let vim = write_executable(&dir, "vim");
+        let vi = dir.join("vi");
+        std::os::unix::fs::symlink(vim.as_std_path(), vi.as_std_path())
+            .expect("alias symlink is creatable");
+        let elf = "ELF 64-bit LSB pie executable, x86-64, dynamically linked\n";
+        let batched = batched_file_spec(&[vim.to_string(), vi.to_string()]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(batched.clone(), CommandOutput::from_stdout(elf.repeat(2)))
+            .respond(
+                file_spec(vi.as_str()),
+                CommandOutput::from_stdout(elf.to_owned()),
+            );
+        let detector = MultiSourceDetector::builder()
+            .runner(seam(&fake))
+            .target(aarch64_target())
+            .path_dirs(vec![dir])
+            .build();
+
+        let many = detector.detect_many(&["vim", "vi"]);
+
+        assert_eq!(
+            many.len(),
+            2,
+            "one hit per name, never merged across names: {many:?}"
+        );
+        assert_eq!(many[0].name, "vim", "{many:?}");
+        assert_eq!(many[1].name, "vi", "{many:?}");
+        let single = detector.detect("vi");
+        assert_eq!(
+            many[1], single[0],
+            "the batch's hit for a name equals the single-name probe's"
+        );
+        fake.assert_called_with(&batched);
     }
 
     #[cfg(unix)]

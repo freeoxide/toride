@@ -54,6 +54,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   serializes straight from the working ledger with no snapshot clone
   (the `tokio` path keeps exactly the one clone it moves into the
   blocking task).
+- `detect_many` merges each name's hits in that name's own pass, so two
+  requested names sharing one canonical binary (a symlink alias like
+  `vi` -> `vim`) each keep their hit, matching the documented per-name
+  parity with `detect`.
 - Consumer-facing docs swept for em dashes and filler words.
 
 ## [0.1.0] - 2026-10-02
