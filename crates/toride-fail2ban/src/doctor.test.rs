@@ -702,6 +702,24 @@ fn run_with_jail_scope() {
 }
 
 #[test]
+fn jail_scope_rejects_option_like_names_without_spawning() {
+    let fake = FakeRunner::new();
+    let doctor = Doctor::new(&fake);
+
+    let result = doctor.run(&DoctorScope::Jail("-h".to_string()));
+    assert!(
+        matches!(result, Err(crate::Error::Validation(_))),
+        "expected Error::Validation, got: {result:?}"
+    );
+
+    let calls = fake.calls();
+    assert!(
+        calls.is_empty(),
+        "a rejected jail scope must never spawn fail2ban-client"
+    );
+}
+
+#[test]
 fn doctor_report_summary_by_severity_groups_correctly() {
     let mut report = DoctorReport::empty();
     report.push(Finding::new("a", Severity::Ok, "ok finding"));

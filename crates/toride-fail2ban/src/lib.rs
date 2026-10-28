@@ -338,9 +338,12 @@ impl Fail2Ban {
     }
 
     /// Remove a managed jail configuration, then test and reload; errors if
-    /// the file is not managed, missing, or the reload fails.
+    /// the file is not managed, missing, or the reload fails. Invalid jail
+    /// names are rejected with [`Error::Validation`] before any file path is
+    /// derived from the name.
     #[cfg(all(feature = "jail-lifecycle", feature = "client"))]
     pub fn remove_jail(&self, name: &str) -> Result<report::ApplyReport> {
+        crate::types::ensure_jail_operand(name)?;
         let mgr = ini::IniManager::new(&self.paths.config_dir)?;
         let mut report = mgr.remove_jail(name)?;
 
@@ -391,9 +394,11 @@ impl Fail2Ban {
     }
 
     /// Reload a single jail (`fail2ban-client reload <name>`).
-    /// Skipped with a logged notice in dry-run mode.
+    /// Skipped with a logged notice in dry-run mode. Invalid jail names are
+    /// rejected with [`Error::Validation`] even in dry-run mode.
     #[cfg(feature = "client")]
     pub fn reload_jail(&self, name: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(name)?;
         if self.dry_run {
             Self::skip_command("reload_jail");
             return Ok(());
@@ -402,9 +407,13 @@ impl Fail2Ban {
     }
 
     /// Manually ban an IP in the given jail (`fail2ban-client set <jail> banip <ip>`).
-    /// Skipped with a logged notice in dry-run mode.
+    /// Skipped with a logged notice in dry-run mode. Invalid jail names and
+    /// non-IP operands are rejected with [`Error::Validation`] even in
+    /// dry-run mode.
     #[cfg(feature = "client")]
     pub fn ban_ip(&self, jail: &str, ip: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
+        crate::types::ensure_ip_operand(ip)?;
         if self.dry_run {
             Self::skip_command("ban_ip");
             return Ok(());
@@ -413,9 +422,13 @@ impl Fail2Ban {
     }
 
     /// Manually unban an IP in the given jail (`fail2ban-client set <jail> unbanip <ip>`).
-    /// Skipped with a logged notice in dry-run mode.
+    /// Skipped with a logged notice in dry-run mode. Invalid jail names and
+    /// non-IP operands are rejected with [`Error::Validation`] even in
+    /// dry-run mode.
     #[cfg(feature = "client")]
     pub fn unban_ip(&self, jail: &str, ip: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
+        crate::types::ensure_ip_operand(ip)?;
         if self.dry_run {
             Self::skip_command("unban_ip");
             return Ok(());

@@ -15,45 +15,15 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{Error, Result};
 
-/// Characters that are forbidden in jail/filter/action names.
-///
-/// Rejects: `/`, `..`, newlines, and shell metacharacters
-/// `;`, `|`, `&`, `$`, backtick, `\`, `'`, `"`, `(`, `)`, `<`, `>`, `{`, `}`.
-const FORBIDDEN_NAME_CHARS: &[char] = &[
-    '/', '\n', '\r', ';', '|', '&', '$', '`', '\\', '\'', '"', '(', ')', '<', '>', '{', '}',
-];
-
-/// Validates that a name string is non-empty and contains no forbidden
-/// characters, whitespace, leading dash, or path-traversal sequences.
-///
-/// Names flow into `fail2ban-client` subcommand argv (where a leading `-`
-/// would parse as an option) and into INI section headers and file names
-/// (where whitespace would break both).
+/// Validates a name with the crate-wide rule set
+/// ([`crate::types::name_rejection`]: non-empty, no leading dash, no
+/// whitespace, no `..`, no metacharacters), shared with every
+/// `fail2ban-client` operand boundary so specs and raw names cannot drift.
 fn validate_name(s: &str, type_label: &str) -> Result<String> {
     let trimmed = s.trim();
-    if trimmed.is_empty() {
+    if let Some(reason) = crate::types::name_rejection(s) {
         return Err(Error::InvalidConfig(format!(
-            "{type_label} must not be empty"
-        )));
-    }
-    if trimmed.starts_with('-') {
-        return Err(Error::InvalidConfig(format!(
-            "{type_label} must not start with '-': {s:?}"
-        )));
-    }
-    if let Some(ch) = trimmed.chars().find(|c| c.is_whitespace()) {
-        return Err(Error::InvalidConfig(format!(
-            "{type_label} must not contain whitespace ({ch:?}): {s:?}"
-        )));
-    }
-    if trimmed.contains("..") {
-        return Err(Error::InvalidConfig(format!(
-            "{type_label} must not contain \"..\": {s:?}"
-        )));
-    }
-    if let Some(ch) = trimmed.chars().find(|c| FORBIDDEN_NAME_CHARS.contains(c)) {
-        return Err(Error::InvalidConfig(format!(
-            "{type_label} contains forbidden character {ch:?}: {s:?}"
+            "{type_label} {reason}: {s:?}"
         )));
     }
     Ok(trimmed.to_owned())

@@ -97,8 +97,10 @@ impl<'a> Fail2BanClient<'a> {
 
     /// Reload a single jail.
     ///
-    /// Runs `fail2ban-client reload <jail>`.
+    /// Runs `fail2ban-client reload <jail>`. Rejects invalid jail names with
+    /// [`Error::Validation`] before any argv is built.
     pub fn reload_jail(&self, jail: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
         let _out = self.run_cmd(&["reload", jail])?;
         Ok(())
     }
@@ -106,8 +108,10 @@ impl<'a> Fail2BanClient<'a> {
     /// Restart a single jail, optionally unbanning all current IPs first.
     ///
     /// Runs `fail2ban-client restart <jail>` and appends `--unban` when
-    /// `unban` is `true`.
+    /// `unban` is `true`. Rejects invalid jail names with
+    /// [`Error::Validation`] before any argv is built.
     pub fn restart_jail(&self, jail: &str, unban: bool) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
         if unban {
             let _out = self.run_cmd(&["restart", jail, "--unban"])?;
         } else {
@@ -128,8 +132,10 @@ impl<'a> Fail2BanClient<'a> {
 
     /// Return status for a single jail as raw output.
     ///
-    /// Runs `fail2ban-client status <jail>`.
+    /// Runs `fail2ban-client status <jail>`. Rejects invalid jail names with
+    /// [`Error::Validation`] before any argv is built.
     pub fn status_jail(&self, jail: &str) -> Result<String> {
+        crate::types::ensure_jail_operand(jail)?;
         let out = self.run_cmd(&["status", jail])?;
         Ok(out.stdout.trim().to_string())
     }
@@ -155,43 +161,61 @@ impl<'a> Fail2BanClient<'a> {
 
     /// Check whether a specific IP is currently banned.
     ///
-    /// Runs `fail2ban-client banned <ip>`. Returns raw output.
+    /// Runs `fail2ban-client banned <ip>`. Returns raw output. Rejects
+    /// non-IP operands with [`Error::Validation`] before any argv is built.
     pub fn banned_ip(&self, ip: &str) -> Result<String> {
+        crate::types::ensure_ip_operand(ip)?;
         let out = self.run_cmd(&["banned", ip])?;
         Ok(out.stdout.trim().to_string())
     }
 
     /// Manually ban an IP address in the given jail.
     ///
-    /// Runs `fail2ban-client set <jail> banip <ip>`.
+    /// Runs `fail2ban-client set <jail> banip <ip>`. Rejects invalid jail
+    /// names and non-IP operands with [`Error::Validation`] before any argv
+    /// is built.
     pub fn ban_ip(&self, jail: &str, ip: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
+        crate::types::ensure_ip_operand(ip)?;
         let _out = self.run_cmd(&["set", jail, "banip", ip])?;
         Ok(())
     }
 
     /// Manually unban an IP address in the given jail.
     ///
-    /// Runs `fail2ban-client set <jail> unbanip <ip>`.
+    /// Runs `fail2ban-client set <jail> unbanip <ip>`. Rejects invalid jail
+    /// names and non-IP operands with [`Error::Validation`] before any argv
+    /// is built.
     pub fn unban_ip(&self, jail: &str, ip: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
+        crate::types::ensure_ip_operand(ip)?;
         let _out = self.run_cmd(&["set", jail, "unbanip", ip])?;
         Ok(())
     }
 
     /// Add an IP or CIDR to the ignore list for a jail at runtime.
     ///
-    /// Runs `fail2ban-client set <jail> addignoreip <ip>`.
+    /// Runs `fail2ban-client set <jail> addignoreip <ip>`. Rejects invalid
+    /// jail names and non-IP/CIDR operands with [`Error::Validation`]
+    /// before any argv is built.
     /// This is a **runtime-only** change -- it does not persist across
     /// restarts unless also written to the config file.
     pub fn add_ignore_ip(&self, jail: &str, ip: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
+        crate::types::ensure_ip_or_cidr_operand(ip)?;
         let _out = self.run_cmd(&["set", jail, "addignoreip", ip])?;
         Ok(())
     }
 
     /// Remove an IP or CIDR from the ignore list for a jail at runtime.
     ///
-    /// Runs `fail2ban-client set <jail> delignoreip <ip>`.
+    /// Runs `fail2ban-client set <jail> delignoreip <ip>`. Rejects invalid
+    /// jail names and non-IP/CIDR operands with [`Error::Validation`]
+    /// before any argv is built.
     /// This is a **runtime-only** change.
     pub fn remove_ignore_ip(&self, jail: &str, ip: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
+        crate::types::ensure_ip_or_cidr_operand(ip)?;
         let _out = self.run_cmd(&["set", jail, "delignoreip", ip])?;
         Ok(())
     }

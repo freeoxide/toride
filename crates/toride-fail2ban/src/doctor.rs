@@ -25,6 +25,8 @@ pub enum DoctorScope {
     /// Check config directory, generated files, managed headers, and --test.
     Config,
     /// Check a single named jail (exists, enabled, filter, action, timing).
+    /// [`Doctor::run`](Doctor::run) rejects names that would parse as
+    /// options with [`Error::Validation`](crate::Error) before any spawn.
     Jail(String),
     /// Check that configured log paths exist and are readable.
     LogPath,
@@ -294,7 +296,10 @@ impl<'a> Doctor<'a> {
             DoctorScope::Binary => report.findings.extend(self.check_binaries()),
             DoctorScope::Service => report.findings.extend(self.check_service()),
             DoctorScope::Config => report.findings.extend(self.check_config()),
-            DoctorScope::Jail(name) => report.findings.extend(self.check_jail(name)),
+            DoctorScope::Jail(name) => {
+                crate::types::ensure_jail_operand(name)?;
+                report.findings.extend(self.check_jail(name));
+            }
             DoctorScope::LogPath => report.findings.extend(self.check_log_paths()),
             DoctorScope::Journal => report.findings.extend(self.check_journal()),
             DoctorScope::Regex => report.findings.extend(self.check_regex()),

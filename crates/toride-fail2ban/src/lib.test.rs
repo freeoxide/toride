@@ -97,6 +97,65 @@ fn dry_run_flag_propagates_to_the_runner() {
     assert!(f2b.dry_run());
 }
 
+#[cfg(feature = "client")]
+#[test]
+fn facade_rejects_option_like_operands_without_spawning() {
+    let (_dir, paths) = temp_paths();
+    let (runner, calls) = RecordingRunner::new();
+    let f2b = Fail2Ban::with_runner_and_paths(Box::new(runner), paths);
+
+    assert!(matches!(f2b.reload_jail("-h"), Err(Error::Validation(_))));
+    assert!(matches!(
+        f2b.ban_ip("-h", "1.2.3.4"),
+        Err(Error::Validation(_))
+    ));
+    assert!(matches!(
+        f2b.unban_ip("my jail", "1.2.3.4"),
+        Err(Error::Validation(_))
+    ));
+    assert!(matches!(
+        f2b.ban_ip("sshd", "not-an-ip"),
+        Err(Error::Validation(_))
+    ));
+
+    assert!(
+        calls.lock().expect("mutex not poisoned").is_empty(),
+        "a rejected operand must never spawn fail2ban-client"
+    );
+}
+
+#[cfg(feature = "client")]
+#[test]
+fn dry_run_facade_still_rejects_option_like_operands() {
+    let (_dir, paths) = temp_paths();
+    let (runner, calls) = RecordingRunner::new();
+    let f2b = Fail2Ban::with_runner_and_paths(Box::new(runner), paths).with_dry_run(true);
+
+    assert!(matches!(
+        f2b.ban_ip("-h", "1.2.3.4"),
+        Err(Error::Validation(_))
+    ));
+    assert!(matches!(
+        f2b.reload_jail("my jail"),
+        Err(Error::Validation(_))
+    ));
+
+    assert!(
+        calls.lock().expect("mutex not poisoned").is_empty(),
+        "dry-run skips execution, not operand validation"
+    );
+}
+
+#[cfg(all(feature = "jail-lifecycle", feature = "client"))]
+#[test]
+fn remove_jail_rejects_option_like_names() {
+    let (_dir, paths) = temp_paths();
+    let (runner, _calls) = RecordingRunner::new();
+    let f2b = Fail2Ban::with_runner_and_paths(Box::new(runner), paths);
+
+    assert!(matches!(f2b.remove_jail("-h"), Err(Error::Validation(_))));
+}
+
 #[cfg(all(feature = "jail-lifecycle", feature = "client"))]
 fn inline_filter_jail() -> spec::JailSpec {
     spec::JailSpec::builder()
