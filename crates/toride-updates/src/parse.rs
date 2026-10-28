@@ -7,6 +7,8 @@
 //!   `logging` lines: `YYYY-MM-DD HH:MM:SS,mmm LEVEL message`).
 //! - [`parse_apt_check`](crate::parse::parse_apt_check) -- parses `ubuntu-advantage security-status` or `apt-check` output
 //! - [`parse_dnf_check`](crate::parse::parse_dnf_check) -- parses `dnf check-update` output
+//! - [`parse_dnf_check_security`](crate::parse::parse_dnf_check_security) -- parses
+//!   `dnf check-update --security` output (every listed row is a security update)
 //! - [`parse_dnf_automatic_journal`](crate::parse::parse_dnf_automatic_journal) -- parses `journalctl -u dnf-automatic`
 //!   output (the dnf-automatic stdio/motd emitter messages).
 
@@ -263,9 +265,12 @@ pub fn parse_apt_get_simulate(output: &str) -> Result<(usize, usize)> {
 ///
 /// Returns a tuple of `(security_updates, total_updates)`.
 ///
-/// The output lists available updates, one per line. Security updates are
-/// typically identified by advisory IDs starting with `ALSA-`, `FEDORA-`,
-/// or `RHSA-`.
+/// Rows are `name.arch evr repo` columns; the security count uses a
+/// substring heuristic (`security` or an `ALSA-`/`RHSA-`/`FEDORA-`/...
+/// advisory prefix) that real check-update columns never carry, so callers
+/// running `dnf check-update --security` must use
+/// [`parse_dnf_check_security`](crate::parse::parse_dnf_check_security)
+/// instead.
 ///
 /// # Errors
 ///
@@ -277,16 +282,12 @@ pub fn parse_dnf_check(output: &str) -> Result<(usize, usize)> {
 
     for line in output.lines() {
         let line = line.trim();
-        // Skip empty lines and header/footer lines.
         if line.is_empty() || line.starts_with("Last metadata") || line.contains("Updating") {
             continue;
         }
 
-        // Lines with package names contain update info.
-        // A simple heuristic: count non-empty, non-header lines as updates.
         if line.contains('.') && line.contains(' ') {
             total += 1;
-            // Check for security advisory patterns.
             if line.contains("security")
                 || line.contains("ALSA-")
                 || line.contains("ALAS-")
@@ -302,6 +303,23 @@ pub fn parse_dnf_check(output: &str) -> Result<(usize, usize)> {
     }
 
     Ok((security, total))
+}
+
+/// Parse `dnf check-update --security` output into update counts.
+///
+/// Returns a tuple of `(security_updates, total_updates)` where both counts
+/// equal the listed-row total: the `--security` flag restricts the listing
+/// to security advisories, so every `name.arch evr repo` row is a security
+/// update and the substring heuristic in
+/// [`parse_dnf_check`](crate::parse::parse_dnf_check) is not applicable.
+///
+/// # Errors
+///
+/// Returns [`Error::ConfigParse`] if the output is fundamentally malformed
+/// (though DNF output is relatively free-form, so parsing is lenient).
+pub fn parse_dnf_check_security(output: &str) -> Result<(usize, usize)> {
+    let (_, total) = parse_dnf_check(output)?;
+    Ok((total, total))
 }
 
 /// Marker emitted by the dnf-automatic stdio/motd/command emitters when updates
@@ -487,6 +505,22 @@ Conf libc6 (2.36-9+deb12u1 Debian:12.7/stable)\n";
         let (security, total) = parse_dnf_check("").unwrap();
         assert_eq!(security, 0);
         assert_eq!(total, 0);
+    }
+
+    /// Real `dnf check-update --security` output: column-aligned
+    /// `name.arch evr repo` rows with plain repo names, no advisory prefix.
+    #[test]
+    fn parse_dnf_check_security_counts_every_row() {
+        let output = "Last metadata expiration check: 0:01:00 ago.\n\
+                      kernel-core.x86_64                   6.8.9-300.fc40             updates\n\
+                      openssl-libs.x86_64                  3.2.1-1.fc40               updates\n";
+        assert_eq!(parse_dnf_check_security(output).unwrap(), (2, 2));
+        let (substring_security, _) = parse_dnf_check(output).unwrap();
+        assert_eq!(
+            substring_security, 0,
+            "the substring classifier must not fire on real columns"
+        );
+        assert_eq!(parse_dnf_check_security("").unwrap(), (0, 0));
     }
 
     #[test]

@@ -243,7 +243,7 @@ impl UpdatesClient {
         let spec = toride_runner::CommandSpec::new("dnf").args(["check-update", "--security"]);
         let output = self.runner.run(&spec)?;
         match output.exit_code {
-            Some(0 | 100) => crate::parse::parse_dnf_check(&output.stdout),
+            Some(0 | 100) => crate::parse::parse_dnf_check_security(&output.stdout),
             None => Err(Error::CommandFailed(
                 "dnf check-update produced no exit code (terminated by signal?)".to_string(),
             )),
@@ -391,6 +391,25 @@ mod tests {
                 "apt-daily-upgrade.timer",
             ]));
         }
+    }
+
+    #[cfg(not(feature = "dnf"))]
+    #[test]
+    fn check_updates_dnf_inline_counts_security_rows_as_security() {
+        let runner =
+            SharedRunner::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
+                "Last metadata expiration check: 0:01:00 ago.\n\
+             kernel-core.x86_64                   6.8.9-300.fc40             updates\n\
+             openssl-libs.x86_64                  3.2.1-1.fc40               updates\n",
+            )));
+        let client = UpdatesClient::with_runner(runner.boxed());
+        let (security, total) = client.check_updates_dnf_inline().unwrap();
+        assert_eq!(total, 2, "two name.arch evr repo rows");
+        assert_eq!(
+            security, 2,
+            "the --security spec lists only security updates"
+        );
+        runner.assert_called_with(&CommandSpec::new("dnf").args(["check-update", "--security"]));
     }
 
     #[cfg(feature = "config")]

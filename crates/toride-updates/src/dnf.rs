@@ -63,10 +63,7 @@ impl<'a> DnfBackend<'a> {
             .run(&spec)
             .map_err(|e| Error::CommandFailed(format!("dnf check-update failed: {e}")))?;
         match output.exit_code {
-            Some(0 | 100) => {
-                let (_listed_security, total) = crate::parse::parse_dnf_check(&output.stdout)?;
-                Ok((total, total))
-            }
+            Some(0 | 100) => crate::parse::parse_dnf_check_security(&output.stdout),
             None => Err(Error::CommandFailed(
                 "dnf check-update produced no exit code (terminated by signal?)".to_string(),
             )),
