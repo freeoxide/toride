@@ -169,7 +169,7 @@ impl AnomalyDetector {
 /// Determine severity based on how far the observed value exceeds the threshold.
 #[expect(
     clippy::cast_precision_loss,
-    reason = "ratio comparison is robust to f64 mantissa loss; values are connection/byte counts far below 2^52"
+    reason = "ratio comparison tolerates f64 mantissa loss; values are connection/byte counts far below 2^52"
 )]
 fn severity_ratio(observed: u64, threshold: u64) -> AnomalySeverity {
     let ratio = observed as f64 / threshold as f64;

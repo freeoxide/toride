@@ -88,5 +88,9 @@ name = "webhook_dispatch"
 harness = false
 required-features = ["webhook"]
 
+[[bench]]
+name = "detect_full_report"
+harness = false
+
 [lints]
 workspace = true

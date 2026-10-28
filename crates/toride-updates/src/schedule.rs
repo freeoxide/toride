@@ -100,10 +100,6 @@ impl<'a> ScheduleManager<'a> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // APT schedule helpers
-    // -----------------------------------------------------------------------
-
     fn set_apt_schedule(&self, schedule: &Schedule) -> Result<()> {
         let interval = match schedule {
             Schedule::Daily => "1",
@@ -154,10 +150,6 @@ impl<'a> ScheduleManager<'a> {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // DNF schedule helpers
-    // -----------------------------------------------------------------------
-
     fn set_dnf_schedule(&self, schedule: &Schedule) -> Result<()> {
         let calendar = schedule_to_calendar(schedule);
         self.create_systemd_timer(&calendar)
@@ -185,10 +177,6 @@ impl<'a> ScheduleManager<'a> {
         }
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // Systemd timer
-    // -----------------------------------------------------------------------
 
     /// The drop-in directory + file path for the toride-managed timer override.
     ///

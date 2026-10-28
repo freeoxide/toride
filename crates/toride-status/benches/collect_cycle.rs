@@ -193,12 +193,21 @@ fn bench_static_info(c: &mut Criterion) {
     let first = SystemStatus::read_static_info(&sys);
     assert_ne!(first.hostname, "");
 
+    let uncached = SystemStatus::read_static_info_uncached(&sys);
+    assert_eq!(uncached.hostname, first.hostname);
+    assert_eq!(uncached.kernel_version, first.kernel_version);
+    assert_eq!(uncached.physical_cores, first.physical_cores);
+
     group.bench_function("static_info/read_once", |b| {
         b.iter(|| SystemStatus::read_static_info(black_box(&sys)));
     });
 
     group.bench_function("static_info/read_x5_serial", |b| {
         b.iter(|| black_box(static_info_reads_x5(black_box(&sys)).len()));
+    });
+
+    group.bench_function("static_info/memoized_ab/uncached_probe", |b| {
+        b.iter(|| SystemStatus::read_static_info_uncached(black_box(&sys)));
     });
 
     group.finish();

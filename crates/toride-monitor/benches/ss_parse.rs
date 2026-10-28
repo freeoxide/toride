@@ -1,7 +1,7 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use toride_monitor::parse::{parse_ss_output, ss_entry_to_connection};
+use toride_monitor::parse::{parse_ss_connections, parse_ss_output, ss_entry_to_connection};
 use toride_monitor::report::ConnectionInfo;
 
 const FIXTURE: &str = include_str!("fixtures/ss/tunap_2k.txt");
@@ -84,6 +84,25 @@ fn bench_ss_parse(c: &mut Criterion) {
         b.iter(|| {
             let entries = parse_ss_output(black_box(FIXTURE)).expect("fixture must parse");
             let connections: Vec<_> = entries.iter().filter_map(ss_entry_to_connection).collect();
+            black_box(connections.len())
+        });
+    });
+
+    // The fused path `MonitorClient::collect_ss_connections` uses: parses
+    // rows straight to connections without materializing `SsEntry` values.
+    let via_entries = parse_ss_output(FIXTURE)
+        .expect("fixture must parse")
+        .iter()
+        .filter_map(ss_entry_to_connection)
+        .count();
+    let fused = parse_ss_connections(FIXTURE)
+        .expect("fixture must parse")
+        .len();
+    assert_eq!(via_entries, fused, "fused and materializing paths agree");
+
+    c.bench_function("ss_tunap_parse_fused_connections_2k_rows", |b| {
+        b.iter(|| {
+            let connections = parse_ss_connections(black_box(FIXTURE)).expect("fixture must parse");
             black_box(connections.len())
         });
     });

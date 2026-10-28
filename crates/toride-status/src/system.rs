@@ -947,6 +947,43 @@ fn read_hardware_inventory() -> HardwareInventory {
     memoized(&CACHE, hardware_inventory_probe)
 }
 
+fn build_static_info(
+    sys: &System,
+    topology: &CpuTopology,
+    hardware: HardwareInventory,
+    os: OsInfo,
+    kernel_version: Option<String>,
+    hostname: String,
+    physical_cores: Option<usize>,
+) -> StaticInfo {
+    let cpus = sys.cpus();
+    StaticInfo {
+        os,
+        kernel_version,
+        hostname,
+        cpu_brand: cpus
+            .first()
+            .map_or_else(String::new, |c| c.brand().to_string()),
+        cpu_vendor: cpus
+            .first()
+            .map_or_else(String::new, |c| c.vendor_id().to_string()),
+        cpu_frequency: cpus.first().map_or(0, sysinfo::Cpu::frequency),
+        physical_cores,
+        logical_cores: cpus.len(),
+        memory_total_bytes: sys.total_memory(),
+        hardware,
+        sockets: topology.sockets,
+        cores_per_socket: topology.cores_per_socket,
+        threads_per_core: topology.threads_per_core,
+        base_frequency: topology.base_frequency,
+        max_frequency: topology.max_frequency,
+        cache_l1d: topology.cache_l1d,
+        cache_l1i: topology.cache_l1i,
+        cache_l2: topology.cache_l2,
+        cache_l3: topology.cache_l3,
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[allow(clippy::cast_possible_truncation)]
 fn cpu_topology_probe() -> CpuTopology {
@@ -2137,6 +2174,29 @@ impl SystemStatus {
         memoized(&CACHE, build_os_info)
     }
 
+    #[expect(
+        clippy::option_option,
+        reason = "cache slot must distinguish not-yet-probed from probed-None"
+    )]
+    fn read_kernel_version_cached() -> Option<String> {
+        static CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
+        memoized(&CACHE, sysinfo::System::kernel_version)
+    }
+
+    fn read_hostname_cached() -> String {
+        static CACHE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        memoized(&CACHE, || System::host_name().unwrap_or_default())
+    }
+
+    #[expect(
+        clippy::option_option,
+        reason = "cache slot must distinguish not-yet-probed from probed-None"
+    )]
+    fn read_physical_cores_cached() -> Option<usize> {
+        static CACHE: std::sync::Mutex<Option<Option<usize>>> = std::sync::Mutex::new(None);
+        memoized(&CACHE, sysinfo::System::physical_core_count)
+    }
+
     fn read_cpu_cores(sys: &System) -> Vec<CpuCore> {
         sys.cpus()
             .iter()
@@ -2507,43 +2567,44 @@ impl SystemStatus {
 
     /// Read the reboot-invariant host description from `sys`.
     ///
-    /// CPU brand, vendor, and frequency come from `sys`'s CPU list; the
-    /// remaining fields re-read their sources on every call (cpuinfo
-    /// topology, DMI hardware inventory, os-release, hostname, kernel
-    /// version), so repeated calls pay the full probe cost each time.
+    /// CPU brand, vendor, current frequency, logical core count, and total
+    /// memory come live from `sys`'s CPU list; every reboot-invariant probe
+    /// (cpuinfo topology, DMI hardware inventory, os-release, hostname,
+    /// kernel version, physical core count) is memoized for the process
+    /// lifetime, so repeated calls cost one struct build plus mutex-backed
+    /// cache reads. Benchmarks and tests that need the per-call probe cost
+    /// use [`Self::read_static_info_uncached`].
     #[must_use]
     pub fn read_static_info(sys: &System) -> StaticInfo {
-        let cpus = sys.cpus();
-        let brand = cpus
-            .first()
-            .map_or_else(String::new, |c| c.brand().to_string());
-        let vendor = cpus
-            .first()
-            .map_or_else(String::new, |c| c.vendor_id().to_string());
-        let freq = cpus.first().map_or(0, sysinfo::Cpu::frequency);
-        let topology = read_cpu_topology();
-        let hardware = read_hardware_inventory();
-        StaticInfo {
-            os: Self::read_os_info(),
-            kernel_version: sysinfo::System::kernel_version(),
-            hostname: Self::read_hostname(),
-            cpu_brand: brand,
-            cpu_vendor: vendor,
-            cpu_frequency: freq,
-            physical_cores: sysinfo::System::physical_core_count(),
-            logical_cores: cpus.len(),
-            memory_total_bytes: sys.total_memory(),
-            hardware,
-            sockets: topology.sockets,
-            cores_per_socket: topology.cores_per_socket,
-            threads_per_core: topology.threads_per_core,
-            base_frequency: topology.base_frequency,
-            max_frequency: topology.max_frequency,
-            cache_l1d: topology.cache_l1d,
-            cache_l1i: topology.cache_l1i,
-            cache_l2: topology.cache_l2,
-            cache_l3: topology.cache_l3,
-        }
+        build_static_info(
+            sys,
+            &read_cpu_topology(),
+            read_hardware_inventory(),
+            Self::read_os_info(),
+            Self::read_kernel_version_cached(),
+            Self::read_hostname_cached(),
+            Self::read_physical_cores_cached(),
+        )
+    }
+
+    /// Uncached counterpart of [`Self::read_static_info`]: re-probes every
+    /// reboot-invariant source (cpuinfo topology, DMI, os-release, hostname,
+    /// kernel version, physical core count) on each call.
+    ///
+    /// Polling callers pay the full probe cost per call here; this entry
+    /// point exists so benches and tests can measure what
+    /// [`Self::read_static_info`]'s memoization saves.
+    #[must_use]
+    pub fn read_static_info_uncached(sys: &System) -> StaticInfo {
+        build_static_info(
+            sys,
+            &cpu_topology_probe(),
+            hardware_inventory_probe(),
+            build_os_info(),
+            sysinfo::System::kernel_version(),
+            System::host_name().unwrap_or_default(),
+            sysinfo::System::physical_core_count(),
+        )
     }
 
     /// Build the aggregated sensor snapshot with CPU and GPU temperature
@@ -6662,5 +6723,34 @@ mod tests {
             Some("192.168.0.1".to_string())
         );
         assert_eq!(gateway_from_route_content("Iface only header\n"), None);
+    }
+
+    #[test]
+    fn read_static_info_cached_and_uncached_agree_on_static_parts() {
+        let sys = System::new();
+        let cached = SystemStatus::read_static_info(&sys);
+        let uncached = SystemStatus::read_static_info_uncached(&sys);
+        assert_eq!(cached.hostname, uncached.hostname);
+        assert_eq!(cached.kernel_version, uncached.kernel_version);
+        assert_eq!(cached.physical_cores, uncached.physical_cores);
+        assert_eq!(cached.os.name, uncached.os.name);
+        assert_eq!(cached.os.version, uncached.os.version);
+        assert_eq!(cached.cpu_brand, uncached.cpu_brand);
+        assert_eq!(cached.hardware.manufacturer, uncached.hardware.manufacturer);
+        assert_eq!(cached.sockets, uncached.sockets);
+        assert_eq!(cached.cores_per_socket, uncached.cores_per_socket);
+        assert_eq!(cached.cache_l3, uncached.cache_l3);
+    }
+
+    #[test]
+    fn read_static_info_repeated_cached_calls_are_stable() {
+        let sys = System::new();
+        let first = SystemStatus::read_static_info(&sys);
+        let second = SystemStatus::read_static_info(&sys);
+        assert_eq!(first.hostname, second.hostname);
+        assert_eq!(first.kernel_version, second.kernel_version);
+        assert_eq!(first.physical_cores, second.physical_cores);
+        assert_eq!(first.os.name, second.os.name);
+        assert_eq!(first.hardware.manufacturer, second.hardware.manufacturer);
     }
 }

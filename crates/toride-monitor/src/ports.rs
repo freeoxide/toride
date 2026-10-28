@@ -30,10 +30,6 @@ use std::net::IpAddr;
 use crate::error::{Error, Result};
 use crate::paths::MonitorPaths;
 
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
-
 /// Network protocol of a socket entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortProtocol {
@@ -118,10 +114,6 @@ impl fmt::Display for PortState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PortEntry
-// ---------------------------------------------------------------------------
-
 /// A single network socket with full connection and process information.
 #[derive(Debug, Clone)]
 pub struct PortEntry {
@@ -186,10 +178,6 @@ fn format_addr(addr: IpAddr, port: u16) -> String {
         IpAddr::V4(_) => format!("{addr}:{port}"),
     }
 }
-
-// ---------------------------------------------------------------------------
-// PortQuery
-// ---------------------------------------------------------------------------
 
 /// Flexible filter for querying port entries.
 ///
@@ -310,10 +298,6 @@ impl PortQuery {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PortReader
-// ---------------------------------------------------------------------------
-
 /// Reads network socket information from the kernel via [`netstat2`].
 ///
 /// Follows the same borrow-based pattern as
@@ -410,10 +394,6 @@ impl<'a> PortReader<'a> {
         Ok(all.into_iter().filter(|e| q.matches(e)).collect())
     }
 
-    // -----------------------------------------------------------------------
-    // Private
-    // -----------------------------------------------------------------------
-
     /// Collect all sockets from the kernel and enrich with process names.
     #[cfg(feature = "client")]
     fn collect_all(&self) -> Result<Vec<PortEntry>> {
@@ -509,10 +489,6 @@ impl<'a> PortReader<'a> {
         Ok(entries)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Map a `netstat2::TcpState` to our `PortState`.
 fn tcp_state_to_port_state(ts: netstat2::TcpState) -> PortState {
