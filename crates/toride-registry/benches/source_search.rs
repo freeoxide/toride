@@ -16,9 +16,9 @@ const CASK_INDEX_FIXTURE: &str = include_str!("fixtures/homebrew-cask-index-synt
 const DEP11_COMPONENTS: usize = 200;
 const CASK_ENTRIES: usize = 150;
 
-const SAMPLE_SIZE: usize = 30;
-const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
-const WARM_UP_TIME: Duration = Duration::from_millis(500);
+const SAMPLE_SIZE: usize = 100;
+const MEASUREMENT_TIME: Duration = Duration::from_secs(5);
+const WARM_UP_TIME: Duration = Duration::from_secs(3);
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
