@@ -11,6 +11,7 @@
 //! `toride-ssh-core`: shared types, error definitions, path resolution, and
 //! CLI runner abstraction used by all `toride-ssh` sub-crates.
 
+pub mod control_master;
 pub mod fanout;
 pub mod host;
 pub mod paths;

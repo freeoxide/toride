@@ -736,11 +736,6 @@ impl HostKeyVerificationCheck<'_> {
 
 impl AgentForwarding<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        // The `-A` flag enables agent forwarding. This is safe for diagnostic
-        // purposes (a brief `ssh-add -l` invocation) but note that agent
-        // forwarding should not be used on untrusted remote hosts in general
-        // because a compromised remote could use the forwarded agent socket.
-
         if std::env::var("SSH_AUTH_SOCK").map_or(true, |v| v.is_empty()) {
             return Ok(vec![Diagnostic {
                 id: "agent_forwarding",
@@ -1938,12 +1933,8 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
         // TrustedUserCAKeys is set, check the principals file.
         match find_sshd_setting(stdout, "authorizedprincipalsfile") {
             Some(value) if value != "none" && !value.is_empty() => {
-                // Verify the file exists on the remote host. The value comes
-                // from remote `sshd -T` output, so it is attacker-controlled
-                // (a malicious or compromised remote could return shell
-                // metacharacters). Shell-quote it via single-quote escaping
-                // before interpolation so it is treated as a literal path
-                // token and cannot inject commands into the remote shell.
+                // The value is attacker-controlled remote output; it must be
+                // shell-quoted before interpolation into the test command.
                 let quoted = shell_quote(&value);
                 let test_cmd = format!("test -f {quoted}");
                 let mut test_args = ssh_connect_args(self.port, self.proxy_jump);
@@ -2120,11 +2111,8 @@ pub async fn run_all(
 
     let mut all_diagnostics = Vec::new();
 
-    // Resolve the SSH config once and reuse the result for both ProxyJump
-    // detection and the proxy_jump value consumed by every subsequent
-    // SSH-based check. `resolve` performs a disk read plus a recursive glob
-    // walk (`load_and_flatten`), so resolving twice, as the detection check
-    // and the extraction previously did independently, is wasteful.
+    // One resolve serves both the ProxyJump check and every later check that
+    // needs the jump host; `resolve` walks the config and its includes.
     let proxy_jump_value: Option<String> = match resolve(paths.ssh_dir(), host, None).await {
         Ok(resolved) => resolved
             .proxy_jump
@@ -2222,10 +2210,8 @@ pub async fn run_all(
         Err(e) => all_diagnostics.push(err_diagnostic("host_key_verification", &e)),
     }
 
-    // The remaining checks each need their own SSH round-trip, so they run
-    // concurrently under a bounded semaphore. The trivial probes ($HOME,
-    // ~/.ssh mode, authorized_keys existence) share one connection, and the
-    // `sshd -T` output is fetched once for every settings check.
+    // Independent checks fan out under a bounded semaphore; trivial probes
+    // share one connection and `sshd -T` is fetched once for all of them.
     if host_reachable {
         let agent_check = AgentForwarding {
             host,
@@ -2747,15 +2733,8 @@ trustedusercakeys /etc/ssh/ca.pub
         assert_eq!(args[7], "admin@jump.example.com");
     }
 
-    // -----------------------------------------------------------------------
-    // shell_quote tests (security: neutralizes shell metacharacters in the
-    // remote AuthorizedPrincipalsFile value before interpolation)
-    // -----------------------------------------------------------------------
-
     #[test]
     fn shell_quote_plain_path_is_single_quoted() {
-        // A benign path is wrapped in single quotes; `test -f '<path>'` still
-        // resolves correctly on the remote shell.
         assert_eq!(
             shell_quote("/etc/ssh/auth_principals"),
             "'/etc/ssh/auth_principals'"

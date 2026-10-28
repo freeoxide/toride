@@ -5,127 +5,31 @@ use super::*;
 use serial_test::serial;
 
 #[test]
-fn extract_host_various_patterns() {
-    assert_eq!(
-        extract_host_from_name("cm-deploy@web01.example.com:22"),
-        "web01.example.com"
-    );
-    assert_eq!(extract_host_from_name("control-root@db:5432"), "db");
-    assert_eq!(extract_host_from_name("mux-user@bastion:22"), "bastion");
-    assert_eq!(extract_host_from_name("ctrl-user@jump:22"), "jump");
-    assert_eq!(
-        extract_host_from_name("ssh-abc123def456-12345"),
-        "abc123def456-12345"
-    );
-}
-
-#[test]
-fn extract_pid_from_patterns() {
-    assert_eq!(extract_pid_from_name("ssh-abc123-48291"), Some(48291));
-    assert_eq!(extract_pid_from_name("cm-user@host:22"), None);
-    assert_eq!(extract_pid_from_name("ssh-hash-0"), None);
-}
-
-#[test]
-fn extract_host_from_name_no_at_sign() {
-    assert_eq!(
-        extract_host_from_name("some-random-name"),
-        "some-random-name"
-    );
-}
-
-#[test]
-fn extract_host_from_name_only_prefix() {
-    assert_eq!(extract_host_from_name("cm-"), "");
-}
-
-#[test]
-fn extract_host_from_name_at_no_port() {
-    assert_eq!(extract_host_from_name("cm-user@host"), "host");
-}
-
-#[test]
-fn extract_pid_from_name_no_dash() {
-    assert_eq!(extract_pid_from_name("nodash"), None);
-}
-
-#[test]
-fn extract_pid_from_name_non_numeric() {
-    assert_eq!(extract_pid_from_name("ssh-hash-abc"), None);
-}
-
-#[test]
-fn extract_pid_from_name_large_pid() {
-    assert_eq!(extract_pid_from_name("ssh-hash-999999"), Some(999999));
-}
-
-#[test]
 fn forward_type_display() {
     assert_eq!(ForwardType::Local.to_string(), "local");
     assert_eq!(ForwardType::Remote.to_string(), "remote");
     assert_eq!(ForwardType::Dynamic.to_string(), "dynamic");
 }
 
+#[cfg(unix)]
 #[test]
-fn extract_host_from_name_very_long() {
-    let long_name = format!("cm-user@{}:22", "a".repeat(256));
-    let host = extract_host_from_name(&long_name);
-    assert_eq!(host, "a".repeat(256));
-}
+fn ssh_dir_scan_excludes_the_tmp_prefix() {
+    use toride_ssh_core::control_master::collect_control_candidates;
 
-#[test]
-fn extract_host_from_name_with_underscores() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let keep = dir.path().join("cm-keep@host:22");
+    let listener = std::os::unix::net::UnixListener::bind(&keep).expect("bind socket");
+    let tmp_shaped = dir.path().join("ssh-other-hash-1");
+    let listener2 = std::os::unix::net::UnixListener::bind(&tmp_shaped).expect("bind socket");
+    std::mem::forget((listener, listener2));
+
+    let found = collect_control_candidates(dir.path(), SSH_DIR_PREFIXES, true).expect("collect");
     assert_eq!(
-        extract_host_from_name("cm-user_name@host_name:22"),
-        "host_name"
+        found.len(),
+        1,
+        "the ssh- prefix belongs to the /tmp scan only: {found:?}"
     );
-}
-
-#[test]
-fn extract_host_from_name_with_hyphens() {
-    assert_eq!(extract_host_from_name("cm-user@my-host:22"), "my-host");
-}
-
-#[test]
-fn extract_pid_from_name_at_boundary() {
-    assert_eq!(extract_pid_from_name("ssh-hash-1"), Some(1));
-    assert_eq!(
-        extract_pid_from_name("ssh-hash-4294967295"),
-        Some(4294967295)
-    );
-}
-
-#[test]
-fn extract_host_from_name_with_numbers() {
-    assert_eq!(
-        extract_host_from_name("cm-user@192.168.1.1:22"),
-        "192.168.1.1"
-    );
-}
-
-#[test]
-fn extract_host_from_name_bare_ipv6_loopback() {
-    assert_eq!(extract_host_from_name("cm-user@::1:22"), "::1");
-}
-
-#[test]
-fn extract_host_from_name_bare_ipv6_full() {
-    assert_eq!(extract_host_from_name("cm-user@fe80::1:22"), "fe80::1");
-}
-
-#[test]
-fn extract_host_from_name_bare_ipv6_no_port() {
-    assert_eq!(extract_host_from_name("cm-user@::1"), "::1");
-}
-
-#[test]
-fn extract_pid_from_name_with_multiple_dashes() {
-    assert_eq!(extract_pid_from_name("ssh-abc-def-123"), Some(123));
-}
-
-#[test]
-fn extract_pid_from_name_with_leading_zeros() {
-    assert_eq!(extract_pid_from_name("ssh-hash-00123"), Some(123));
+    assert!(found[0].path.ends_with("cm-keep@host:22"));
 }
 
 #[test]
@@ -186,136 +90,6 @@ fn cancel_spec_dynamic_forward() {
         unreachable!()
     };
     assert_eq!(spec, "[127.0.0.1]:1080");
-}
-
-#[cfg(unix)]
-fn make_socket_file(path: &std::path::Path) {
-    use std::os::unix::net::UnixListener;
-    let listener = UnixListener::bind(path).expect("bind test socket");
-    std::mem::forget(listener);
-}
-
-#[cfg(unix)]
-#[test]
-fn collect_matching_any_finds_all_four_prefixes_in_one_pass() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    make_socket_file(&dir.path().join("cm-alice@host:22"));
-    make_socket_file(&dir.path().join("control-bob@host:22"));
-    make_socket_file(&dir.path().join("mux-carol@host:22"));
-    make_socket_file(&dir.path().join("ctrl-dave@host:22"));
-
-    let mut found = collect_matching_any(dir.path(), SSH_DIR_PREFIXES);
-    found.sort();
-    assert_eq!(found.len(), 4, "all four prefixes must match in one pass");
-    assert!(found.iter().all(|p| p.starts_with(dir.path())));
-}
-
-#[cfg(unix)]
-#[test]
-fn collect_matching_any_excludes_non_candidates() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    make_socket_file(&dir.path().join("cm-keep@host:22"));
-    make_socket_file(&dir.path().join("ssh-other-hash-1"));
-    std::fs::write(dir.path().join("known_hosts"), b"").expect("write junk");
-    std::fs::write(dir.path().join("id_ed25519"), b"not a socket").expect("write junk");
-
-    let found = collect_matching_any(dir.path(), SSH_DIR_PREFIXES);
-    assert_eq!(
-        found.len(),
-        1,
-        "only the cm- candidate may be returned: found {found:?}"
-    );
-    assert!(found[0].ends_with("cm-keep@host:22"));
-}
-
-#[test]
-fn collect_matching_any_missing_dir_is_empty() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let missing = dir.path().join("does-not-exist");
-    assert_eq!(
-        collect_matching_any(&missing, SSH_DIR_PREFIXES),
-        Vec::<std::path::PathBuf>::new()
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn collect_matching_any_tmp_prefix() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    make_socket_file(&dir.path().join("ssh-abcdefghij-4242"));
-
-    let found = collect_matching_any(dir.path(), &["ssh-"]);
-    assert_eq!(found.len(), 1);
-    assert!(found[0].ends_with("ssh-abcdefghij-4242"));
-}
-
-#[test]
-fn extract_host_from_name_ssh_hash_format() {
-    let host = extract_host_from_name("ssh-abc123def-12345");
-    assert_eq!(host, "abc123def-12345");
-}
-
-#[test]
-fn extract_host_from_name_ctrl_prefix() {
-    let host = extract_host_from_name("ctrl-user@server.com:22");
-    assert_eq!(host, "server.com");
-}
-
-#[test]
-fn extract_host_from_name_no_prefix() {
-    let host = extract_host_from_name("user@host:22");
-    assert_eq!(host, "host");
-}
-
-#[test]
-fn extract_pid_from_name_valid() {
-    assert_eq!(extract_pid_from_name("ssh-abc-12345"), Some(12345));
-}
-
-#[test]
-fn extract_pid_from_name_zero() {
-    assert_eq!(extract_pid_from_name("ssh-abc-0"), None);
-}
-
-#[test]
-fn extract_pid_from_name_no_number() {
-    assert_eq!(extract_pid_from_name("cm-user@host"), None);
-}
-
-#[test]
-fn extract_pid_from_name_overflow() {
-    assert_eq!(extract_pid_from_name("ssh-abc-99999999999"), None);
-}
-
-#[test]
-fn extract_host_from_name_bracketed_ipv6() {
-    assert_eq!(extract_host_from_name("cm-user@[::1]:22"), "::1");
-}
-
-#[test]
-fn extract_host_from_name_bracketed_ipv6_full_addr() {
-    assert_eq!(
-        extract_host_from_name("cm-user@[2001:db8::1]:22"),
-        "2001:db8::1"
-    );
-}
-
-#[test]
-fn extract_host_from_name_bracketed_ipv6_no_port() {
-    assert_eq!(extract_host_from_name("cm-user@[::1]"), "::1");
-}
-
-#[test]
-fn extract_host_from_name_bracketed_ipv6_long() {
-    assert_eq!(
-        extract_host_from_name("cm-user@[fe80::250:56ff:feb3:6477]:22"),
-        "fe80::250:56ff:feb3:6477"
-    );
-}
-
-#[test]
-fn extract_host_from_name_bare_ipv6_high_port() {
-    assert_eq!(extract_host_from_name("mux-user@::1:65535"), "::1");
 }
 
 #[cfg(unix)]

@@ -385,11 +385,6 @@ impl<'a> KnownHostsService<'a> {
         let host_owned = host.to_owned();
         let args = vec!["-F".to_owned(), host_owned, "-f".to_owned(), path_str];
 
-        // ssh-keygen -F returns exit code 1 when the host is not found ,
-        // that is a normal result, not an error.  Any other failure
-        // (binary missing, permission denied, runner task panic, …) must be
-        // surfaced so the caller can tell an absent host apart from a
-        // broken lookup.
         match self.runner.run("ssh-keygen", args).await {
             Ok(raw) => Ok(parse_ssh_keygen_f_output(host, &raw)),
             Err(e) if is_host_not_found(&e) => Ok(Vec::new()),

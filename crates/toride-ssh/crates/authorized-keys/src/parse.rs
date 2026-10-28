@@ -175,10 +175,8 @@ fn parse_line(raw_line: &str, line_number: usize, original: &str) -> Result<Auth
 
     let comment = parts.next().map(ToString::to_string);
 
-    // Validate by parsing the key portion through ssh-key and retain the
-    // result. Certificate lines only parse through
-    // `Certificate::from_openssh`; the retained key is the certificate's
-    // underlying public key, whose fingerprint matches `ssh-keygen -lf`.
+    // `PublicKey::from_openssh` rejects certificate lines; only
+    // `Certificate::from_openssh` accepts the `*-cert-v01@openssh.com` types.
     let key = if key_type.ends_with(CERT_TYPE_SUFFIX) {
         ssh_key::certificate::Certificate::from_openssh(key_and_comment)
             .map(|cert| ssh_key::PublicKey::from(cert.public_key().clone()))

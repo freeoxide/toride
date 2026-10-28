@@ -1,16 +1,14 @@
 //! Port forwarding control via `ControlMaster` sessions.
 
-#[cfg(unix)]
-use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use toride_ssh_core::Error;
 use toride_ssh_core::Result;
+use toride_ssh_core::control_master::ControlName;
+use toride_ssh_core::control_master::collect_control_candidates;
 use toride_ssh_core::fanout::join_all_bounded;
-
-const MAX_CONTROL_SOCKET_CANDIDATE_SIZE: u64 = 1024;
 
 /// Whether a forward is local (-L), remote (-R), or dynamic/SOCKS (-D).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -184,6 +182,8 @@ fn master_absent(path: &Path) -> bool {
 
 const MAX_CONCURRENT_CONTROL_CMDS: usize = 8;
 
+const SSH_DIR_PREFIXES: &[&str] = &["cm-", "control-", "mux-", "ctrl-"];
+
 /// Discover live `ControlMaster` sessions by scanning `ssh_dir` prefixes
 /// (`cm-`, `control-`, `mux-`, `ctrl-`) and `/tmp/ssh-*` via `ssh -O check`.
 ///
@@ -192,12 +192,16 @@ const MAX_CONCURRENT_CONTROL_CMDS: usize = 8;
 /// `ssh -O check` failures only exclude the candidate.
 pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     let ssh_dir = ssh_dir.to_path_buf();
-    let tmp_dir = std::path::PathBuf::from("/tmp");
+    let tmp_dir = PathBuf::from("/tmp");
 
     let candidates = tokio::task::spawn_blocking(move || {
-        let mut candidates = collect_matching_any(&ssh_dir, SSH_DIR_PREFIXES);
-
-        candidates.extend(collect_matching_any(&tmp_dir, &["ssh-"]));
+        let mut candidates: Vec<PathBuf> = [
+            collect_control_candidates(&ssh_dir, SSH_DIR_PREFIXES, true),
+            collect_control_candidates(&tmp_dir, &["ssh-"], true),
+        ]
+        .into_iter()
+        .flat_map(|dir| dir.unwrap_or_default().into_iter().map(|c| c.path))
+        .collect();
 
         candidates.sort();
         candidates.dedup();
@@ -227,115 +231,22 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     Ok(alive)
 }
 
-const SSH_DIR_PREFIXES: &[&str] = &["cm-", "control-", "mux-", "ctrl-"];
-
-fn collect_matching_any(dir: &Path, prefixes: &[&str]) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if prefixes.iter().any(|p| name.starts_with(p)) && is_socket_or_candidate(&path) {
-            out.push(path);
-        }
-    }
-    out
-}
-
-fn is_socket_or_candidate(path: &Path) -> bool {
-    match std::fs::metadata(path) {
-        Ok(meta) => {
-            let ft = meta.file_type();
-            #[cfg(unix)]
-            if ft.is_socket() {
-                return true;
-            }
-            if ft.is_file() && meta.len() < MAX_CONTROL_SOCKET_CANDIDATE_SIZE {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                return !name.contains('.');
-            }
-            false
-        }
-        Err(_) => false,
-    }
-}
-
 fn build_session(control_path: &Path) -> ControlSession {
     let name = control_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    let host = extract_host_from_name(name);
-
-    let pid = extract_pid_from_name(name);
+    let parts = ControlName::parse(name);
 
     let established = control_path.metadata().ok().and_then(|m| m.modified().ok());
 
     ControlSession {
         control_path: control_path.to_path_buf(),
-        host,
-        pid,
+        host: parts.host,
+        pid: parts.pid,
         established,
     }
-}
-
-pub(crate) fn extract_host_from_name(name: &str) -> String {
-    let rest = name
-        .strip_prefix("cm-")
-        .or_else(|| name.strip_prefix("control-"))
-        .or_else(|| name.strip_prefix("mux-"))
-        .or_else(|| name.strip_prefix("ctrl-"))
-        .or_else(|| name.strip_prefix("ssh-"))
-        .unwrap_or(name);
-
-    if let Some(at_idx) = rest.find('@') {
-        let after_at = &rest[at_idx + 1..];
-        if after_at.starts_with('[')
-            && let Some(bracket_end) = after_at.find(']')
-        {
-            return after_at[1..bracket_end].to_owned();
-        }
-        if after_at.matches(':').count() >= 2 {
-            if let Some(host) = split_bare_ipv6_host_port(after_at) {
-                return host.to_owned();
-            }
-            return after_at.to_owned();
-        }
-        if let Some(colon_idx) = after_at.find(':') {
-            return after_at[..colon_idx].to_owned();
-        }
-        return after_at.to_owned();
-    }
-
-    rest.to_owned()
-}
-
-fn split_bare_ipv6_host_port(s: &str) -> Option<&str> {
-    let colon_count = s.matches(':').count();
-    if colon_count < 3 || !s.contains("::") {
-        return None;
-    }
-    let last_colon = s.rfind(':')?;
-    let port_part = &s[last_colon + 1..];
-    if port_part.is_empty() || !port_part.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let host_part = &s[..last_colon];
-    if host_part.is_empty() {
-        return None;
-    }
-    Some(host_part)
-}
-
-pub(crate) fn extract_pid_from_name(name: &str) -> Option<u32> {
-    let (_prefix, pid_str) = name.rsplit_once('-')?;
-    let pid: u32 = pid_str.parse().ok()?;
-    (pid > 0).then_some(pid)
 }
 
 #[cfg(test)]
