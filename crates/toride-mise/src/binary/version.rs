@@ -27,7 +27,6 @@ impl MiseVersion {
         // Strip a leading binary name, e.g. "mise 2024.1.2" -> "2024.1.2"
         let after_prefix = trimmed.strip_prefix("mise ").map_or(trimmed, str::trim);
 
-        // Extract just the version portion: everything up to the first space.
         // Real mise outputs e.g. "2026.5.18 macos-arm64 (2026-05-31)".
         let version_str = after_prefix
             .split_once(' ')

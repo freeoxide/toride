@@ -260,7 +260,6 @@ impl Mise {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                // Handle "export KEY=VALUE" from shell mode.
                 let line = line.strip_prefix("export ").unwrap_or(line);
                 if let Some((key, value)) = line.split_once('=') {
                     let value = value.trim_matches('"').trim_matches('\'');
@@ -278,7 +277,6 @@ impl Mise {
             });
         }
 
-        // For JSON mode, handle empty output gracefully.
         let output = self.run_checked(args).await?;
         let raw = output.stdout_trimmed();
         let trimmed = raw.trim();
@@ -343,7 +341,6 @@ impl Mise {
         let raw = output.stdout_trimmed();
         let trimmed = raw.trim();
 
-        // Handle empty / null / {} gracefully.
         if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
             return Ok(Vec::new());
         }

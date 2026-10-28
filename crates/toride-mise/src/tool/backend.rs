@@ -9,10 +9,6 @@ use serde::Deserialize;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// Response types
-// ---------------------------------------------------------------------------
-
 /// A single backend entry as reported by `mise backends ls`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BackendInfo {
@@ -39,10 +35,6 @@ impl BinPathEntry {
         Utf8PathBuf::from(&self.path)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// List all known mise backends.

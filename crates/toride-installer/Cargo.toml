@@ -10,6 +10,11 @@ readme = "README.md"
 keywords = ["installer", "downloader", "checksum", "tarball", "artifact"]
 categories = ["development-tools"]
 
+# The benches are all criterion targets (`harness = false`); the implicit
+# lib bench target rejects criterion flags like `-- --baseline pre`.
+[lib]
+bench = false
+
 [features]
 default = []
 # The HTTP/archive install engine (reqwest download, digest verify, gzip/xz

@@ -81,9 +81,9 @@ fn bench_dep11_parse(criterion: &mut Criterion) {
 
     let arch = decode_catalog_arch(CATALOG_FILENAME);
     let mut group = criterion.benchmark_group("dep11_parse");
-    group.sample_size(30);
-    group.warm_up_time(Duration::from_millis(500));
-    group.measurement_time(Duration::from_secs(2));
+    group.sample_size(100);
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(5));
     group.throughput(Throughput::Bytes(FIXTURE.len() as u64));
 
     group.bench_function("parse_dep11_catalog", |bencher| {
@@ -139,9 +139,9 @@ fn bench_dep11_cache(criterion: &mut Criterion) {
     );
 
     let mut group = criterion.benchmark_group("dep11_cache");
-    group.sample_size(30);
-    group.warm_up_time(Duration::from_millis(500));
-    group.measurement_time(Duration::from_secs(2));
+    group.sample_size(100);
+    group.warm_up_time(Duration::from_secs(3));
+    group.measurement_time(Duration::from_secs(5));
     group.throughput(Throughput::Bytes(FIXTURE.len() as u64));
     group.bench_function("cached_catalog", |bencher| {
         bencher.iter(|| {

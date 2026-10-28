@@ -168,10 +168,6 @@ impl Mise {
         self.binary.as_str()
     }
 
-    // -----------------------------------------------------------------------
-    // Language accessor methods
-    // -----------------------------------------------------------------------
-
     /// Return a [`NodeHelper`] for interacting with Node.js via mise.
     pub fn node(&self) -> NodeHelper<'_> {
         NodeHelper::new(self)
@@ -236,10 +232,6 @@ impl Mise {
         crate::diagnostics::DiagnosticsBuilder::new(self)
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
     /// Build the base environment map for every mise invocation.
     ///
     /// Currently returns a clone of the configured extra environment. In the
@@ -296,10 +288,6 @@ impl Mise {
 
         spec
     }
-
-    // -----------------------------------------------------------------------
-    // Async command execution
-    // -----------------------------------------------------------------------
 
     /// Run a mise command with the given arguments and return the raw output.
     ///

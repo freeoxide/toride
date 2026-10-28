@@ -255,8 +255,8 @@ fn checksum_pinned_tool(version: &str, target: Target) -> Tool {
 /// to `~/.local/bin/mise` (or `install_dir` when provided).
 ///
 /// The concrete version is resolved first: zero network for a pinned
-/// request; for `"latest"` it is the one API call the install needed anyway
-///: then `checksum_pinned_tool` pins the release's `SHASUMS_FILE` on
+/// request; for `"latest"` it is the one API call the install needed
+/// anyway. Then `checksum_pinned_tool` pins the release's `SHASUMS_FILE` on
 /// the descriptor and the engine verifies the downloaded asset against it
 /// strictly. The engine re-resolves the now-concrete version off its pinned
 /// (pure string-formatting) path, so nothing is fetched twice.

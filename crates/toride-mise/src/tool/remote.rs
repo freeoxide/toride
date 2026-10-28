@@ -9,10 +9,6 @@ use serde::Deserialize;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// JSON response types
-// ---------------------------------------------------------------------------
-
 /// A single version returned by `mise ls-remote --json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RemoteVersion {
@@ -26,10 +22,6 @@ pub struct RemoteVersion {
     #[serde(default)]
     pub created_at: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// ListRemoteRequest
-// ---------------------------------------------------------------------------
 
 /// Parameters for a `mise ls-remote` invocation.
 ///
@@ -103,10 +95,6 @@ impl ListRemoteRequest {
         self
     }
 }
-
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// List all remote versions available for a tool (simple convenience
@@ -210,10 +198,6 @@ impl Mise {
         self.list_remote_with(&req).await
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -19,10 +19,6 @@
 use crate::binary::MiseVersion;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// MiseCapabilities
-// ---------------------------------------------------------------------------
-
 /// Feature flags describing which mise CLI capabilities are available.
 ///
 /// Constructed via [`MiseCapabilities::from_version`] or
@@ -127,10 +123,6 @@ impl MiseCapabilities {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mise client extensions
-// ---------------------------------------------------------------------------
-
 use crate::client::Mise;
 
 impl Mise {
@@ -162,10 +154,6 @@ impl Mise {
         Ok(MiseCapabilities::from_version(&version))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

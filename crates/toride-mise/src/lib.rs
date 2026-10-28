@@ -27,10 +27,6 @@
 #![allow(clippy::return_self_not_must_use)]
 #![allow(clippy::module_name_repetitions)]
 
-// ---------------------------------------------------------------------------
-// Module declarations -- file modules
-// ---------------------------------------------------------------------------
-
 pub mod builder;
 pub mod capabilities;
 pub mod client;
@@ -41,10 +37,6 @@ pub mod lockfile;
 pub mod security;
 pub mod streaming;
 
-// ---------------------------------------------------------------------------
-// Module declarations -- directory modules
-// ---------------------------------------------------------------------------
-
 pub mod binary;
 pub mod command;
 pub mod config;
@@ -52,10 +44,6 @@ pub mod env;
 pub mod languages;
 pub mod serde_utils;
 pub mod tool;
-
-// ---------------------------------------------------------------------------
-// Re-exports
-// ---------------------------------------------------------------------------
 
 pub use binary::{BootstrapMethod, BootstrapOptions, MiseBinary, MiseVersion};
 pub use capabilities::MiseCapabilities;

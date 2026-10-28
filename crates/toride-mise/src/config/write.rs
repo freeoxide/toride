@@ -174,10 +174,6 @@ impl Mise {
         })
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
     /// Perform a config set via `toml_edit` for lossless round-tripping.
     ///
     /// Reads the file (or creates an empty document), applies the key/value

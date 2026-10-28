@@ -42,6 +42,13 @@ pub fn extract_executable(
 }
 
 /// Read the file at `bin_path` out of an in-memory tar archive.
+///
+/// A multi-component `bin_path` (e.g. `bin/mise`) must match the entry's
+/// full path exactly (both sides with a leading `./` stripped), so two
+/// same-basename entries in different directories cannot collide. A
+/// single-component `bin_path` keeps the bare-filename fallback (entries
+/// arrive prefixed, e.g. `mise-1.0/mise`); the first file entry whose final
+/// component matches wins.
 fn extract_tar_entry(
     bytes: &[u8],
     compression: Tarball,
@@ -56,14 +63,18 @@ fn extract_tar_entry(
 
     let mut archive = tar::Archive::new(decoded);
 
-    // A tar entry's path may be prefixed (e.g. `./bin/mise`, `mise-1.0/mise`).
-    // We match on the final path component so the tool author only has to
-    // specify the bare filename.
-    let wanted_name = std::path::Path::new(bin_path)
+    let wanted_path = bin_path.strip_prefix("./").unwrap_or(bin_path);
+    let single_component = std::path::Path::new(wanted_path)
+        .components()
+        .nth(1)
+        .is_none();
+    let wanted_name = std::path::Path::new(wanted_path)
         .file_name()
         .map(std::ffi::OsStr::to_string_lossy)
         .unwrap_or_default()
         .into_owned();
+
+    let mut basename_hit: Option<Vec<u8>> = None;
 
     for entry in archive.entries().map_err(|e| Error::Archive {
         kind: compression.extension(),
@@ -79,41 +90,51 @@ fn extract_tar_entry(
             source: e,
         })?;
 
-        let entry_name = path
-            .file_name()
-            .map(std::ffi::OsStr::to_string_lossy)
-            .unwrap_or_default()
-            .into_owned();
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
 
-        if entry_name == wanted_name {
-            // Skip directories / non-file entries that happen to share a name.
-            if entry.header().entry_type().is_file() {
-                // Do NOT trust the tar-header declared size for the
-                // allocation: a hostile/malformed header could claim an
-                // enormous entry size and force a huge `Vec` reservation
-                // (OOM). We bound the reservation by the same ceiling the
-                // download stage already enforces (`DEFAULT_MAX_BYTES`); an
-                // absent or implausibly large declared size reserves nothing
-                // and `read_to_end` grows the buffer as bytes arrive.
-                let declared = entry.size();
-                let declared_usize = usize::try_from(declared).unwrap_or(0);
-                let cap = declared_usize.min(
-                    usize::try_from(crate::installer::DEFAULT_MAX_BYTES).unwrap_or(usize::MAX),
-                );
-                let mut buf = Vec::with_capacity(cap);
-                entry.read_to_end(&mut buf).map_err(|e| Error::Archive {
-                    kind: compression.extension(),
-                    source: e,
-                })?;
-                return Ok(buf);
-            }
+        let entry_path = path.to_string_lossy();
+        let entry_path = entry_path.strip_prefix("./").unwrap_or(&entry_path);
+
+        if entry_path == wanted_path {
+            return read_entry_bytes(&mut entry, compression);
+        }
+        if single_component
+            && basename_hit.is_none()
+            && path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy() == wanted_name)
+        {
+            basename_hit = Some(read_entry_bytes(&mut entry, compression)?);
         }
     }
 
-    Err(Error::EntryNotFound {
+    basename_hit.ok_or_else(|| Error::EntryNotFound {
         tool: tool.to_owned(),
         bin_path: bin_path.to_owned(),
     })
+}
+
+/// Read one file entry into a `Vec<u8>`.
+///
+/// The tar-header declared size is not trusted for the allocation: a
+/// hostile or malformed header could claim an enormous entry size and force
+/// a huge `Vec` reservation (OOM). The reservation is bounded by the same
+/// ceiling the download stage enforces ([`crate::installer::DEFAULT_MAX_BYTES`]);
+/// an absent or implausibly large declared size reserves nothing and
+/// `read_to_end` grows the buffer as bytes arrive.
+fn read_entry_bytes<R: Read>(entry: &mut tar::Entry<R>, compression: Tarball) -> Result<Vec<u8>> {
+    let declared = entry.size();
+    let declared_usize = usize::try_from(declared).unwrap_or(0);
+    let cap = declared_usize
+        .min(usize::try_from(crate::installer::DEFAULT_MAX_BYTES).unwrap_or(usize::MAX));
+    let mut buf = Vec::with_capacity(cap);
+    entry.read_to_end(&mut buf).map_err(|e| Error::Archive {
+        kind: compression.extension(),
+        source: e,
+    })?;
+    Ok(buf)
 }
 
 #[cfg(test)]
@@ -189,7 +210,6 @@ mod tests {
 
     #[test]
     fn tarball_gz_matches_on_bare_filename() {
-        // Tool specifies just "mise"; entry is at "mise-1.0/mise".
         let archive = make_targz(&[("mise-1.0/mise", b"X")]);
         let out = extract_executable(
             &archive,
@@ -199,6 +219,59 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, b"X");
+    }
+
+    #[test]
+    fn tarball_full_path_match_wins_over_earlier_same_basename() {
+        // bin_path has multiple components: only the exact full-path entry
+        // may match, so an earlier "other/mise" cannot shadow "bin/mise".
+        let archive = make_targz(&[("other/mise", b"WRONG"), ("bin/mise", b"RIGHT")]);
+        let out = extract_executable(
+            &archive,
+            ArtifactKind::Tarball(Tarball::Gz),
+            "mise",
+            Some("bin/mise"),
+        )
+        .unwrap();
+        assert_eq!(out, b"RIGHT");
+    }
+
+    #[test]
+    fn tarball_multi_component_bin_path_needs_exact_match() {
+        // A same-basename entry in a different directory does not satisfy a
+        // multi-component bin_path.
+        let archive = make_targz(&[("other/mise", b"WRONG")]);
+        let err = extract_executable(
+            &archive,
+            ArtifactKind::Tarball(Tarball::Gz),
+            "mise",
+            Some("bin/mise"),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::EntryNotFound { .. }));
+    }
+
+    #[test]
+    fn tarball_strips_dot_slash_from_both_sides() {
+        let archive = make_targz(&[("./bin/mise", b"OK")]);
+        let out = extract_executable(
+            &archive,
+            ArtifactKind::Tarball(Tarball::Gz),
+            "mise",
+            Some("bin/mise"),
+        )
+        .unwrap();
+        assert_eq!(out, b"OK");
+
+        let archive = make_targz(&[("bin/mise", b"OK2")]);
+        let out = extract_executable(
+            &archive,
+            ArtifactKind::Tarball(Tarball::Gz),
+            "mise",
+            Some("./bin/mise"),
+        )
+        .unwrap();
+        assert_eq!(out, b"OK2");
     }
 
     #[test]

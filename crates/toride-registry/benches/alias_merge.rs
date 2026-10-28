@@ -7,10 +7,6 @@ use toride_registry::adapter::Registry;
 use toride_registry::error::Result;
 use toride_registry::model::{App, Availability, InstallMethod, SourceKind, SourceRef, TorideId};
 
-const SAMPLE_SIZE: usize = 30;
-const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
-const WARM_UP_TIME: Duration = Duration::from_millis(500);
-
 const SIZES: [usize; 2] = [50, 200];
 
 fn runtime() -> &'static tokio::runtime::Runtime {
@@ -153,9 +149,9 @@ fn alias_merge(c: &mut Criterion) {
     let rt = runtime();
 
     let mut group = c.benchmark_group("alias_merge");
-    group.sample_size(SAMPLE_SIZE);
-    group.measurement_time(MEASUREMENT_TIME);
-    group.warm_up_time(WARM_UP_TIME);
+    group.sample_size(100);
+    group.measurement_time(Duration::from_secs(5));
+    group.warm_up_time(Duration::from_secs(3));
 
     for size in SIZES {
         let registry = registry(size);

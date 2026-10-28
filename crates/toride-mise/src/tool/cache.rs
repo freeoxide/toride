@@ -9,10 +9,6 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// Request types
-// ---------------------------------------------------------------------------
-
 /// Parameters for a cache prune operation.
 #[derive(Debug, Clone, Default)]
 pub struct CachePruneRequest {
@@ -23,10 +19,6 @@ pub struct CachePruneRequest {
     /// If `true`, print verbose output.
     pub verbose: bool,
 }
-
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// Clear the entire mise cache.

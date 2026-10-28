@@ -217,7 +217,9 @@ use toride_runner::{CommandOutput, FakeRunner};
 use toride_mise::Mise;
 
 let fake = Arc::new(FakeRunner::new().push_response(
-    CommandOutput::from_stdout(r#"[{"name":"node","version":"22.1.0"}]"#),
+    CommandOutput::from_stdout(
+        r#"{"node":[{"version":"22.1.0","install_path":"/home/user/.local/share/mise/installs/node/22.1.0","installed":true,"active":true}]}"#,
+    ),
 ));
 let mise = Mise::builder()
     .runner(fake.clone() as Arc<dyn toride_runner::AsyncRunner>)

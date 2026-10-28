@@ -10,11 +10,7 @@ use serde::Deserialize;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// JSON response types
-// ---------------------------------------------------------------------------
-
-/// A single tool alias entry as returned by `mise tool-alias ls --output=json`.
+/// A single tool alias entry parsed from `mise alias ls` plain output.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ToolAlias {
     /// The tool name the alias belongs to (e.g. `"node"`).
@@ -24,10 +20,6 @@ pub struct ToolAlias {
     /// The version the alias resolves to (e.g. `"22"`).
     pub version: String,
 }
-
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// List tool aliases, optionally filtered by tool name.

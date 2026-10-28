@@ -2131,9 +2131,6 @@ mod tests {
         #[cfg(unix)]
         #[tokio::test]
         async fn ensure_public_detects_against_the_install_dir_override() {
-            // The tool's default dir stays empty; the override dir carries the
-            // script. ensure must build its Detector with that override:
-            // proving install_dir flows into detection, not just into install.
             let tool_dir = TempDir::new().unwrap();
             let override_tmp = TempDir::new().unwrap();
             let override_dir = utf8_dir(&override_tmp);

@@ -10,7 +10,7 @@
 
 use camino::Utf8PathBuf;
 use toride_installer::Detector;
-use toride_installer::tools::mise::mise_tool;
+use toride_installer::tools::mise::{MISE_BIN_NAME, mise_tool};
 
 use super::version::MiseVersion;
 use crate::error::MiseError;
@@ -48,9 +48,11 @@ impl MiseBinary {
     ///    `version: None`, never to a missed binary. A non-UTF-8 `$PATH`
     ///    hit is treated as absent by the detector (it falls through to the
     ///    later tiers) rather than surfacing as an error.
-    /// 3. The system-wide `/usr/local/bin/mise`, kept as an extra fallback:
-    ///    the detector models only `$PATH` and the managed location, and a
-    ///    PATH-scrubbed host with a system-wide mise must still be found.
+    /// 3. The system-wide `/usr/local/bin` copy of the mise binary
+    ///    ([`MISE_BIN_NAME`]: `mise.exe` under Windows), kept as an extra
+    ///    fallback: the detector models only `$PATH` and the managed
+    ///    location, and a PATH-scrubbed host with a system-wide mise must
+    ///    still be found.
     /// 4. App-bundled binary path (alongside the current executable).
     ///
     /// Discovery performs blocking work: tier 2 runs the detector's
@@ -148,7 +150,7 @@ impl MiseBinary {
                 .ok()
                 .and_then(|path| Utf8PathBuf::from_path_buf(path).ok()),
             managed_bin: Detector::managed_path(&mise_tool(), None).ok().as_ref(),
-            system_wide: Some(Utf8PathBuf::from("/usr/local/bin/mise")),
+            system_wide: Some(Utf8PathBuf::from("/usr/local/bin").join(MISE_BIN_NAME)),
             bundled_dir: bundled_dir.as_deref(),
         })
     }
@@ -188,7 +190,7 @@ impl MiseBinary {
             });
         }
         if let Some(dir) = tiers.bundled_dir {
-            let bundled = dir.join("mise");
+            let bundled = dir.join(MISE_BIN_NAME);
             if bundled.is_file()
                 && let Ok(utf8) = Utf8PathBuf::from_path_buf(bundled)
             {
@@ -368,18 +370,20 @@ mod tests {
     }
 
     #[test]
-    fn offline_bundled_tier_and_absent_verdict() {
+    fn offline_bundled_tier_joins_the_platform_binary_name() {
         let empty = TempDir::new().unwrap();
         let empty_dir = std::path::PathBuf::from(empty.path());
-        std::fs::write(empty_dir.join("mise"), b"bundled binary").unwrap();
+        std::fs::write(empty_dir.join(MISE_BIN_NAME), b"bundled binary").unwrap();
 
         let found = MiseBinary::discover_offline_with(cascade(None, None, Some(&empty_dir)))
             .expect("the bundled tier is the last file check");
         assert_eq!(
             found.path,
-            Utf8PathBuf::from_path_buf(empty_dir.join("mise")).expect("tempdir path is utf-8")
+            Utf8PathBuf::from_path_buf(empty_dir.join(MISE_BIN_NAME))
+                .expect("tempdir path is utf-8"),
+            "the bundled tier must join MISE_BIN_NAME ({MISE_BIN_NAME}), not a unix literal"
         );
-        std::fs::remove_file(empty_dir.join("mise")).unwrap();
+        std::fs::remove_file(empty_dir.join(MISE_BIN_NAME)).unwrap();
 
         let absent = MiseBinary::discover_offline_with(cascade(None, None, Some(&empty_dir)))
             .expect_err("no tier hit");
@@ -393,7 +397,7 @@ mod tests {
         std::fs::write(&managed_bin, b"managed").unwrap();
         let bundled = TempDir::new().unwrap();
         let bundled_dir = std::path::PathBuf::from(bundled.path());
-        std::fs::write(bundled_dir.join("mise"), b"bundled").unwrap();
+        std::fs::write(bundled_dir.join(MISE_BIN_NAME), b"bundled").unwrap();
         let tmp = TempDir::new().unwrap();
         let path_hit = utf8_dir(&tmp).join("mise-on-path");
         std::fs::write(&path_hit, b"path hit").unwrap();
@@ -410,7 +414,7 @@ mod tests {
     #[test]
     fn offline_system_wide_tier_falls_in_behind_managed() {
         let tmp = TempDir::new().unwrap();
-        let system_wide = utf8_dir(&tmp).join("mise");
+        let system_wide = utf8_dir(&tmp).join(MISE_BIN_NAME);
         std::fs::write(&system_wide, b"system wide").unwrap();
 
         let found = MiseBinary::discover_offline_with(OfflineCascade {

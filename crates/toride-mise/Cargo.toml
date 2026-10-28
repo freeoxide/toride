@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 readme = "README.md"
 keywords = ["mise", "asdf", "toolchain", "version-manager", "dev-tools"]
+# The benches are all criterion targets (`harness = false`); the implicit
+# lib bench target rejects criterion flags like `-- --baseline pre`.
+[lib]
+bench = false
+
 categories = ["development-tools"]
 
 [features]

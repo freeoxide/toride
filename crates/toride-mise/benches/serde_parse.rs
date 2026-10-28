@@ -54,7 +54,9 @@ fn assert_fixture_shape(ls_raw: &str, outdated_raw: &str) {
     let rows = ls_map_to_rows(&ls);
     assert_eq!(rows.len(), EXPECTED_LS_TOOLS, "one row per map key");
     assert_eq!(
-        rows.iter().map(|(_, versions)| versions.len()).sum::<usize>(),
+        rows.iter()
+            .map(|(_, versions)| versions.len())
+            .sum::<usize>(),
         EXPECTED_LS_VERSIONS,
         "every version entry lands in its tool's row"
     );

@@ -6,6 +6,7 @@
 
 #![cfg(feature = "json")]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -47,7 +48,7 @@ mod json_outputs {
 
     use serde::Deserialize;
 
-    /// Flat array entry used by `mise ls --output=json`.
+    /// Version entry inside the tool-name-keyed `mise ls --json` map.
     #[derive(Debug, Clone, Deserialize)]
     pub struct ToolStatus {
         #[serde(default)]
@@ -60,6 +61,10 @@ mod json_outputs {
         pub active: Option<bool>,
         #[serde(default)]
         pub install_path: Option<String>,
+        #[serde(default)]
+        pub installed: Option<bool>,
+        #[serde(default, alias = "requested_version")]
+        pub requested: Option<String>,
     }
 
     #[derive(Debug, Clone, Deserialize)]
@@ -133,7 +138,7 @@ mod json_outputs {
 
 #[test]
 fn ls_installed_snapshot() {
-    let tools: Vec<json_outputs::ToolStatus> = parse_fixture("ls/installed.json");
+    let tools: BTreeMap<String, Vec<json_outputs::ToolStatus>> = parse_fixture("ls/installed.json");
     insta::assert_debug_snapshot!("ls_installed", tools);
 }
 
@@ -147,7 +152,7 @@ fn ls_installed_json_snapshot() {
 
 #[test]
 fn ls_missing_snapshot() {
-    let tools: Vec<json_outputs::ToolStatus> = parse_fixture("ls/missing.json");
+    let tools: BTreeMap<String, Vec<json_outputs::ToolStatus>> = parse_fixture("ls/missing.json");
     insta::assert_debug_snapshot!("ls_missing", tools);
 }
 

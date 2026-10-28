@@ -564,10 +564,6 @@ mod tests {
         assert!(calls[0].args.contains(&"node@22".to_string()));
     }
 
-    // -----------------------------------------------------------------------
-    // Strict-mode tests
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn test_install_strict_mode() {
         let expected = toride_runner::CommandSpec::new("/usr/bin/mise")

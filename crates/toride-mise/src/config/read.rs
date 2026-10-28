@@ -287,10 +287,6 @@ impl Mise {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
     /// Parse a TOML string into a [`MiseToml`], associating it with an
     /// optional file path.
     fn parse_mise_toml(content: &str, path: Option<Utf8PathBuf>) -> MiseResult<MiseToml> {

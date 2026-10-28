@@ -371,7 +371,6 @@ impl<'a> DiagnosticsBuilder<'a> {
                     }
                 },
                 _ => {
-                    // For unrecognised checks, just run doctor and extract.
                     let report = self.mise.doctor().await?;
                     warnings.extend(report.warnings);
                     errors.extend(report.errors);

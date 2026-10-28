@@ -232,10 +232,6 @@ impl Mise {
         })
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
     /// Build the argument list for `mise lock` from a [`LockRequest`].
     fn build_lock_args(req: &LockRequest, force_dry_run: bool) -> Vec<String> {
         let mut args = vec!["lock".to_owned()];

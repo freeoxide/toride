@@ -36,10 +36,6 @@ impl Mise {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
     /// Compute the fallback config path using the XDG convention.
     ///
     /// Returns `~/.config/mise/config.toml`.

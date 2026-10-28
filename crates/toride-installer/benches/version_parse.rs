@@ -35,9 +35,9 @@ fn assert_fixture_shape(content: &str) {
     assert!(python.parsed.is_none(), "current behavior: not semver");
     let node = ToolVersion::parse("v22.0.0", "node");
     assert_eq!(node.raw, "v22.0.0");
-    assert!(
-        node.parsed.is_none(),
-        "current behavior: 'v' prefix is not semver"
+    assert_eq!(
+        node.parsed.as_ref().map(std::string::ToString::to_string),
+        Some("22.0.0".to_string())
     );
     let rg = ToolVersion::parse("ripgrep 14.1.1", "rg");
     assert_eq!(rg.raw, "ripgrep");

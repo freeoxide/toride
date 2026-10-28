@@ -10,10 +10,6 @@ use serde::Deserialize;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// JSON response types
-// ---------------------------------------------------------------------------
-
 /// A single entry returned by `mise registry --json`.
 ///
 /// Real mise (2026.x) outputs fields named `short`, `backends` (array),
@@ -249,10 +245,6 @@ where
     deserializer.deserialize_any(BackendsVisitor)
 }
 
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
-
 impl Mise {
     /// List every tool in the mise registry.
     ///
@@ -345,10 +337,6 @@ impl Mise {
             .find(|t| t.short == name || t.aliases.contains(&name.to_owned())))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -8,10 +8,6 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// PrunePlan
-// ---------------------------------------------------------------------------
-
 /// A plan of paths that would be removed by a prune operation.
 ///
 /// Returned by [`Mise::prune_dry_run`] so callers can inspect what would be
@@ -45,10 +41,6 @@ impl PrunePlan {
         self.paths.is_empty()
     }
 }
-
-// ---------------------------------------------------------------------------
-// PruneRequest
-// ---------------------------------------------------------------------------
 
 /// Parameters for a `mise prune` invocation.
 ///
@@ -102,10 +94,6 @@ impl PruneRequest {
         self
     }
 }
-
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// Prune unused tool installations (simple convenience wrapper).
