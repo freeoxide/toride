@@ -1,9 +1,5 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
-// FakeRunner basics
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fake_runner_should_respond_to_registered_command() {
     let runner = FakeRunner::new().respond_ok("ufw", &["--version"], "ufw 0.36.1");
@@ -77,10 +73,6 @@ fn fake_runner_respond_err_should_return_failure() {
     assert_eq!(result.exit_code, Some(1));
 }
 
-// ---------------------------------------------------------------------------
-// FakeRunner binary_exists
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fake_runner_binary_exists_should_return_true_for_ufw() {
     let runner = FakeRunner::new();
@@ -94,10 +86,6 @@ fn fake_runner_binary_exists_should_return_false_for_unknown() {
     let runner = FakeRunner::new();
     assert!(!runner.binary_exists("some-unknown-tool"));
 }
-
-// ---------------------------------------------------------------------------
-// Edge-case tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn fake_runner_should_match_with_args() {
@@ -125,10 +113,6 @@ fn fake_runner_respond_should_return_error_result() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Weird edge-case tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn fake_runner_should_handle_empty_args() {
     let runner = FakeRunner::new().respond_ok("ufw", &[], "usage: ufw");
@@ -148,10 +132,6 @@ fn fake_runner_log_should_record_all_args() {
     let log = runner.command_log();
     assert_eq!(log[0].args, vec!["a", "b", "c"]);
 }
-
-// ---------------------------------------------------------------------------
-// Production-grade weird edge cases
-// ---------------------------------------------------------------------------
 
 #[test]
 fn fake_runner_multiple_runs_should_all_be_logged() {
@@ -192,17 +172,12 @@ fn fake_runner_should_handle_large_stdout() {
     assert_eq!(result.stdout.len(), 1_000_000);
 }
 
-// ---------------------------------------------------------------------------
-// redact_args: secret masking for command-log output
-// ---------------------------------------------------------------------------
-
 fn redact(args: &[&str]) -> String {
     redact_args(&args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>())
 }
 
 #[test]
 fn redact_args_should_mask_trailing_value() {
-    // --password <value> (space separator): the next arg is the secret.
     let out = redact(&["--password", "s3cr3t"]);
     assert!(
         out.contains("***"),
@@ -216,7 +191,6 @@ fn redact_args_should_mask_trailing_value() {
 
 #[test]
 fn redact_args_should_mask_inline_equal_value() {
-    // --api-key=value (inline `=`): the value half is redacted.
     let out = redact(&["--api-key=abc123"]);
     assert!(
         out.contains("--api-key=***"),
@@ -237,7 +211,6 @@ fn redact_args_should_mask_password_inline_equal() {
 
 #[test]
 fn redact_args_should_be_case_insensitive() {
-    // Uppercase/mixed-case flag forms are also masked.
     let out = redact(&["--PASSWORD", "hunter2"]);
     assert!(out.contains("***"), "got {out:?}");
     assert!(!out.contains("hunter2"), "got {out:?}");
@@ -249,7 +222,6 @@ fn redact_args_should_be_case_insensitive() {
 
 #[test]
 fn redact_args_should_pass_through_non_sensitive_flags() {
-    // A plain flag with a non-sensitive following arg is left intact.
     let out = redact(&["--verbose", "--host", "example.com", "--port", "443"]);
     assert!(out.contains("example.com"), "got {out:?}");
     assert!(out.contains("443"), "got {out:?}");
@@ -261,7 +233,6 @@ fn redact_args_should_pass_through_non_sensitive_flags() {
 
 #[test]
 fn redact_args_should_mask_all_sensitive_flags() {
-    // Every entry in REDACT_FLAGS should mask its trailing value.
     for flag in &[
         "--password",
         "--passwd",
@@ -281,10 +252,6 @@ fn redact_args_should_mask_all_sensitive_flags() {
 
 #[test]
 fn redact_args_exact_match_gap_is_pinned() {
-    // REDACT_FLAGS requires an EXACT lowercased match, so these look-alike
-    // flags are intentionally NOT redacted. This test pins that behavior so a
-    // future loosening (e.g. switching to `starts_with`) is a deliberate,
-    // reviewed change.
     let out = redact(&["--apikey", "not-redacted"]);
     assert!(
         !out.contains("***"),
@@ -301,8 +268,6 @@ fn redact_args_exact_match_gap_is_pinned() {
 
 #[test]
 fn redact_args_should_not_mask_a_lone_flag_with_no_value() {
-    // A redactable flag at the very end (no following arg) just passes
-    // through; nothing to mask.
     let out = redact(&["--password"]);
     assert!(out.contains("--password"), "got {out:?}");
     assert!(!out.contains("***"), "got {out:?}");
@@ -316,15 +281,8 @@ fn redact_args_should_mask_two_consecutive_secrets() {
     assert!(!out.contains("tok2"), "got {out:?}");
 }
 
-// ---------------------------------------------------------------------------
-// to_shared_spec: redact_logs forwarding
-// ---------------------------------------------------------------------------
-
 #[test]
 fn to_shared_spec_should_forward_redact_logs_when_set() {
-    // Regression: previously to_shared_spec dropped the local redact_logs
-    // flag, so the executing runner (and its tracing) never redacted. The
-    // shared spec must carry the redact flag when the caller opted in.
     let mut spec = CommandSpec::ufw(vec!["--password".into(), "s3cr3t".into()]);
     spec.redact_logs = true;
 
@@ -347,7 +305,6 @@ fn to_shared_spec_should_leave_redact_off_by_default() {
 
 #[test]
 fn to_shared_spec_should_preserve_force_c_locale_and_args() {
-    // The redact-forwarding change must not disturb the other forwarded fields.
     let spec = CommandSpec::ufw(vec!["--version".into()]);
     let shared = to_shared_spec(&spec);
     assert_eq!(shared.program, "ufw");

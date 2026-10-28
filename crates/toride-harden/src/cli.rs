@@ -176,8 +176,6 @@ fn run_apply(client: &HardenClient, profile: &str, dry_run: bool, no_backup: boo
         return Ok(());
     }
 
-    // `--no-backup` skips the pre-mutation snapshot; otherwise the profile
-    // is applied with an automatic backup (see `apply_profile`).
     let report = if no_backup {
         client.apply_profile_with_options(&profile, true)?
     } else {
@@ -185,9 +183,6 @@ fn run_apply(client: &HardenClient, profile: &str, dry_run: bool, no_backup: boo
     };
     println!("{}", report.to_summary());
     if report.has_failures() {
-        // A partial apply is a failure: the operator asked for the profile and
-        // not all parameters landed. Exit non-zero so scripts/CI notice, rather
-        // than reporting success while some sysctls were not set.
         return Err(crate::error::Error::Other(format!(
             "{} parameter(s) failed to apply (see report above)",
             report.failed.len()
@@ -197,8 +192,6 @@ fn run_apply(client: &HardenClient, profile: &str, dry_run: bool, no_backup: boo
 }
 
 fn run_status(client: &HardenClient, spec: &HardenSpec, verbose: bool) -> Result<()> {
-    // One status sweep answers both arms; the non-verbose path derives the
-    // changed set from the rows it already has instead of a second pass.
     let rows = client.status(spec)?;
     if verbose {
         for (param, current) in &rows {
@@ -289,8 +282,6 @@ mod tests {
 
     #[test]
     fn dispatch_status_calls_sysctl() {
-        // `status` (non-verbose) routes through `HardenClient::check`, which
-        // runs `sysctl -a`. Give it a single response.
         let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
             "kernel.randomize_va_space = 2\nnet.ipv4.ip_forward = 0\n",
         ));
@@ -301,7 +292,6 @@ mod tests {
             .expect("status dispatch failed");
 
         let calls = runner.calls();
-        // The dispatch must have invoked the real sysctl binary.
         assert!(
             calls
                 .iter()
@@ -331,7 +321,6 @@ mod tests {
 
     #[test]
     fn dispatch_apply_unknown_profile_errors() {
-        // No runner calls needed: profile resolution fails before any sysctl.
         let runner = FakeRunner::new();
         let client = HardenClient::with_runner(Box::new(runner.clone()));
 
@@ -341,7 +330,6 @@ mod tests {
             err.is_err(),
             "applying an unknown profile should error before touching the system"
         );
-        // And it must NOT have run any sysctl command.
         assert!(
             runner.calls().is_empty(),
             "unknown profile should short-circuit before dispatch"
@@ -350,7 +338,6 @@ mod tests {
 
     #[test]
     fn dispatch_apply_dry_run_does_not_write() {
-        // Desktop profile; dry-run reads current state via one `sysctl -a`.
         let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
             "kernel.randomize_va_space = 2\nnet.ipv4.ip_forward = 0\n",
         ));
@@ -367,7 +354,6 @@ mod tests {
                 .any(|c| c.program == "sysctl" && c.args.first().is_some_and(|a| a == "-a")),
             "dry-run should read current state via `sysctl -a`"
         );
-        // Critical safety check: a dry run must never issue a `sysctl -w`.
         assert!(
             !calls
                 .iter()
@@ -378,15 +364,11 @@ mod tests {
 
     #[test]
     fn dispatch_apply_no_backup_skips_backup_file() {
-        // `--no-backup` must skip the pre-mutation snapshot: no backup file
-        // should land in the backup directory. Contrast with the default path,
-        // which must create one.
         use crate::paths::HardenPaths;
 
         let dir = assert_fs::TempDir::new().unwrap();
         let paths = HardenPaths::with_root(dir.path());
 
-        // No-backup path: lenient runner returns empty output for every call.
         let runner = FakeRunner::new();
         let client = HardenClient::with_runner_and_paths(Box::new(runner.clone()), paths.clone());
 
@@ -394,7 +376,6 @@ mod tests {
         cli.run_with_client(&client)
             .expect("--no-backup dispatch failed");
 
-        // No backup directory contents should have been created.
         if paths.backup_dir.is_dir() {
             let entries: Vec<_> = std::fs::read_dir(&paths.backup_dir)
                 .expect("backup dir readable")
@@ -408,7 +389,6 @@ mod tests {
 
     #[test]
     fn dispatch_apply_default_creates_backup_file() {
-        // Default path (no --no-backup) must persist exactly one backup file.
         use crate::paths::HardenPaths;
 
         let dir = assert_fs::TempDir::new().unwrap();

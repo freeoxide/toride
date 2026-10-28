@@ -258,12 +258,9 @@ pub fn load_backup_from_disk(paths: &HardenPaths, timestamp: &str) -> Result<Bac
 fn parse_backup(content: &str) -> Result<BackupSnapshot> {
     const HEADER_PREFIX: &str = "# Backup created: ";
     const SECTION_SUFFIX: &str = " ===";
-    // Modern markers: `# toride:backup:section === <name> ===`
     const SENTINEL_PREFIX: &str = "# toride:backup:section === ";
-    // Legacy markers (older on-disk backups): `# === <name> ===`
     const LEGACY_PREFIX: &str = "# === ";
 
-    // Header: first line must be the `# Backup created: <ts>` marker.
     let header_end = content
         .find('\n')
         .ok_or_else(|| crate::error::Error::Io("backup file missing header line".into()))?;
@@ -281,15 +278,12 @@ fn parse_backup(content: &str) -> Result<BackupSnapshot> {
     let mut dropins: Vec<(String, String)> = Vec::new();
     let mut runtime_values: Vec<(String, String)> = Vec::new();
 
-    // Walk the body line-by-line, accumulating section content between markers.
     let mut current_section: Option<String> = None;
     let mut current_lines: Vec<&str> = Vec::new();
 
     for line in body.split_inclusive('\n') {
         let trimmed = line.trim_end_matches('\n');
 
-        // Prefer the sentinel-bearing marker; fall back to the legacy form so
-        // backups written by previous versions still round-trip.
         let name = if let Some(rest) = trimmed.strip_prefix(SENTINEL_PREFIX) {
             rest.strip_suffix(SECTION_SUFFIX)
         } else if let Some(rest) = trimmed.strip_prefix(LEGACY_PREFIX) {
@@ -299,7 +293,6 @@ fn parse_backup(content: &str) -> Result<BackupSnapshot> {
         };
 
         if let Some(name) = name {
-            // Flush the previous section.
             if let Some(prev) = current_section.take() {
                 push_section(
                     &mut sysctl_conf,
@@ -316,7 +309,6 @@ fn parse_backup(content: &str) -> Result<BackupSnapshot> {
         }
     }
 
-    // Flush trailing section (the writer always appends "\n\n" after content).
     if let Some(name) = current_section {
         push_section(
             &mut sysctl_conf,
@@ -350,7 +342,6 @@ fn push_section(
     name: &str,
     lines: &[&str],
 ) {
-    // Drop trailing empty line(s) introduced by the writer's "\n\n" separator.
     let mut end = lines.len();
     while end > 0 && lines[end - 1].is_empty() {
         end -= 1;
@@ -400,13 +391,11 @@ fn chrono_independent_timestamp() -> String {
 fn unique_timestamp(paths: &HardenPaths) -> String {
     let base = chrono_independent_timestamp();
 
-    // Fast path: no existing backup with this name.
     let candidate = paths.backup_dir.join(format!("sysctl-backup-{base}.txt"));
     if !candidate.exists() {
         return base;
     }
 
-    // Collision: scan for a free counter suffix.
     for n in 2..u64::MAX {
         let suffixed = format!("{base}-{n}");
         let probe = paths
@@ -430,7 +419,6 @@ mod tests {
         let dir = assert_fs::TempDir::new().unwrap();
         let root = dir.path();
 
-        // Create test files
         std::fs::create_dir_all(root.join("etc/sysctl.d")).unwrap();
         std::fs::write(root.join("etc/sysctl.conf"), "kernel.aslr = 2\n").unwrap();
         std::fs::write(
@@ -489,7 +477,6 @@ mod tests {
 
         assert_eq!(loaded.timestamp, original.timestamp);
         assert_eq!(loaded.sysctl_conf, original.sysctl_conf);
-        // Drop-ins are sorted deterministically on both write and read.
         assert_eq!(loaded.dropins, original.dropins);
     }
 
@@ -539,7 +526,6 @@ mod tests {
         let root = dir.path();
         let paths = HardenPaths::with_root(root);
 
-        // No '# Backup created:' header.
         std::fs::create_dir_all(&paths.backup_dir).unwrap();
         std::fs::write(
             paths.backup_dir.join("sysctl-backup-bad.txt"),
@@ -552,7 +538,6 @@ mod tests {
 
     #[test]
     fn save_load_restore_round_trip_end_to_end() {
-        // Full cycle: save -> load -> restore restores the original files.
         let dir = assert_fs::TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("etc/sysctl.d")).unwrap();
@@ -578,8 +563,6 @@ mod tests {
 
     #[test]
     fn restore_reapplies_recorded_runtime_values() {
-        // Regression: a file-only restore left every sysctl hardened at
-        // runtime while reporting success.
         use toride_runner::fake::FakeRunner;
 
         let dir = assert_fs::TempDir::new().unwrap();

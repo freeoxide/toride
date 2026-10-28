@@ -658,8 +658,6 @@ mod tests {
 
     #[test]
     fn extract_json_string_decodes_multibyte_utf8() {
-        // Regression: pushing each byte as a char decoded non-ASCII bytes as
-        // Latin-1 mojibake ("u\u{301}"-style garbage instead of "ü").
         let json = "{\"name\": \"düpen-ft\"}";
         let name = extract_json_string(json, "\"name\"").expect("name extracts");
         assert_eq!(name, "düpen-ft");
@@ -673,7 +671,6 @@ mod tests {
     fn extract_expr_summary_keeps_short_summary_intact() {
         let json = r#"{"expr": ["drop"]}"#;
         let summary = extract_expr_summary(json);
-        // Short summaries are not truncated (no trailing "...").
         assert!(!summary.ends_with("..."));
     }
 }
