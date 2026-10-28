@@ -115,6 +115,11 @@ pub struct ListToolsRequest {
     /// Include an outdated flag in results.
     pub outdated: bool,
     /// Filter results to tools whose name starts with this prefix.
+    ///
+    /// Applied in this crate over the full `mise ls --json` listing: mise's
+    /// positional argument is an exact tool lookup (bare-array output, and a
+    /// partial name is rejected with "not found in mise tool registry"),
+    /// not a prefix filter.
     pub prefix: Option<String>,
     /// Only include tools whose install directory is on the local machine.
     pub local_only: bool,
@@ -204,7 +209,9 @@ impl Mise {
     /// List tools using a full [`ListToolsRequest`].
     ///
     /// Builds the complete `mise ls` command with all filter flags from the
-    /// request struct and parses the tool-name-keyed object into rows.
+    /// request struct and parses the tool-name-keyed object into rows. The
+    /// [`ListToolsRequest::prefix`] filter is applied to the parsed rows:
+    /// mise's positional argument is an exact tool lookup, never a prefix.
     ///
     /// # Errors
     ///
@@ -241,12 +248,15 @@ impl Mise {
 
         args.push("--json".into());
 
-        if let Some(ref prefix) = req.prefix {
-            args.push(prefix.clone());
-        }
-
         let output: Option<LsOutput> = self.run_json(args).await?;
-        Ok(ls_rows(output.unwrap_or_default()))
+        let rows = ls_rows(output.unwrap_or_default());
+        Ok(match req.prefix.as_deref() {
+            Some(prefix) => rows
+                .into_iter()
+                .filter(|row| row.name.starts_with(prefix))
+                .collect(),
+            None => rows,
+        })
     }
 
     /// List only installed tool versions.
@@ -345,6 +355,7 @@ mod tests {
 
     use toride_runner::{CommandOutput, FakeRunner};
 
+    use super::ListToolsRequest;
     use crate::client::Mise;
 
     fn build_mise(fake: Arc<FakeRunner>) -> Mise {
@@ -416,6 +427,28 @@ mod tests {
         assert!(calls[0].args.contains(&"ls".to_string()));
         assert!(calls[0].args.contains(&"--missing".to_string()));
         assert!(calls[0].args.contains(&"--json".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_with_prefix_filters_rows_without_an_operand() {
+        let json = r#"{"node":[{"version":"22.1.0","active":true}],"python":[{"version":"3.12.5","active":true}]}"#;
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
+        let mise = build_mise(fake.clone());
+
+        let req = ListToolsRequest::new().prefix("py");
+        let tools = mise.list_with(&req).await.unwrap();
+        assert_eq!(tools.len(), 1, "only the matching prefix survives");
+        assert_eq!(tools[0].name, "python");
+        assert_eq!(tools[0].version.as_deref(), Some("3.12.5"));
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].args.last().map(String::as_str),
+            Some("--json"),
+            "no operand may follow --json: mise's operand is an exact tool lookup"
+        );
+        assert!(!calls[0].args.contains(&"py".to_string()));
     }
 
     #[tokio::test]

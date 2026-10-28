@@ -63,6 +63,19 @@ fn parse_current_lines(stdout: &str) -> Vec<ActiveTool> {
         .collect()
 }
 
+fn parse_current_bare_version(tool: &str, stdout: &str) -> Vec<ActiveTool> {
+    let version = stdout.trim();
+    (!tool.is_empty() && !version.is_empty())
+        .then(|| ActiveTool {
+            name: tool.to_owned(),
+            version: version.to_owned(),
+            install_path: None,
+            source: None,
+        })
+        .into_iter()
+        .collect()
+}
+
 impl Mise {
     /// List all currently active (resolved) tool versions.
     ///
@@ -79,8 +92,10 @@ impl Mise {
 
     /// List active tools using a full [`ListActiveRequest`].
     ///
-    /// Invokes `mise current [tool]` and parses the plain `<tool> <version>`
-    /// lines.
+    /// With no tool set, `mise current` prints one `<tool> <version>` line
+    /// per active tool. With [`ListActiveRequest::tool`] set, mise prints
+    /// only the bare version for that tool, so the requested name labels
+    /// the returned row.
     ///
     /// # Errors
     ///
@@ -92,6 +107,9 @@ impl Mise {
         }
 
         let output = self.run_checked(args).await?;
+        if let Some(ref tool) = req.tool {
+            return Ok(parse_current_bare_version(tool, output.stdout_trimmed()));
+        }
         Ok(parse_current_lines(output.stdout_trimmed()))
     }
 }
@@ -133,21 +151,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_active_with_passes_the_tool_operand() {
+    async fn list_active_with_tool_parses_the_bare_version_form() {
         let fake =
-            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("node 22.1.0\n")));
+            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("0.12.15\n")));
         let mise = build_mise(fake.clone());
+
+        let tools = mise
+            .list_active_with(&super::ListActiveRequest::new().tool("uv"))
+            .await
+            .unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "uv");
+        assert_eq!(tools[0].version, "0.12.15");
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].args, ["current", "uv"]);
+    }
+
+    #[tokio::test]
+    async fn list_active_with_tool_and_empty_output_yields_no_rows() {
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("")));
+        let mise = build_mise(fake);
 
         let tools = mise
             .list_active_with(&super::ListActiveRequest::new().tool("node"))
             .await
             .unwrap();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "node");
+        assert!(tools.is_empty(), "an inactive tool prints no version");
+    }
+
+    #[tokio::test]
+    async fn list_active_with_no_tool_parses_tool_version_lines() {
+        let fake = Arc::new(
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout("uv 0.12.15\nnode 22.1.0\n")),
+        );
+        let mise = build_mise(fake.clone());
+
+        let tools = mise
+            .list_active_with(&super::ListActiveRequest::new())
+            .await
+            .unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].name, "uv");
+        assert_eq!(tools[0].version, "0.12.15");
+        assert_eq!(tools[1].name, "node");
 
         let calls = fake.calls();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].args, ["current", "node"]);
+        assert_eq!(calls[0].args, ["current"]);
     }
 
     #[tokio::test]
