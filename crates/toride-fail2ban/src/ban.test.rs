@@ -640,6 +640,71 @@ fn cidr_set_contains_ipv4_mapped_ipv6() {
     );
 }
 
+#[test]
+fn cidr_set_insert_converts_mapped_v6_block_prefix_to_v4_scale() {
+    let mut set = CidrSet::new();
+    set.insert("::ffff:10.0.0.0/120".parse::<CidrBlock>().unwrap());
+
+    assert!(
+        set.contains("10.0.0.5".parse().unwrap()),
+        "::ffff:10.0.0.0/120 is the IPv4 range 10.0.0.0/24"
+    );
+    assert!(
+        set.contains("::ffff:10.0.0.5".parse().unwrap()),
+        "the mapped spelling of a member must also match"
+    );
+    assert!(
+        !set.contains("10.0.1.5".parse().unwrap()),
+        "addresses outside the converted /24 must not match"
+    );
+}
+
+#[test]
+fn cidr_set_insert_bare_mapped_v6_address_becomes_single_v4_host() {
+    let mut set = CidrSet::new();
+    set.insert("::ffff:203.0.113.7".parse::<CidrBlock>().unwrap());
+
+    assert!(set.contains("203.0.113.7".parse().unwrap()));
+    assert!(!set.contains("203.0.113.8".parse().unwrap()));
+}
+
+#[test]
+fn cidr_set_insert_mapped_v6_prefix_shorter_than_96_covers_only_v6() {
+    let mut set = CidrSet::new();
+    set.insert("::ffff:0.0.0.0/64".parse::<CidrBlock>().unwrap());
+
+    assert!(
+        !set.contains("10.0.0.1".parse().unwrap()),
+        "host-bit normalization makes ::ffff:0.0.0.0/64 the plain V6 block ::/64, which must never match a V4 query"
+    );
+    assert!(set.contains("::1".parse().unwrap()));
+}
+
+#[test]
+fn cidr_set_insert_skips_unnormalized_mapped_block_with_prefix_under_96() {
+    let mut set = CidrSet::new();
+    let raw = CidrBlock {
+        addr: "::ffff:10.0.0.0".parse().unwrap(),
+        prefix: 64,
+    };
+    set.insert(raw);
+
+    assert!(
+        set.is_empty(),
+        "a mapped block shorter than /96 (reachable via derived Deserialize, which bypasses CidrBlock::new) spans non-mapped addresses and must be skipped"
+    );
+}
+
+#[test]
+fn cidr_set_remove_mapped_v6_block_removes_the_converted_v4_block() {
+    let mut set = CidrSet::new();
+    let block = "::ffff:10.0.0.0/120".parse::<CidrBlock>().unwrap();
+    set.insert(block);
+
+    assert!(set.remove(&block));
+    assert!(!set.contains("10.0.0.5".parse().unwrap()));
+}
+
 // ---------------------------------------------------------------------------
 // Edge-case: overlapping CIDR blocks
 // ---------------------------------------------------------------------------

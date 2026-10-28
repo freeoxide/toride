@@ -141,6 +141,19 @@ fn with_ignore_ips_sets_ignore_list() {
     assert!(result.is_err());
 }
 
+#[test]
+fn with_ignore_ips_accepts_mapped_v6_cidr_at_v4_prefix_scale() {
+    let (jail, _log, _dir) = setup_test_jail();
+    let mut jail = jail.with_ignore_ips(vec!["::ffff:10.0.0.0/120".to_string()]);
+
+    let ip: std::net::IpAddr = "10.0.0.5".parse().unwrap();
+    let result = jail.ban_ip(ip, ExecutionMode::DryRun);
+    assert!(
+        result.is_err(),
+        "10.0.0.5 sits inside the mapped ::ffff:10.0.0.0/120 entry (10.0.0.0/24)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // name() / log_path()
 // ---------------------------------------------------------------------------

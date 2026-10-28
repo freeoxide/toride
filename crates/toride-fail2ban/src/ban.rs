@@ -13,6 +13,8 @@ use crate::store::Store;
 use crate::types::BanEntry;
 use crate::types::normalize_ip;
 
+const MAPPED_V6_PREFIX_OFFSET: u8 = 96;
+
 /// A CIDR network block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CidrBlock {
@@ -151,11 +153,13 @@ impl CidrSet {
 
     /// Add a CIDR block to the set.
     ///
-    /// IPv4-mapped IPv6 blocks are normalized to IPv4 before insertion.
+    /// IPv4-mapped IPv6 blocks are converted to their IPv4 equivalent with
+    /// the prefix translated by the 96-bit mapped offset: `::ffff:10.0.0.0/120`
+    /// inserts as `10.0.0.0/24`. A mapped block whose prefix is shorter than
+    /// /96 spans non-mapped addresses and is skipped with a warning.
     pub fn insert(&mut self, block: CidrBlock) {
-        let block = CidrBlock {
-            addr: normalize_ip(block.addr()),
-            prefix: block.prefix,
+        let Some(block) = mapped_v6_block_to_v4(&block) else {
+            return;
         };
         match block.addr() {
             IpAddr::V4(addr) => {
@@ -211,7 +215,13 @@ impl CidrSet {
     }
 
     /// Remove a CIDR block from the set.
+    ///
+    /// IPv4-mapped IPv6 blocks are matched against the same converted IPv4
+    /// form [`insert`](Self::insert) stores.
     pub fn remove(&mut self, block: &CidrBlock) -> bool {
+        let Some(block) = mapped_v6_block_to_v4(block) else {
+            return false;
+        };
         match block.addr() {
             IpAddr::V4(addr) => {
                 if block.prefix() == 32 {
@@ -254,6 +264,23 @@ impl CidrSet {
             && self.singles_v4.is_empty()
             && self.singles_v6.is_empty()
     }
+}
+
+fn mapped_v6_block_to_v4(block: &CidrBlock) -> Option<CidrBlock> {
+    let IpAddr::V6(v6) = block.addr() else {
+        return Some(*block);
+    };
+    let Some(v4) = v6.to_ipv4_mapped() else {
+        return Some(*block);
+    };
+    if block.prefix() < MAPPED_V6_PREFIX_OFFSET {
+        tracing::warn!(
+            block = %block,
+            "IPv4-mapped CIDR with a prefix shorter than /96 spans non-mapped addresses; skipping"
+        );
+        return None;
+    }
+    CidrBlock::new(IpAddr::V4(v4), block.prefix() - MAPPED_V6_PREFIX_OFFSET).ok()
 }
 
 /// High-level ban manager combining storage and CIDR checking.
