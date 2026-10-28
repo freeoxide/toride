@@ -1,23 +1,33 @@
 use super::*;
 use toride_ssh_core::DiagnosticSeverity;
 
-/// Helper: write a config string to a temp dir and return the `ConfigService`.
 fn setup_config(config_content: &str) -> (tempfile::TempDir, ConfigService<'static>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let ssh_dir = dir.path();
     std::fs::create_dir_all(ssh_dir).unwrap();
     std::fs::write(ssh_dir.join("config"), config_content).unwrap();
 
-    // We need a 'static SshPaths so ConfigService can borrow it.
-    // Safety: the TempDir is kept alive for the duration of the test.
+    // The TempDir must outlive the leaked SshPaths borrow for the whole test.
     let paths = Box::leak(Box::new(crate::SshPaths::with_dir(ssh_dir)));
     let svc = ConfigService::new(paths);
     (dir, svc)
 }
 
-// ---------------------------------------------------------------------------
-// diagnose() tests
-// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn load_missing_config_returns_empty_ast() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths = Box::leak(Box::new(crate::SshPaths::with_dir(dir.path())));
+    let svc = ConfigService::new(paths);
+
+    let ast = svc.load().await.expect("missing config loads as empty");
+    assert!(ast.nodes.is_empty(), "missing config must be an empty AST");
+
+    let owned = svc
+        .load_owned()
+        .await
+        .expect("load_owned on missing config");
+    assert!(owned.nodes.is_empty());
+}
 
 #[tokio::test]
 async fn diagnose_proxy_command_and_proxy_jump_conflict() {
@@ -134,10 +144,8 @@ async fn diagnose_clean_config_returns_empty() {
     let ssh_dir = dir.path();
     std::fs::create_dir_all(ssh_dir).unwrap();
 
-    // Create a real private key file and reference it by absolute path so the
-    // diagnose IdentityFile-existence check is hermetic: it must NOT depend on
-    // the developer's real `~/.ssh/id_ed25519` existing. (`expand_path` passes
-    // absolute paths through unchanged.)
+    // Absolute path: the existence check must stay hermetic and not depend on
+    // the developer's real `~/.ssh/id_ed25519` existing.
     let key_file = ssh_dir.join("id_ed25519");
     std::fs::write(&key_file, b"dummy private key").unwrap();
 
@@ -166,8 +174,6 @@ Host *
 
     let diags = svc.diagnose().await.unwrap();
 
-    // No warnings or errors expected: the config is well-formed and the
-    // referenced IdentityFile exists on disk.
     let warnings: Vec<_> = diags
         .iter()
         .filter(|d| d.severity == DiagnosticSeverity::Warning)
@@ -259,7 +265,6 @@ async fn concurrent_edits_do_not_lose_writes() {
     let dir = tempfile::tempdir().unwrap();
     let paths = SshPaths::with_dir(dir.path());
 
-    // Warm the file so every racer starts from a real load.
     ConfigService::new(&paths)
         .edit(|ast| {
             ConfigService::add_host(

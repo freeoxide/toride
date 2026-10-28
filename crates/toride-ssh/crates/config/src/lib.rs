@@ -40,14 +40,15 @@ impl<'a> ConfigService<'a> {
     /// # Errors
     /// [`Error::Io`] when the file is unreadable.
     pub async fn load(&self) -> Result<Arc<ast::ConfigAst>> {
-        let path = self.paths.config_path();
-        if !path.exists() {
-            return Ok(Arc::new(ast::ConfigAst { nodes: Vec::new() }));
-        }
-        let path = path.to_path_buf();
-        let ast = tokio::task::spawn_blocking(move || cache::load_cached_ast(&path))
-            .await
-            .map_err(|e| Error::TaskFailed(e.to_string()))??;
+        let path = self.paths.config_path().to_path_buf();
+        let ast = tokio::task::spawn_blocking(move || match cache::load_cached_ast(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Arc::new(ast::ConfigAst { nodes: Vec::new() }))
+            }
+            other => other,
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(e.to_string()))??;
         Ok(ast)
     }
 

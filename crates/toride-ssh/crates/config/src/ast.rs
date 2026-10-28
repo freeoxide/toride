@@ -274,35 +274,10 @@ fn line_indent(line: &str) -> &str {
 
 /// Parse the body of a Host/Match block, consuming indented lines.
 ///
-/// # Known limitation (tracked followup)
-///
-/// Membership is gated on indentation: a line belongs to the block only if it
-/// starts with whitespace. OpenSSH does **not** require body indentation: a
-/// `Host`/`Match` block actually extends until the next `Host`/`Match` header
-///: so an *unindented* block-scoped directive (e.g. a real `sshd_config`
-/// `Match User sftpuser` block written as
-/// `Match User sftpuser\nChrootDirectory /sftp`) leaks into the global view.
-/// In the Security tab this can misreport rare unindented Match-scoped
-/// `AllowUsers`/`DenyUsers` as global.
-///
-/// The obvious fix: header-based membership: is correct but breaks the
-/// managed-block feature (`managed.rs`): a `# >>> toride …` managed section
-/// placed after a `Host` line would be absorbed into that Host block, and
-/// `upsert_managed_block` (which appends at top level) would lose it on
-/// re-parse. Reconciling the two needs a design decision (managed blocks as
-/// self-contained blocks, or an explicit parser mode), so it is left as a
-/// scoped followup rather than risked here.
-///
-/// IMPORTANT: this is **not** a display-only misreport. Because the leaked
-/// directive is reified as a top-level `ConfigNode::Directive`, an editor that
-/// scans `ast.nodes` (as `sshd::upsert_user_in_directive` does) would mutate
-/// the leaked node and re-render it at indent 0: permanently relocating a
-/// `Match`/`Host`-scoped directive to global scope on disk. `sshd -t` passes
-/// (the file is still syntactically valid), so the validation gate does not
-/// catch it. The `sshd.rs` editor therefore **fail-closes**: if a directive it
-/// is asked to edit is immediately preceded (in document order) by a
-/// `Match`/`Host` block, it refuses the edit with `Error::SshdConfigInvalid`
-/// rather than risk writing to the wrong scope.
+/// Membership is indentation-gated, but OpenSSH extends a block to the next
+/// `Host`/`Match` header: an unindented block-scoped directive therefore
+/// leaks into global scope. The `sshd.rs` editors fail-closed around that
+/// leak rather than risk writing to the wrong scope.
 fn parse_block_body<'a, I>(lines: &mut std::iter::Peekable<I>) -> Vec<ConfigNode>
 where
     I: Iterator<Item = &'a str>,
@@ -412,6 +387,10 @@ fn parse_patterns(value: &str) -> Vec<String> {
 /// Handles `# comment` at the end of a line. Quotes are respected so that
 /// `#` inside quotes is not treated as a comment.
 pub(crate) fn split_trailing_comment(value: &str) -> (String, Option<String>) {
+    if !value.as_bytes().contains(&b'#') {
+        return (value.to_owned(), None);
+    }
+
     let mut in_double = false;
     let mut in_single = false;
     let mut comment_start = None;
