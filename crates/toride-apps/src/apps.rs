@@ -111,15 +111,16 @@ use crate::backends::{
     SnapBackend, UvBackend,
 };
 use crate::error::Error as BackendError;
-use crate::manifest::{
-    InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds, RecordSnapshot,
-};
+use crate::manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
 use crate::plan::{
     FlatpakInstallation, InstallOptions, InstallPlan, Operation, PackageManager, Target,
     UninstallOptions, UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
 };
 use crate::runner::CommandRunner;
-use crate::status::{AppStatus, BackendSet, app_status, app_status_sync};
+use crate::status::{
+    AppStatus, BackendSet, ForeignListings, app_status, app_status_sync, foreign_status_shared,
+    foreign_status_shared_sync,
+};
 use crate::store::{JsonRecordStore, RecordStore, StoreLoad};
 
 // ---------------------------------------------------------------------------
@@ -744,9 +745,20 @@ impl Apps {
         id: &TorideId,
         options: AppInstallOptions,
     ) -> AppsResult<EnsureAppOutcome> {
-        // 1. Detect before resolve: the manifest record plus one
-        //    confirming backend probe, zero adapter calls: gated on the
-        //    requested version when one is named.
+        let mut listings = ForeignListings::default();
+        self.ensure_installed_listed(id, options, &mut listings)
+            .await
+    }
+
+    /// The body of [`Apps::ensure_installed`] over one verb-scoped
+    /// [`ForeignListings`] share: the single-item verb owns a fresh share,
+    /// `ensure_installed_many` threads one across its whole loop.
+    async fn ensure_installed_listed(
+        &mut self,
+        id: &TorideId,
+        options: AppInstallOptions,
+        listings: &mut ForeignListings,
+    ) -> AppsResult<EnsureAppOutcome> {
         let recorded = app_status(self.records.get(id), None, &self.backend_set()).await?;
         if matches!(recorded, AppStatus::Installed { .. }) {
             let satisfies = self.records.get(id).is_some_and(|record| {
@@ -756,23 +768,21 @@ impl Apps {
                 return Ok(EnsureAppOutcome::AlreadyPresent(recorded));
             }
         }
-        // 2. Resolve through the registry adapters.
         let app = self.resolve(id).await?;
-        // 3. Foreign presence (only meaningful without a record: a record
-        //    that failed confirmation in step 1 re-installs below); a
-        //    Foreign copy satisfies only a version-less request.
         if !self.records.contains_key(id) {
             let native = self.native_ids_for(&app);
-            let status = app_status(None, native.as_ref(), &self.backend_set()).await?;
+            let status = match native.as_ref() {
+                Some(native) => {
+                    foreign_status_shared(native, &self.backend_set(), listings).await?
+                }
+                None => AppStatus::NotInstalled,
+            };
             if let AppStatus::Foreign { .. } = status
                 && options.version.is_none()
             {
                 return Ok(EnsureAppOutcome::AlreadyPresent(status));
             }
         }
-        // 4. Plan, then derive the record identity from the EXECUTED
-        //    operation (before any mutation, so a malformed plan fails
-        //    with nothing dispatched).
         let version = self.version_for_plan(&app, options.version.clone()).await;
         let plan = plan_install(&app, &self.target, &InstallOptions { version })?;
         let backend = self.backend_for(plan.backend)?;
@@ -780,8 +790,6 @@ impl Apps {
         let outcome = backend
             .install(InstallRequest::new(&plan, &self.target).elevated(options.elevated))
             .await?;
-        // 5. Post-verify: the backend's own version evidence (its
-        // install already self-probed) stands in for the facade probe.
         let verification = match outcome.version.clone() {
             Some(version) => Ok(Presence::Present(Some(version))),
             None => self.verify_presence(&ids).await,
@@ -834,6 +842,18 @@ impl Apps {
     /// effect (the second answers
     /// [`EnsureAppOutcome::AlreadyPresent`]). An empty input dispatches
     /// nothing and returns an empty list.
+    ///
+    /// Foreign presence rides one shared listing per listing-backed
+    /// backend (flatpak, npm, cargo, pipx, uv, mise): the first
+    /// unrecorded item's check takes the backend's full listing, later
+    /// checks filter it in memory, so N items pay one full listing
+    /// instead of N. Backends with cheaper per-id probes (homebrew's
+    /// kind-scoped `brew list --versions`, snap's per-snap listing,
+    /// distro's single-package query) keep those probes per item. A later
+    /// item therefore reads its backend's listing as of that backend's
+    /// first check in the batch: an app an earlier item's install pulled
+    /// in as a dependency installs and records rather than answering
+    /// `Foreign`.
     pub async fn ensure_installed_many<I>(
         &mut self,
         ids: I,
@@ -843,10 +863,13 @@ impl Apps {
         I: IntoIterator,
         I::Item: Into<TorideId>,
     {
+        let mut listings = ForeignListings::default();
         let mut outcomes = Vec::new();
         for item in ids {
             let id = item.into();
-            let result = self.ensure_installed(&id, options.clone()).await;
+            let result = self
+                .ensure_installed_listed(&id, options.clone(), &mut listings)
+                .await;
             outcomes.push(BatchOutcome { id, result });
         }
         outcomes
@@ -1629,35 +1652,32 @@ impl Apps {
     /// worker: the standing don't-block rule; under the `tokio` feature
     /// the save is dispatched through
     /// `tokio::task::spawn_blocking` (the crate-family precedent:
-    /// toride-installer's extraction and detect) with the snapshot and
+    /// toride-installer's extraction and detect) with the records and
     /// the store's `Arc` cloned into the task, so no borrow is held
     /// across the await and a join failure (the blocking task was
     /// cancelled or panicked) maps to [`ManifestError::Io`] so callers'
     /// warning paths stay uniform. Without the feature there is no
     /// runtime to offload to: the save runs in-line (see `persist`),
-    /// exactly the path `save_records_sync` always takes. Error
-    /// semantics are the store's own.
+    /// serializing straight from the borrowed working ledger, exactly
+    /// the path `save_records_sync` always takes. Error semantics are
+    /// the store's own.
     async fn save_records(&self) -> ManifestResult<()> {
-        let snapshot = RecordSnapshot {
-            records: self.records.clone(),
-        };
-        self.persist(snapshot).await
+        self.persist().await
     }
 
     /// Persist the working records through the store, in-line on the
-    /// calling thread: the path [`AppsBlocking`] mutations take after
-    /// every successful operation.
+    /// calling thread, serializing straight from the borrowed working
+    /// ledger (no snapshot clone): the path [`AppsBlocking`] mutations
+    /// take after every successful operation.
     fn save_records_sync(&self) -> ManifestResult<()> {
-        let snapshot = RecordSnapshot {
-            records: self.records.clone(),
-        };
-        self.store.save(&snapshot)
+        self.store.save(&self.records)
     }
 
     #[cfg(feature = "tokio")]
-    async fn persist(&self, snapshot: RecordSnapshot) -> ManifestResult<()> {
+    async fn persist(&self) -> ManifestResult<()> {
+        let records = self.records.clone();
         let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || store.save(&snapshot))
+        tokio::task::spawn_blocking(move || store.save(&records))
             .await
             .map_err(|error| {
                 ManifestError::Io(std::io::Error::other(format!(
@@ -1668,8 +1688,8 @@ impl Apps {
 
     #[cfg(not(feature = "tokio"))]
     #[expect(clippy::unused_async, clippy::unused_async_trait_impl)]
-    async fn persist(&self, snapshot: RecordSnapshot) -> ManifestResult<()> {
-        self.store.save(&snapshot)
+    async fn persist(&self) -> ManifestResult<()> {
+        self.store.save(&self.records)
     }
 
     /// The sync twin of [`Apps::record_is_current`]: brew's kind-scoped
@@ -2358,6 +2378,18 @@ impl AppsBlocking {
         app: &App,
         options: AppInstallOptions,
     ) -> AppsResult<EnsureAppOutcome> {
+        let mut listings = ForeignListings::default();
+        self.ensure_installed_listed(app, options, &mut listings)
+    }
+
+    /// The body of [`AppsBlocking::ensure_installed`] over one
+    /// verb-scoped [`ForeignListings`] share.
+    fn ensure_installed_listed(
+        &mut self,
+        app: &App,
+        options: AppInstallOptions,
+        listings: &mut ForeignListings,
+    ) -> AppsResult<EnsureAppOutcome> {
         let AppInstallOptions { elevated, version } = options;
         let id = app.id.clone();
         let recorded = app_status_sync(self.apps.records.get(&id), None, &self.apps.backend_set())?;
@@ -2371,7 +2403,12 @@ impl AppsBlocking {
         }
         if !self.apps.records.contains_key(&id) {
             let native = self.apps.native_ids_for(app);
-            let status = app_status_sync(None, native.as_ref(), &self.apps.backend_set())?;
+            let status = match native.as_ref() {
+                Some(native) => {
+                    foreign_status_shared_sync(native, &self.apps.backend_set(), listings)?
+                }
+                None => AppStatus::NotInstalled,
+            };
             if let AppStatus::Foreign { .. } = status
                 && version.is_none()
             {
@@ -2429,7 +2466,9 @@ impl AppsBlocking {
     /// partial-failure contract (every item attempted, one
     /// [`BatchOutcome`] per item in input order, per-item errors never
     /// stop the rest), taking the resolved registry apps this surface
-    /// requires instead of ids.
+    /// requires instead of ids, and sharing foreign presence the same
+    /// way: one listing per listing-backed backend across the whole
+    /// batch.
     pub fn ensure_installed_many<'a, I>(
         &mut self,
         apps: I,
@@ -2438,10 +2477,11 @@ impl AppsBlocking {
     where
         I: IntoIterator<Item = &'a App>,
     {
+        let mut listings = ForeignListings::default();
         apps.into_iter()
             .map(|app| {
                 let id = app.id.clone();
-                let result = self.ensure_installed(app, options.clone());
+                let result = self.ensure_installed_listed(app, options.clone(), &mut listings);
                 BatchOutcome { id, result }
             })
             .collect()
@@ -3145,6 +3185,7 @@ fn push_warning(warning: &mut Option<String>, text: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::RecordSnapshot;
     use crate::plan::FlatpakInstallation;
     use toride_registry::{DistroFamily, SourceKind};
 
@@ -4529,19 +4570,24 @@ mod tests {
     }
 
     struct MapStore {
-        snapshot: std::sync::Mutex<RecordSnapshot>,
+        records: std::sync::Mutex<std::collections::BTreeMap<TorideId, InstallRecord>>,
     }
 
     impl crate::store::RecordStore for MapStore {
         fn load(&self) -> ManifestResult<crate::store::StoreLoad> {
             Ok(crate::store::StoreLoad {
-                snapshot: self.snapshot.lock().expect("map store poisoned").clone(),
+                snapshot: RecordSnapshot::from(
+                    self.records.lock().expect("map store poisoned").clone(),
+                ),
                 quarantined: None,
             })
         }
 
-        fn save(&self, snapshot: &RecordSnapshot) -> ManifestResult<()> {
-            *self.snapshot.lock().expect("map store poisoned") = snapshot.clone();
+        fn save(
+            &self,
+            records: &std::collections::BTreeMap<TorideId, InstallRecord>,
+        ) -> ManifestResult<()> {
+            *self.records.lock().expect("map store poisoned") = records.clone();
             Ok(())
         }
     }
@@ -4561,7 +4607,7 @@ mod tests {
             ),
         );
         let store: std::sync::Arc<dyn RecordStore> = std::sync::Arc::new(MapStore {
-            snapshot: std::sync::Mutex::new(RecordSnapshot::from(records)),
+            records: std::sync::Mutex::new(records),
         });
         let apps = Apps::builder()
             .with_record_store(std::sync::Arc::clone(&store))

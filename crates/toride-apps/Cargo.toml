@@ -10,6 +10,11 @@ readme = "README.md"
 keywords = ["package-manager", "homebrew", "flatpak", "apt", "dnf"]
 categories = ["development-tools", "os"]
 
+[lib]
+# The benches are all criterion targets (`harness = false`); the implicit
+# lib bench target rejects criterion flags like `-- --baseline pre`.
+bench = false
+
 [features]
 default = []
 # spawn_blocking offloading for the async facade (see lib.rs for the

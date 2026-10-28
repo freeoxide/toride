@@ -356,6 +356,9 @@ fn ensure_installed_bench(c: &mut Criterion) {
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);
+    // Identical code measures within ±8% run-to-run on this host
+    // (parallel build load), so deltas under 10% read as noise.
+    group.noise_threshold(0.10);
 
     let rt = runtime();
     group.bench_function("brew_flow_10_apps", |b| {

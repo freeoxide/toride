@@ -73,7 +73,7 @@ fn oracle(path: &std::path::Path) {
     );
     let snapshot = snapshot(SIZES[0]);
     store
-        .save(&snapshot)
+        .save(&snapshot.records)
         .unwrap_or_else(|error| panic!("save failed: {error}"));
     let reloaded = store
         .load()
@@ -94,6 +94,9 @@ fn manifest_save(c: &mut Criterion) {
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);
+    // Identical code measures within ±8% run-to-run on this host
+    // (parallel build load), so deltas under 10% read as noise.
+    group.noise_threshold(0.10);
 
     for size in SIZES {
         let store = JsonRecordStore::at(
@@ -103,7 +106,9 @@ fn manifest_save(c: &mut Criterion) {
         group.throughput(Throughput::Elements(size as u64));
         group.bench_function(format!("json_record_store_save_{size}_records"), |b| {
             b.iter(|| {
-                store.save(black_box(&snapshot)).expect("save succeeds");
+                store
+                    .save(black_box(&snapshot.records))
+                    .expect("save succeeds");
             });
         });
     }

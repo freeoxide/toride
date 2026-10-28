@@ -44,6 +44,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `merge_by_canonical_path` computes each merge key once per detection
   instead of once per comparison (O(n) `fs::canonicalize` calls, was
   O(n^2)).
+- The batch install verbs (`ensure_installed_many` and its blocking
+  twin) share one foreign-presence listing per listing-backed backend
+  (flatpak, npm, cargo, pipx, uv, mise) across the whole batch, so N
+  unrecorded items pay one full listing instead of N; homebrew, snap,
+  and distro keep their cheaper per-id probes.
+- `RecordStore::save` takes the borrowed records map instead of a
+  `&RecordSnapshot`, so the blocking facade's per-mutation save
+  serializes straight from the working ledger with no snapshot clone
+  (the `tokio` path keeps exactly the one clone it moves into the
+  blocking task).
 - Consumer-facing docs swept for em dashes and filler words.
 
 ## [0.1.0] - 2026-10-02

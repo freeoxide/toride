@@ -76,8 +76,16 @@ fn detector(fake: &FakeRunner, path_dir: &std::path::Path) -> MultiSourceDetecto
 }
 
 fn rig(path_dir: &std::path::Path) -> (FakeRunner, MultiSourceDetector) {
+    rig_with_rounds(path_dir, NAMES + 1)
+}
+
+/// A rig registering `rounds` rounds of the three listing responses: one
+/// round serves one whole-batch listing per backend, so the single-name
+/// and detect-many cases register exactly what they consume instead of
+/// the sweep's full stock.
+fn rig_with_rounds(path_dir: &std::path::Path, rounds: usize) -> (FakeRunner, MultiSourceDetector) {
     let mut fake = FakeRunner::new().strict();
-    for _ in 0..=NAMES {
+    for _ in 0..rounds {
         fake = fake
             .respond(
                 command("brew", BREW_LISTING_ARGS),
@@ -170,6 +178,9 @@ fn detect_bench(c: &mut Criterion) {
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);
+    // Identical code measures within ±8% run-to-run on this host
+    // (parallel build load), so deltas under 10% read as noise.
+    group.noise_threshold(0.10);
 
     group.bench_function("sweep_25_names_3_backends", |b| {
         b.iter(|| {
@@ -184,7 +195,7 @@ fn detect_bench(c: &mut Criterion) {
 
     group.bench_function("single_name_3_backends", |b| {
         b.iter(|| {
-            let (_fake, detector) = rig(&path_dir);
+            let (_fake, detector) = rig_with_rounds(&path_dir, 1);
             let hits = detector.detect(black_box(&tool_name(0))).len();
             black_box(hits)
         });
@@ -192,7 +203,7 @@ fn detect_bench(c: &mut Criterion) {
 
     group.bench_function("sweep_25_names_detect_many", |b| {
         b.iter(|| {
-            let (_fake, detector) = rig(&path_dir);
+            let (_fake, detector) = rig_with_rounds(&path_dir, 1);
             let names: Vec<String> = (0..NAMES).map(tool_name).collect();
             let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
             let hits = detector.detect_many(black_box(&name_refs)).len();

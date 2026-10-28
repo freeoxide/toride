@@ -21,11 +21,15 @@
 //! [`Apps`]: crate::Apps
 //! [`AppsBuilder::with_record_store`]: crate::AppsBuilder::with_record_store
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::Utf8PathBuf;
+use toride_registry::TorideId;
 
-use crate::manifest::{InstallManifest, ManifestError, ManifestResult, RecordSnapshot, corrupt};
+use crate::manifest::{
+    InstallManifest, InstallRecord, ManifestError, ManifestResult, RecordSnapshot, corrupt,
+};
 
 /// What one [`RecordStore`] load answered: the records, plus where a
 /// corrupt prior document was moved when recovery quarantined one.
@@ -39,7 +43,8 @@ pub struct StoreLoad {
 }
 
 /// The durable ownership ledger under the [`Apps`] facade: what toride
-/// installed, exchanged as whole [`RecordSnapshot`]s.
+/// installed, loaded as whole [`RecordSnapshot`]s and saved from the
+/// borrowed records.
 ///
 /// Implementations must be callable from any thread (`Send + Sync`); the
 /// facade loads once at build and saves after each successful mutation,
@@ -58,13 +63,15 @@ pub trait RecordStore: Send + Sync {
     /// [`ManifestError`] when the store cannot be read at all.
     fn load(&self) -> ManifestResult<StoreLoad>;
 
-    /// Persist `snapshot` as the store's entire contents, replacing what
-    /// was there before.
+    /// Persist exactly these records as the store's entire contents,
+    /// replacing what was there before. The records arrive borrowed: an
+    /// implementation serializes from the reference and never needs a
+    /// ledger clone of its own.
     ///
     /// # Errors
     ///
     /// [`ManifestError`] when the write fails.
-    fn save(&self, snapshot: &RecordSnapshot) -> ManifestResult<()>;
+    fn save(&self, records: &BTreeMap<TorideId, InstallRecord>) -> ManifestResult<()>;
 }
 
 /// The default [`RecordStore`]: the crate's JSON manifest document at
@@ -128,8 +135,8 @@ impl RecordStore for JsonRecordStore {
         }
     }
 
-    fn save(&self, snapshot: &RecordSnapshot) -> ManifestResult<()> {
-        InstallManifest::write_snapshot(&self.path, snapshot)
+    fn save(&self, records: &BTreeMap<TorideId, InstallRecord>) -> ManifestResult<()> {
+        InstallManifest::write_records(&self.path, records)
     }
 }
 
@@ -339,7 +346,7 @@ mod tests {
         records.insert(app_id("adopted"), adopted_record());
         let store = JsonRecordStore::at(&path);
 
-        store.save(&RecordSnapshot::from(records)).unwrap();
+        store.save(&records).unwrap();
         let reloaded = InstallManifest::load(&path).unwrap();
         assert_eq!(reloaded.len(), 2);
         assert_eq!(
@@ -360,7 +367,7 @@ mod tests {
 
         let mut records = BTreeMap::new();
         records.insert(app_id("brave"), cask_record("brave-browser"));
-        store.save(&RecordSnapshot::from(records)).unwrap();
+        store.save(&records).unwrap();
 
         let load = JsonRecordStore::at(&path).load().unwrap();
         assert_eq!(load.quarantined, None, "the fresh document loads cleanly");
@@ -378,8 +385,8 @@ mod tests {
         let store = JsonRecordStore::at(&path);
         let mut records = BTreeMap::new();
         records.insert(app_id("brave"), cask_record("brave-browser"));
-        store.save(&RecordSnapshot::from(records)).unwrap();
-        store.save(&RecordSnapshot::empty()).unwrap();
+        store.save(&records).unwrap();
+        store.save(&BTreeMap::new()).unwrap();
         let load = store.load().unwrap();
         assert_eq!(load.snapshot, RecordSnapshot::empty());
     }
@@ -400,7 +407,7 @@ mod tests {
                 None,
             ),
         )]);
-        store.save(&RecordSnapshot::from(records)).unwrap();
+        store.save(&records).unwrap();
         assert_eq!(store.load().unwrap().snapshot.records.len(), 1);
     }
 }

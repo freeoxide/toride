@@ -52,6 +52,8 @@
 //! - `Foreign` probes (no record, so no recorded kind or scope) ride the
 //!   trait's [`Backend::status`] presence lookup: kind-agnostic for brew,
 //!   all-installations for flatpak, a single package query for distro.
+//!   The batch install verb shares one listing per listing-backed backend
+//!   across all its foreign checks instead (see [`ForeignListings`]).
 //!
 //! [`Error`]: crate::Error
 //! [`TorideId`]: toride_registry::TorideId
@@ -60,7 +62,9 @@
 //! [`FlatpakBackend::list_entries`]: crate::backends::flatpak::FlatpakBackend::list_entries
 //! [`DistroBackend::installed_version`]: crate::backends::distro::DistroBackend::installed_version
 
-use crate::backend::{Backend, BackendId, BackendStatus, StatusQuery};
+use std::collections::HashMap;
+
+use crate::backend::{Backend, BackendId, BackendStatus, InstalledApp, ListQuery, StatusQuery};
 #[cfg(feature = "direct")]
 use crate::backends::DirectBackend;
 #[cfg(feature = "mise")]
@@ -552,6 +556,165 @@ fn foreign_from(backend: BackendId, subject: &str, status: BackendStatus) -> App
             },
         },
         BackendStatus::NotInstalled => AppStatus::NotInstalled,
+    }
+}
+
+/// One full listing per backend, shared across every foreign check of one
+/// `ensure_installed_many` call: the first check for a backend takes its
+/// [`Backend::list_installed`] listing once, later checks filter it in
+/// memory per id. Only the backends whose per-id foreign check is itself a
+/// full listing ride the share (flatpak over all installations, the
+/// npm/cargo/pipx/uv/mise global listings); backends with cheaper per-id
+/// probes keep them (homebrew's kind-scoped `brew list --versions`, snap's
+/// `snap list <name>`, distro's single-package query, direct's file
+/// check). A failed listing is never cached: the next foreign check
+/// retries it and reports its own error.
+#[derive(Default)]
+pub(crate) struct ForeignListings {
+    listings: HashMap<BackendId, Vec<InstalledApp>>,
+}
+
+impl ForeignListings {
+    /// The shared presence answer for `id` from `backend`'s listing: taken
+    /// on first ask, then filtered in memory per id.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`](crate::Error::Command) when the backend's
+    /// listing fails; the listing is not cached, so the next ask retries.
+    async fn status(&mut self, backend: &dyn Backend, id: &str) -> Result<BackendStatus> {
+        if let Some(listing) = self.listings.get(&backend.id()) {
+            return Ok(status_from_listing(listing, id));
+        }
+        let listing = backend.list_installed(ListQuery::all()).await?;
+        let status = status_from_listing(&listing, id);
+        self.listings.insert(backend.id(), listing);
+        Ok(status)
+    }
+
+    /// The sync twin of [`ForeignListings::status`].
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`ForeignListings::status`].
+    fn status_sync(&mut self, backend: &dyn Backend, id: &str) -> Result<BackendStatus> {
+        if let Some(listing) = self.listings.get(&backend.id()) {
+            return Ok(status_from_listing(listing, id));
+        }
+        let listing = backend.list_installed_sync(ListQuery::all())?;
+        let status = status_from_listing(&listing, id);
+        self.listings.insert(backend.id(), listing);
+        Ok(status)
+    }
+}
+
+/// The in-memory half of the trait's default [`Backend::status`]: an
+/// exact-id lookup over one listing.
+fn status_from_listing(listing: &[InstalledApp], id: &str) -> BackendStatus {
+    match listing.iter().find(|app| app.id == id) {
+        Some(InstalledApp { version, .. }) => BackendStatus::Installed {
+            version: version.clone(),
+        },
+        None => BackendStatus::NotInstalled,
+    }
+}
+
+/// The batch spelling of [`foreign_status`]: listing-backed backends
+/// answer from one shared [`ForeignListings`] entry per backend, every
+/// other backend keeps its per-id probe. Same answers, same
+/// absent-backend-is-an-answer rule.
+///
+/// # Errors
+///
+/// Same contract as [`foreign_status`].
+pub(crate) async fn foreign_status_shared(
+    native: &NativeIds,
+    backends: &BackendSet<'_>,
+    listings: &mut ForeignListings,
+) -> Result<AppStatus> {
+    match native {
+        ids @ (NativeIds::Homebrew { .. } | NativeIds::Snap { .. } | NativeIds::Distro { .. }) => {
+            foreign_status(ids, backends).await
+        }
+        #[cfg(feature = "direct")]
+        ids @ NativeIds::Direct { .. } => foreign_status(ids, backends).await,
+        NativeIds::Flatpak { app_id, .. } => {
+            let Some(backend) = backends.flatpak else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = listings.status(backend, app_id).await?;
+            Ok(foreign_from(
+                BackendId::Flatpak,
+                &format!("flatpak app id `{app_id}`"),
+                status,
+            ))
+        }
+        ids @ (NativeIds::Npm { .. }
+        | NativeIds::Cargo { .. }
+        | NativeIds::Pipx { .. }
+        | NativeIds::Uv { .. }) => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = listings.status(backend, language_native_id(ids)).await?;
+            Ok(foreign_from(ids.backend(), &language_subject(ids), status))
+        }
+        #[cfg(feature = "mise")]
+        ids @ NativeIds::Mise { .. } => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = listings.status(backend, language_native_id(ids)).await?;
+            Ok(foreign_from(ids.backend(), &language_subject(ids), status))
+        }
+    }
+}
+
+/// The sync twin of [`foreign_status_shared`].
+///
+/// # Errors
+///
+/// Same contract as [`foreign_status`].
+pub(crate) fn foreign_status_shared_sync(
+    native: &NativeIds,
+    backends: &BackendSet<'_>,
+    listings: &mut ForeignListings,
+) -> Result<AppStatus> {
+    match native {
+        ids @ (NativeIds::Homebrew { .. } | NativeIds::Snap { .. } | NativeIds::Distro { .. }) => {
+            foreign_status_sync(ids, backends)
+        }
+        #[cfg(feature = "direct")]
+        ids @ NativeIds::Direct { .. } => foreign_status_sync(ids, backends),
+        NativeIds::Flatpak { app_id, .. } => {
+            let Some(backend) = backends.flatpak else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = listings.status_sync(backend, app_id)?;
+            Ok(foreign_from(
+                BackendId::Flatpak,
+                &format!("flatpak app id `{app_id}`"),
+                status,
+            ))
+        }
+        ids @ (NativeIds::Npm { .. }
+        | NativeIds::Cargo { .. }
+        | NativeIds::Pipx { .. }
+        | NativeIds::Uv { .. }) => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = listings.status_sync(backend, language_native_id(ids))?;
+            Ok(foreign_from(ids.backend(), &language_subject(ids), status))
+        }
+        #[cfg(feature = "mise")]
+        ids @ NativeIds::Mise { .. } => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = listings.status_sync(backend, language_native_id(ids))?;
+            Ok(foreign_from(ids.backend(), &language_subject(ids), status))
+        }
     }
 }
 
@@ -1340,6 +1503,182 @@ mod tests {
         };
         let status = app_status(None, Some(&native), &backends).await.unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
+        fake.assert_no_unmatched_calls();
+    }
+
+    // --- shared foreign listings (batch verbs) ---------------------------------
+
+    fn dispatch_count(fake: &FakeRunner, spec: &toride_runner::CommandSpec) -> usize {
+        fake.calls()
+            .iter()
+            .filter(|call| call.program == spec.program && call.args == spec.args)
+            .count()
+    }
+
+    fn flatpak_native(app_id_str: &str) -> NativeIds {
+        NativeIds::Flatpak {
+            app_id: app_id_str.to_owned(),
+            app_ref: None,
+            installation: FlatpakInstallation::User,
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_foreign_checks_answer_many_ids_from_one_flatpak_listing() {
+        let listing = format!(
+            "{}{}",
+            flatpak_row("org.mozilla.firefox", "141.0.3", "system"),
+            flatpak_row("com.brave.Browser", "1.96.59", "user"),
+        );
+        let fake = FakeRunner::new().strict().respond(
+            flatpak_list_spec(FlatpakListScope::All),
+            CommandOutput::from_stdout(listing),
+        );
+        let flatpak = flatpak_backend(&fake);
+        let backends = BackendSet::new().flatpak(&flatpak);
+        let mut listings = ForeignListings::default();
+        let first = foreign_status_shared(
+            &flatpak_native("org.mozilla.firefox"),
+            &backends,
+            &mut listings,
+        )
+        .await
+        .unwrap();
+        let second = foreign_status_shared(
+            &flatpak_native("com.brave.Browser"),
+            &backends,
+            &mut listings,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(first, AppStatus::Foreign { .. }), "{first:?}");
+        assert!(matches!(second, AppStatus::Foreign { .. }), "{second:?}");
+        assert_eq!(
+            dispatch_count(&fake, &flatpak_list_spec(FlatpakListScope::All)),
+            1,
+            "one listing answers the whole batch"
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn shared_foreign_checks_keep_brews_kind_scoped_probes() {
+        let brew_info = command("brew", ["info", "--json=v2", "--installed"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                brew_versions_spec(BrewKind::Formula, "firefox"),
+                CommandOutput::from_stdout(String::new()),
+            )
+            .respond(
+                brew_versions_spec(BrewKind::Cask, "firefox"),
+                CommandOutput::from_stdout("firefox 138.0\n"),
+            )
+            .respond(
+                brew_versions_spec(BrewKind::Formula, "brave-browser"),
+                CommandOutput::from_stdout("brave-browser 1.96.59\n"),
+            );
+        let brew = homebrew_backend(&fake);
+        let backends = BackendSet::new().homebrew(&brew);
+        let mut listings = ForeignListings::default();
+        let first = foreign_status_shared(
+            &NativeIds::Homebrew {
+                token: "firefox".to_owned(),
+                cask: false,
+            },
+            &backends,
+            &mut listings,
+        )
+        .await
+        .unwrap();
+        let second = foreign_status_shared(
+            &NativeIds::Homebrew {
+                token: "brave-browser".to_owned(),
+                cask: false,
+            },
+            &backends,
+            &mut listings,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(first, AppStatus::Foreign { .. }), "{first:?}");
+        assert!(matches!(second, AppStatus::Foreign { .. }), "{second:?}");
+        assert_eq!(dispatch_count(&fake, &brew_info), 0);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn a_failed_shared_listing_is_not_cached_and_reports_each_error() {
+        let fake = FakeRunner::new().strict().respond(
+            flatpak_list_spec(FlatpakListScope::All),
+            CommandOutput::from_stderr("error: list failed", 1),
+        );
+        let flatpak = flatpak_backend(&fake);
+        let backends = BackendSet::new().flatpak(&flatpak);
+        let mut listings = ForeignListings::default();
+        let first = foreign_status_shared(
+            &flatpak_native("org.mozilla.firefox"),
+            &backends,
+            &mut listings,
+        )
+        .await
+        .unwrap_err();
+        let second = foreign_status_shared(
+            &flatpak_native("com.brave.Browser"),
+            &backends,
+            &mut listings,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(first, crate::error::Error::Command(_)),
+            "{first:?}"
+        );
+        assert!(
+            matches!(second, crate::error::Error::Command(_)),
+            "{second:?}"
+        );
+        assert_eq!(
+            dispatch_count(&fake, &flatpak_list_spec(FlatpakListScope::All)),
+            2,
+            "the failed listing is retried, never cached"
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn shared_foreign_checks_sync_answer_many_ids_from_one_flatpak_listing() {
+        let listing = format!(
+            "{}{}",
+            flatpak_row("org.mozilla.firefox", "141.0.3", "system"),
+            flatpak_row("com.brave.Browser", "1.96.59", "user"),
+        );
+        let fake = FakeRunner::new().strict().respond(
+            flatpak_list_spec(FlatpakListScope::All),
+            CommandOutput::from_stdout(listing),
+        );
+        let flatpak = flatpak_backend(&fake);
+        let backends = BackendSet::new().flatpak(&flatpak);
+        let mut listings = ForeignListings::default();
+        let first = foreign_status_shared_sync(
+            &flatpak_native("org.mozilla.firefox"),
+            &backends,
+            &mut listings,
+        )
+        .unwrap();
+        let second = foreign_status_shared_sync(
+            &flatpak_native("com.brave.Browser"),
+            &backends,
+            &mut listings,
+        )
+        .unwrap();
+        assert!(matches!(first, AppStatus::Foreign { .. }), "{first:?}");
+        assert!(matches!(second, AppStatus::Foreign { .. }), "{second:?}");
+        assert_eq!(
+            dispatch_count(&fake, &flatpak_list_spec(FlatpakListScope::All)),
+            1,
+            "one listing answers the whole batch"
+        );
         fake.assert_no_unmatched_calls();
     }
 

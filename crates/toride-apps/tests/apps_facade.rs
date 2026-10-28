@@ -9,6 +9,7 @@
 //! real fixture payloads live with their own crates/modules; these tests
 //! exercise the FACADE's wiring, not the parsers.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -3767,7 +3768,7 @@ async fn adopt_on_a_distro_package_probes_the_recorded_family_and_persists() {
 }
 
 struct MapStore {
-    snapshot: Mutex<RecordSnapshot>,
+    records: Mutex<BTreeMap<TorideId, InstallRecord>>,
     saves: Mutex<usize>,
     fail_saves: Mutex<bool>,
 }
@@ -3775,7 +3776,7 @@ struct MapStore {
 impl MapStore {
     fn new() -> Self {
         Self {
-            snapshot: Mutex::new(RecordSnapshot::empty()),
+            records: Mutex::new(BTreeMap::new()),
             saves: Mutex::new(0),
             fail_saves: Mutex::new(false),
         }
@@ -3793,18 +3794,20 @@ impl MapStore {
 impl RecordStore for MapStore {
     fn load(&self) -> ManifestResult<StoreLoad> {
         Ok(StoreLoad {
-            snapshot: self.snapshot.lock().expect("map store poisoned").clone(),
+            snapshot: RecordSnapshot::from(
+                self.records.lock().expect("map store poisoned").clone(),
+            ),
             quarantined: None,
         })
     }
 
-    fn save(&self, snapshot: &RecordSnapshot) -> ManifestResult<()> {
+    fn save(&self, records: &BTreeMap<TorideId, InstallRecord>) -> ManifestResult<()> {
         if *self.fail_saves.lock().expect("map store poisoned") {
             return Err(ManifestError::Io(std::io::Error::other(
                 "map store write refused",
             )));
         }
-        *self.snapshot.lock().expect("map store poisoned") = snapshot.clone();
+        *self.records.lock().expect("map store poisoned") = records.clone();
         *self.saves.lock().expect("map store poisoned") += 1;
         Ok(())
     }
@@ -4084,11 +4087,7 @@ async fn a_failed_adopt_save_rolls_the_claim_back_and_a_retry_succeeds() {
         "the in-memory claim is rolled back: no AlreadyRecorded ghost"
     );
     assert!(
-        map.snapshot
-            .lock()
-            .expect("map store poisoned")
-            .records
-            .is_empty(),
+        map.records.lock().expect("map store poisoned").is_empty(),
         "nothing was persisted"
     );
 
@@ -4104,14 +4103,7 @@ async fn a_failed_adopt_save_rolls_the_claim_back_and_a_retry_succeeds() {
         .await
         .expect("the retry claims cleanly once the store recovers");
     assert_eq!(record.version.as_deref(), Some("138.0.1"));
-    assert_eq!(
-        map.snapshot
-            .lock()
-            .expect("map store poisoned")
-            .records
-            .len(),
-        1
-    );
+    assert_eq!(map.records.lock().expect("map store poisoned").len(), 1);
     fake.assert_no_unmatched_calls();
 }
 
@@ -4582,7 +4574,6 @@ async fn ensure_installed_many_attempts_every_item_and_reports_per_item_outcomes
             npm_list_spec(),
             CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
         )
-        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
         .respond(
             npm_install_global_spec("prettier"),
             CommandOutput::from_stdout("added 1 package"),
@@ -4646,6 +4637,17 @@ async fn ensure_installed_many_attempts_every_item_and_reports_per_item_outcomes
         adapter.lookups().len(),
         3,
         "the failing item resolved too, and never stopped the rest"
+    );
+    let npm_lists = fake
+        .calls()
+        .iter()
+        .filter(|spec| {
+            spec.program == "npm" && spec.args.first().map(String::as_str) == Some("list")
+        })
+        .count();
+    assert_eq!(
+        npm_lists, 3,
+        "one shared foreign listing plus one verify per install"
     );
     fake.assert_no_unmatched_calls();
 }

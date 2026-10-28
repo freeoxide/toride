@@ -515,15 +515,18 @@ impl InstallManifest {
         write_document(&self.path, &self.entries)
     }
 
-    /// Write `snapshot` as the entire document at `path`, atomically,
+    /// Write `records` as the entire document at `path`, atomically,
     /// serializing straight from the borrowed records (no ledger clone):
     /// the store seam's save direction.
     ///
     /// # Errors
     ///
     /// Same contract as [`InstallManifest::save`].
-    pub(crate) fn write_snapshot(path: &Utf8Path, snapshot: &RecordSnapshot) -> ManifestResult<()> {
-        write_document(path, &snapshot.records)
+    pub(crate) fn write_records(
+        path: &Utf8Path,
+        records: &BTreeMap<TorideId, InstallRecord>,
+    ) -> ManifestResult<()> {
+        write_document(path, records)
     }
 
     /// The temp-file path for a save to `path`: hidden, in the manifest's
