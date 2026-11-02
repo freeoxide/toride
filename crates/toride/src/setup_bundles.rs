@@ -391,6 +391,8 @@ pub fn bundles() -> Vec<SetupBundle> {
         containers_bundle(),
         iac_bundle(),
         qol_bundle(),
+        terminal_mux_bundle(),
+        terminal_emulators_bundle(),
         version_managers_bundle(),
     ]
 }
@@ -1493,6 +1495,484 @@ fn qol_bundle() -> SetupBundle {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "data manifest: one block per registry row"
+)]
+fn terminal_mux_bundle() -> SetupBundle {
+    SetupBundle {
+        id: "terminal-mux",
+        title: "Terminal multiplexers",
+        default_pick: "mux-tmux-debian",
+        recommendations: vec![
+            rec(
+                "mux-tmux-debian",
+                "tmux",
+                "Multiplexes terminals into sessions that survive a dropped connection.",
+                license(
+                    LicenseKind::Free,
+                    Some("ISC"),
+                    "ISC; commercial use unrestricted.",
+                    "https://github.com/tmux/tmux",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Debian),
+                &["tmux"],
+                vec![install("tmux", distro(DistroFamily::Debian, "tmux"))],
+                None,
+            ),
+            rec(
+                "mux-tmux-ubuntu",
+                "tmux",
+                "The same multiplexer from the Ubuntu archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("ISC"),
+                    "ISC; commercial use unrestricted.",
+                    "https://github.com/tmux/tmux",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Ubuntu),
+                &["tmux"],
+                vec![install("tmux", distro(DistroFamily::Ubuntu, "tmux"))],
+                None,
+            ),
+            rec(
+                "mux-tmux-fedora",
+                "tmux",
+                "The same multiplexer from the Fedora archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("ISC"),
+                    "ISC; commercial use unrestricted.",
+                    "https://github.com/tmux/tmux",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Fedora),
+                &["tmux"],
+                vec![install("tmux", distro(DistroFamily::Fedora, "tmux"))],
+                None,
+            ),
+            rec(
+                "mux-tmux-arch",
+                "tmux",
+                "The same multiplexer from the Arch extra repository.",
+                license(
+                    LicenseKind::Free,
+                    Some("ISC"),
+                    "ISC; commercial use unrestricted.",
+                    "https://github.com/tmux/tmux",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Arch),
+                &["tmux"],
+                vec![install("tmux", distro(DistroFamily::Arch, "tmux"))],
+                None,
+            ),
+            rec(
+                "mux-zellij",
+                "zellij",
+                "Rust multiplexer with a status bar, layouts, and plugins.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://github.com/zellij-org/zellij",
+                    "2026-10-23",
+                ),
+                Condition::All(Vec::new()),
+                &["zellij"],
+                vec![install("zellij", cargo("zellij"))],
+                None,
+            ),
+            rec(
+                "mux-screen-debian",
+                "GNU screen",
+                "The GNU multiplexer that predates tmux, offered only when the binary is missing.",
+                license(
+                    LicenseKind::Free,
+                    Some("GPL-3.0-or-later"),
+                    "GPL-3.0-or-later; free for commercial use, distribution carries source \
+                     obligations.",
+                    "https://cgit.git.savannah.gnu.org/cgit/screen.git/plain/COPYING",
+                    "2026-10-23",
+                ),
+                Condition::All(vec![
+                    Condition::Distro(DistroFamily::Debian),
+                    Condition::Missing { tool: "screen" },
+                ]),
+                &["screen"],
+                vec![install("screen", distro(DistroFamily::Debian, "screen"))],
+                None,
+            ),
+            rec(
+                "mux-screen-ubuntu",
+                "GNU screen",
+                "The same GNU multiplexer from the Ubuntu archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("GPL-3.0-or-later"),
+                    "GPL-3.0-or-later; free for commercial use, distribution carries source \
+                     obligations.",
+                    "https://cgit.git.savannah.gnu.org/cgit/screen.git/plain/COPYING",
+                    "2026-10-23",
+                ),
+                Condition::All(vec![
+                    Condition::Distro(DistroFamily::Ubuntu),
+                    Condition::Missing { tool: "screen" },
+                ]),
+                &["screen"],
+                vec![install("screen", distro(DistroFamily::Ubuntu, "screen"))],
+                None,
+            ),
+            rec(
+                "mux-screen-fedora",
+                "GNU screen",
+                "The same GNU multiplexer from the Fedora archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("GPL-3.0-or-later"),
+                    "GPL-3.0-or-later; free for commercial use, distribution carries source \
+                     obligations.",
+                    "https://cgit.git.savannah.gnu.org/cgit/screen.git/plain/COPYING",
+                    "2026-10-23",
+                ),
+                Condition::All(vec![
+                    Condition::Distro(DistroFamily::Fedora),
+                    Condition::Missing { tool: "screen" },
+                ]),
+                &["screen"],
+                vec![install("screen", distro(DistroFamily::Fedora, "screen"))],
+                None,
+            ),
+            rec(
+                "mux-screen-arch",
+                "GNU screen",
+                "The same GNU multiplexer from the Arch extra repository.",
+                license(
+                    LicenseKind::Free,
+                    Some("GPL-3.0-or-later"),
+                    "GPL-3.0-or-later; free for commercial use, distribution carries source \
+                     obligations.",
+                    "https://cgit.git.savannah.gnu.org/cgit/screen.git/plain/COPYING",
+                    "2026-10-23",
+                ),
+                Condition::All(vec![
+                    Condition::Distro(DistroFamily::Arch),
+                    Condition::Missing { tool: "screen" },
+                ]),
+                &["screen"],
+                vec![install("screen", distro(DistroFamily::Arch, "screen"))],
+                None,
+            ),
+        ],
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "data manifest: one block per registry row"
+)]
+fn terminal_emulators_bundle() -> SetupBundle {
+    SetupBundle {
+        id: "terminal-emulators",
+        title: "Terminal emulators",
+        default_pick: "term-alacritty-debian",
+        recommendations: vec![
+            rec(
+                "term-alacritty-debian",
+                "alacritty",
+                "GPU-accelerated emulator configured from one TOML file.",
+                license(
+                    LicenseKind::Free,
+                    Some("Apache-2.0"),
+                    "Apache-2.0; commercial use unrestricted.",
+                    "https://github.com/alacritty/alacritty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Debian),
+                &["alacritty"],
+                vec![install(
+                    "alacritty",
+                    distro(DistroFamily::Debian, "alacritty"),
+                )],
+                None,
+            ),
+            rec(
+                "term-alacritty-ubuntu",
+                "alacritty",
+                "The same emulator from the Ubuntu archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("Apache-2.0"),
+                    "Apache-2.0; commercial use unrestricted.",
+                    "https://github.com/alacritty/alacritty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Ubuntu),
+                &["alacritty"],
+                vec![install(
+                    "alacritty",
+                    distro(DistroFamily::Ubuntu, "alacritty"),
+                )],
+                None,
+            ),
+            rec(
+                "term-alacritty-fedora",
+                "alacritty",
+                "The same emulator from the Fedora archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("Apache-2.0"),
+                    "Apache-2.0; commercial use unrestricted.",
+                    "https://github.com/alacritty/alacritty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Fedora),
+                &["alacritty"],
+                vec![install(
+                    "alacritty",
+                    distro(DistroFamily::Fedora, "alacritty"),
+                )],
+                None,
+            ),
+            rec(
+                "term-alacritty-arch",
+                "alacritty",
+                "The same emulator from the Arch extra repository.",
+                license(
+                    LicenseKind::Free,
+                    Some("Apache-2.0"),
+                    "Apache-2.0; commercial use unrestricted.",
+                    "https://github.com/alacritty/alacritty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Arch),
+                &["alacritty"],
+                vec![install(
+                    "alacritty",
+                    distro(DistroFamily::Arch, "alacritty"),
+                )],
+                None,
+            ),
+            rec(
+                "term-kitty-debian",
+                "kitty",
+                "GPU-accelerated emulator; the package is `kitty`, `kitten` its CLI helper.",
+                license(
+                    LicenseKind::Free,
+                    Some("GPL-3.0"),
+                    "GPL-3.0; free for commercial use, distribution carries source obligations.",
+                    "https://github.com/kovidgoyal/kitty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Debian),
+                &["kitty", "kitten"],
+                vec![install("kitty", distro(DistroFamily::Debian, "kitty"))],
+                None,
+            ),
+            rec(
+                "term-kitty-ubuntu",
+                "kitty",
+                "The same emulator from the Ubuntu archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("GPL-3.0"),
+                    "GPL-3.0; free for commercial use, distribution carries source obligations.",
+                    "https://github.com/kovidgoyal/kitty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Ubuntu),
+                &["kitty", "kitten"],
+                vec![install("kitty", distro(DistroFamily::Ubuntu, "kitty"))],
+                None,
+            ),
+            rec(
+                "term-kitty-fedora",
+                "kitty",
+                "The same emulator from the Fedora archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("GPL-3.0"),
+                    "GPL-3.0; free for commercial use, distribution carries source obligations.",
+                    "https://github.com/kovidgoyal/kitty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Fedora),
+                &["kitty", "kitten"],
+                vec![install("kitty", distro(DistroFamily::Fedora, "kitty"))],
+                None,
+            ),
+            rec(
+                "term-kitty-arch",
+                "kitty",
+                "The same emulator from the Arch extra repository.",
+                license(
+                    LicenseKind::Free,
+                    Some("GPL-3.0"),
+                    "GPL-3.0; free for commercial use, distribution carries source obligations.",
+                    "https://github.com/kovidgoyal/kitty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Arch),
+                &["kitty", "kitten"],
+                vec![install("kitty", distro(DistroFamily::Arch, "kitty"))],
+                None,
+            ),
+            rec(
+                "term-wezterm-arch",
+                "wezterm",
+                "GPU-accelerated emulator with a built-in mux server, configured in Lua.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted; bundled fonts are OFL 1.1.",
+                    "https://github.com/wezterm/wezterm",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Arch),
+                &["wezterm"],
+                vec![install("wezterm", distro(DistroFamily::Arch, "wezterm"))],
+                None,
+            ),
+            rec(
+                "term-ghostty-ubuntu",
+                "ghostty",
+                "Native GUI emulator focused on performance and platform correctness.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://github.com/ghostty-org/ghostty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Ubuntu),
+                &["ghostty"],
+                vec![install("ghostty", distro(DistroFamily::Ubuntu, "ghostty"))],
+                None,
+            ),
+            rec(
+                "term-ghostty-arch",
+                "ghostty",
+                "The same emulator from the Arch extra repository.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://github.com/ghostty-org/ghostty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Arch),
+                &["ghostty"],
+                vec![install("ghostty", distro(DistroFamily::Arch, "ghostty"))],
+                None,
+            ),
+            rec(
+                "term-ghostty-debian",
+                "ghostty",
+                "No Debian package exists, so this row hands off to upstream's build guide.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://github.com/ghostty-org/ghostty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Debian),
+                &["ghostty"],
+                vec![manual(
+                    "no distro package; build from source per \
+                     https://ghostty.org/docs/install/build",
+                )],
+                None,
+            ),
+            rec(
+                "term-ghostty-fedora",
+                "ghostty",
+                "No Fedora package exists, so this row hands off to upstream's build guide.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://github.com/ghostty-org/ghostty",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Fedora),
+                &["ghostty"],
+                vec![manual(
+                    "no distro package; build from source per \
+                     https://ghostty.org/docs/install/build",
+                )],
+                None,
+            ),
+            rec(
+                "term-foot-debian",
+                "foot",
+                "Wayland-only emulator with a client-daemon split and low resource use.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://codeberg.org/dnkl/foot",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Debian),
+                &["foot", "footclient"],
+                vec![install("foot", distro(DistroFamily::Debian, "foot"))],
+                None,
+            ),
+            rec(
+                "term-foot-ubuntu",
+                "foot",
+                "The same Wayland-only emulator from the Ubuntu archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://codeberg.org/dnkl/foot",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Ubuntu),
+                &["foot", "footclient"],
+                vec![install("foot", distro(DistroFamily::Ubuntu, "foot"))],
+                None,
+            ),
+            rec(
+                "term-foot-fedora",
+                "foot",
+                "The same Wayland-only emulator from the Fedora archive.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://codeberg.org/dnkl/foot",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Fedora),
+                &["foot", "footclient"],
+                vec![install("foot", distro(DistroFamily::Fedora, "foot"))],
+                None,
+            ),
+            rec(
+                "term-foot-arch",
+                "foot",
+                "The same Wayland-only emulator from the Arch extra repository.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://codeberg.org/dnkl/foot",
+                    "2026-10-23",
+                ),
+                Condition::Distro(DistroFamily::Arch),
+                &["foot", "footclient"],
+                vec![install("foot", distro(DistroFamily::Arch, "foot"))],
+                None,
+            ),
+        ],
+    }
+}
+
 fn version_managers_bundle() -> SetupBundle {
     SetupBundle {
         id: "version-managers",
@@ -1782,7 +2262,7 @@ mod tests {
     use super::*;
     use toride_apps::InstallManifest;
     use toride_apps::backend::ensure_install_allowed;
-    use toride_apps::{Arch, BackendId, Error, InstallRequest, Operation};
+    use toride_apps::{Arch, BackendId, Error, InstallRequest, Operation, PackageManager};
     use toride_runner::FakeRunner;
 
     struct FixedPresence {
@@ -1827,10 +2307,10 @@ mod tests {
     }
 
     #[test]
-    fn registry_has_the_eight_planned_bundles() {
+    fn registry_has_the_ten_planned_bundles() {
         let bundles = bundles();
         let ids: Vec<_> = bundles.iter().map(|b| b.id).collect();
-        assert_eq!(bundles.len(), 8);
+        assert_eq!(bundles.len(), 10);
         assert_eq!(
             ids,
             [
@@ -1841,6 +2321,8 @@ mod tests {
                 "containers",
                 "iac",
                 "qol-cli",
+                "terminal-mux",
+                "terminal-emulators",
                 "version-managers"
             ]
         );
@@ -1896,6 +2378,7 @@ mod tests {
 
     #[test]
     fn every_row_is_linked_and_dated() {
+        const VERIFICATION_DATES: [&str; 2] = ["2026-10-12", "2026-10-23"];
         for rec in bundles()
             .iter()
             .flat_map(|bundle| bundle.recommendations.iter())
@@ -1906,7 +2389,12 @@ mod tests {
                 rec.id,
                 rec.license.terms_url
             );
-            assert_eq!(rec.license.verified, "2026-10-12", "{}", rec.id);
+            assert!(
+                VERIFICATION_DATES.contains(&rec.license.verified),
+                "{}: verified {} is not a registry verification date",
+                rec.id,
+                rec.license.verified
+            );
             assert!(!rec.license.summary.is_empty(), "{}", rec.id);
         }
     }
@@ -1992,6 +2480,10 @@ mod tests {
             ("uv", "python-uv"),
             ("opentofu", "iac-opentofu"),
             ("terraform", "iac-terraform"),
+            ("tmux", "mux-tmux-debian"),
+            ("zellij", "mux-zellij"),
+            ("screen", "mux-screen-debian"),
+            ("kitty", "term-kitty-debian"),
         ];
         let bundles = bundles();
         let all = index(&bundles);
@@ -2003,6 +2495,142 @@ mod tests {
                 rec.binaries.contains(&tool) || rec.title.to_ascii_lowercase().contains(tool);
             assert!(named, "{id} does not name {tool} in binaries or title");
         }
+    }
+
+    fn condition_target(condition: &Condition) -> Option<Target> {
+        match condition {
+            Condition::Os(os) => Some(Target::new(*os, Arch::Aarch64)),
+            Condition::Distro(family) => Some(Target::linux(Arch::X86_64, *family)),
+            Condition::All(subs) => subs
+                .iter()
+                .find_map(condition_target)
+                .or(Some(Target::linux(Arch::X86_64, DistroFamily::Debian))),
+            Condition::Missing { .. } => None,
+        }
+    }
+
+    #[test]
+    fn every_install_action_routes_on_a_target_its_condition_accepts() {
+        for bundle in bundles() {
+            for rec in &bundle.recommendations {
+                let Some(target) = condition_target(&rec.condition) else {
+                    continue;
+                };
+                for outcome in plan_row(rec, &target) {
+                    assert!(
+                        outcome.is_ok(),
+                        "{} does not route on {:?}: {:?}",
+                        rec.id,
+                        target,
+                        outcome.err()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn linux_evaluation_offers_tmux_and_presence_gates_screen() {
+        let debian = Target::linux(Arch::X86_64, DistroFamily::Debian);
+        let offers = evaluate(&debian, &empty());
+        let mux = find_bundle(&offers, "terminal-mux").expect("mux offered on Debian");
+        let offered: Vec<_> = mux.recommendations.iter().map(|rec| rec.id).collect();
+        assert_eq!(
+            offered,
+            ["mux-tmux-debian", "mux-zellij", "mux-screen-debian"]
+        );
+        assert_eq!(mux.default_pick, "mux-tmux-debian");
+
+        let offers = evaluate(
+            &debian,
+            &FixedPresence {
+                installed: &["screen"],
+            },
+        );
+        let mux =
+            find_bundle(&offers, "terminal-mux").expect("mux still offered with screen present");
+        let offered: Vec<_> = mux.recommendations.iter().map(|rec| rec.id).collect();
+        assert_eq!(offered, ["mux-tmux-debian", "mux-zellij"]);
+        assert!(
+            !offers.satisfied.contains(&"mux-screen-debian"),
+            "a condition-failed row is absent, never satisfied-listed"
+        );
+    }
+
+    #[test]
+    fn macos_evaluation_offers_only_zellij_from_the_terminal_bundles() {
+        let offers = evaluate(&Target::macos(Arch::Aarch64), &empty());
+        let mux = find_bundle(&offers, "terminal-mux").expect("mux bundle offered on macOS");
+        let offered: Vec<_> = mux.recommendations.iter().map(|rec| rec.id).collect();
+        assert_eq!(offered, ["mux-zellij"]);
+        assert!(
+            find_bundle(&offers, "terminal-emulators").is_none(),
+            "the all-distro emulators bundle is dropped on macOS"
+        );
+    }
+
+    #[test]
+    fn linux_evaluation_offers_the_debian_emulator_rows() {
+        let debian = Target::linux(Arch::X86_64, DistroFamily::Debian);
+        let offers = evaluate(&debian, &empty());
+        let emulators =
+            find_bundle(&offers, "terminal-emulators").expect("emulators offered on Debian");
+        let offered: Vec<_> = emulators.recommendations.iter().map(|rec| rec.id).collect();
+        assert_eq!(
+            offered,
+            [
+                "term-alacritty-debian",
+                "term-kitty-debian",
+                "term-ghostty-debian",
+                "term-foot-debian"
+            ]
+        );
+        assert_eq!(emulators.default_pick, "term-alacritty-debian");
+    }
+
+    #[test]
+    fn terminal_rows_route_through_their_declared_backends() -> Result<(), Error> {
+        let bundles = bundles();
+        let all = index(&bundles);
+        let debian = Target::linux(Arch::X86_64, DistroFamily::Debian);
+        let tmux = plan_row(all["mux-tmux-debian"], &debian)
+            .into_iter()
+            .next()
+            .unwrap()?;
+        assert_eq!(tmux.backend, BackendId::Distro(DistroFamily::Debian));
+        assert!(tmux.requires_elevation);
+        assert_eq!(
+            tmux.operation,
+            Operation::DistroInstall {
+                manager: PackageManager::Apt,
+                package: "tmux".to_owned(),
+            }
+        );
+        let zellij = plan_row(all["mux-zellij"], &Target::macos(Arch::Aarch64))
+            .into_iter()
+            .next()
+            .unwrap()?;
+        assert_eq!(zellij.backend, BackendId::Cargo);
+        assert_eq!(
+            zellij.operation,
+            Operation::CargoInstall {
+                crate_: "zellij".to_owned(),
+                version: None,
+            }
+        );
+        assert_eq!(
+            record_ids(install_spec(all["term-ghostty-arch"])),
+            Some(NativeIds::Distro {
+                package: "ghostty".to_owned(),
+                family: DistroFamily::Arch,
+            })
+        );
+        let fedora = Target::linux(Arch::X86_64, DistroFamily::Fedora);
+        assert!(
+            plan_row(all["term-ghostty-fedora"], &fedora).is_empty(),
+            "a manual-only row plans nothing"
+        );
+        Ok(())
     }
 
     #[test]
