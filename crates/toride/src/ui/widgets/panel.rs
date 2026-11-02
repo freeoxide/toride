@@ -2,19 +2,49 @@
 
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
     text::Span,
-    widgets::{Block, BorderType, Borders, Padding},
+    widgets::{Block, BorderType, Borders, Padding, Widget},
 };
 
 use crate::ui::theme::Palette;
 
+/// A render target: either the live [`Frame`] or an offscreen [`Buffer`]
+/// backing a cached panel render.
+pub trait RenderBuf {
+    /// Render `widget` into the target at `area`.
+    fn place<W: Widget>(&mut self, widget: W, area: Rect);
+    /// The underlying cell buffer.
+    fn cells(&mut self) -> &mut Buffer;
+}
+
+impl RenderBuf for Frame<'_> {
+    fn place<W: Widget>(&mut self, widget: W, area: Rect) {
+        self.render_widget(widget, area);
+    }
+
+    fn cells(&mut self) -> &mut Buffer {
+        self.buffer_mut()
+    }
+}
+
+impl RenderBuf for Buffer {
+    fn place<W: Widget>(&mut self, widget: W, area: Rect) {
+        widget.render(area, self);
+    }
+
+    fn cells(&mut self) -> &mut Buffer {
+        self
+    }
+}
+
 /// Render a rounded panel with an optional title and return the inner content area.
 ///
 /// Pass `None` for `title` to render an untitled panel.
-pub fn render_panel(
-    frame: &mut Frame,
+pub fn render_panel<T: RenderBuf + ?Sized>(
+    frame: &mut T,
     area: Rect,
     title: Option<&str>,
     title_color: Color,
@@ -36,7 +66,7 @@ pub fn render_panel(
     }
 
     let inner = block.inner(area);
-    frame.render_widget(block, area);
+    frame.place(block, area);
     inner
 }
 
@@ -44,8 +74,8 @@ pub fn render_panel(
 ///
 /// When `focused` is true the border uses `p.border_hi`; otherwise it uses
 /// `title_color`. The background is `p.bg`.
-pub fn render_titled_panel(
-    frame: &mut Frame,
+pub fn render_titled_panel<T: RenderBuf + ?Sized>(
+    frame: &mut T,
     area: Rect,
     p: Palette,
     title: &str,
@@ -59,8 +89,8 @@ pub fn render_titled_panel(
 /// Render a titled rounded panel with a custom background color.
 ///
 /// Same border convention as [`render_titled_panel`] but allows a custom `bg`.
-pub fn render_titled_panel_bg(
-    frame: &mut Frame,
+pub fn render_titled_panel_bg<T: RenderBuf + ?Sized>(
+    frame: &mut T,
     area: Rect,
     p: Palette,
     title: Option<&str>,

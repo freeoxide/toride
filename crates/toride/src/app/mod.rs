@@ -610,68 +610,81 @@ impl App {
                 }
 
                 Some(b) = self.fail2ban_collector.poll(), if self.fail2ban_collector.is_pending() => {
-                    self.dashboard.set_fail2ban_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_fail2ban_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.ufw_kit_collector.poll(), if self.ufw_kit_collector.is_pending() => {
-                    self.dashboard.set_ufw_kit_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_ufw_kit_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_harden_collector.poll(), if self.toride_harden_collector.is_pending() => {
-                    self.dashboard.set_toride_harden_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_harden_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_wireguard_collector.poll(), if self.toride_wireguard_collector.is_pending() => {
-                    self.dashboard.set_toride_wireguard_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_wireguard_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_updates_collector.poll(), if self.toride_updates_collector.is_pending() => {
-                    self.dashboard.set_toride_updates_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_updates_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_users_collector.poll(), if self.toride_users_collector.is_pending() => {
-                    self.dashboard.set_toride_users_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_users_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_audit_collector.poll(), if self.toride_audit_collector.is_pending() => {
-                    self.dashboard.set_toride_audit_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_audit_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_monitor_collector.poll(), if self.toride_monitor_collector.is_pending() => {
-                    self.dashboard.set_toride_monitor_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_monitor_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_backup_collector.poll(), if self.toride_backup_collector.is_pending() => {
-                    self.dashboard.set_toride_backup_data(&b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_backup_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_proxy_collector.poll(), if self.toride_proxy_collector.is_pending() => {
-                    self.dashboard.set_toride_proxy_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_proxy_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_cloud_collector.poll(), if self.toride_cloud_collector.is_pending() => {
-                    self.dashboard.set_toride_cloud_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_cloud_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_tailscale_collector.poll(), if self.toride_tailscale_collector.is_pending() => {
-                    self.dashboard.set_toride_tailscale_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_tailscale_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_mise_collector.poll(), if self.toride_mise_collector.is_pending() => {
-                    self.dashboard.set_toride_mise_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_mise_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.about_collector.poll(), if self.about_collector.is_pending() => {
@@ -679,8 +692,9 @@ impl App {
                     self.needs_redraw = true;
                 }
                 Some(b) = self.logs_collector.poll(), if self.logs_collector.is_pending() => {
-                    self.dashboard.set_logs_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_logs_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
                 Some(b) = self.settings_collector.poll(), if self.settings_collector.is_pending() => {
                     self.dashboard.set_settings_data(b);
@@ -691,12 +705,14 @@ impl App {
                     self.needs_redraw = true;
                 }
                 Some(b) = self.tools_collector.poll(), if self.tools_collector.is_pending() => {
-                    self.dashboard.set_tools_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_tools_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
                 Some(b) = self.setup_collector.poll(), if self.setup_collector.is_pending() => {
-                    self.dashboard.set_setup_offers(&b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_setup_offers(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(err) = self.ssh_error_rx.recv() => {
