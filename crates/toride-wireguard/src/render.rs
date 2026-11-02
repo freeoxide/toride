@@ -14,7 +14,10 @@ use std::fmt::Write as _;
 /// Render a [`WireguardSpec`] into a WireGuard INI config string.
 ///
 /// The output is suitable for writing directly to
-/// `/etc/wireguard/<name>.conf` and consumed by `wg-quick`.
+/// `/etc/wireguard/<name>.conf` and consumed by `wg-quick`. Every
+/// `Address`, `DNS`, and verbatim `extra` entry of the spec is rendered, so
+/// parsing a file and rendering the resulting spec reproduces all of its
+/// keys.
 ///
 /// # Example output
 ///
@@ -36,7 +39,9 @@ pub fn render_interface_conf(spec: &WireguardSpec) -> String {
 
     // [Interface] section.
     out.push_str("[Interface]\n");
-    let _ = writeln!(out, "Address = {}", spec.address);
+    for address in &spec.addresses {
+        let _ = writeln!(out, "Address = {address}");
+    }
 
     if spec.listen_port != 0 {
         let _ = writeln!(out, "ListenPort = {}", spec.listen_port);
@@ -46,8 +51,12 @@ pub fn render_interface_conf(spec: &WireguardSpec) -> String {
         let _ = writeln!(out, "PrivateKey = {key}");
     }
 
-    if let Some(ref dns) = spec.dns {
+    for dns in &spec.dns_servers {
         let _ = writeln!(out, "DNS = {dns}");
+    }
+
+    for (key, value) in &spec.extra {
+        let _ = writeln!(out, "{key} = {value}");
     }
 
     // [Peer] sections.
@@ -66,12 +75,16 @@ pub fn render_interface_conf(spec: &WireguardSpec) -> String {
 /// Render a single `[Peer]` section as an INI block.
 ///
 /// This is a convenience function used by [`render_interface_conf`] but also
-/// useful on its own when assembling configs incrementally.
+/// useful on its own when assembling configs incrementally. `PublicKey` is
+/// omitted when empty (a `[Peer]` header carrying only verbatim `extra`
+/// keys), and `extra` entries are rendered after the known keys.
 pub fn render_peer_entry(peer: &PeerSpec) -> String {
     let mut out = String::new();
 
     out.push_str("[Peer]\n");
-    let _ = writeln!(out, "PublicKey = {}", peer.public_key);
+    if !peer.public_key.is_empty() {
+        let _ = writeln!(out, "PublicKey = {}", peer.public_key);
+    }
 
     if !peer.allowed_ips.is_empty() {
         let _ = writeln!(out, "AllowedIPs = {}", peer.allowed_ips.join(", "));
@@ -83,6 +96,10 @@ pub fn render_peer_entry(peer: &PeerSpec) -> String {
 
     if let Some(keepalive) = peer.persistent_keepalive {
         let _ = writeln!(out, "PersistentKeepalive = {keepalive}");
+    }
+
+    for (key, value) in &peer.extra {
+        let _ = writeln!(out, "{key} = {value}");
     }
 
     out
@@ -98,7 +115,7 @@ mod tests {
 
     #[test]
     fn render_basic_interface() {
-        let spec = WireguardSpec::new("wg0".to_owned(), "10.0.0.1/24".to_owned())
+        let spec = WireguardSpec::new("wg0".to_owned(), vec!["10.0.0.1/24".to_owned()])
             .with_listen_port(51820)
             .with_private_key("privkey==".to_owned())
             .with_dns("1.1.1.1".to_owned());
@@ -113,7 +130,7 @@ mod tests {
 
     #[test]
     fn render_interface_with_peers() {
-        let spec = WireguardSpec::new("wg0".to_owned(), "10.0.0.1/24".to_owned())
+        let spec = WireguardSpec::new("wg0".to_owned(), vec!["10.0.0.1/24".to_owned()])
             .with_peer(
                 PeerSpec::new("pubkey1==".to_owned(), vec!["10.0.0.2/32".to_owned()])
                     .with_endpoint("1.2.3.4:51820".to_owned())
@@ -161,5 +178,72 @@ PrivateKey = testkey==
         assert!(rendered.contains("Address = 10.0.0.1/24"));
         assert!(rendered.contains("ListenPort = 51820"));
         assert!(rendered.contains("PrivateKey = testkey=="));
+    }
+
+    /// The registry's lossy round-trip blocker: dual-stack `Address` lines,
+    /// wg-quick keys (MTU, Table, PostUp, SaveConfig), and a peer
+    /// `PresharedKey` must all survive a parse-then-render cycle verbatim.
+    #[test]
+    fn roundtrip_preserves_dual_stack_unknown_keys_and_preshared_key() {
+        let original = "\
+[Interface]
+Address = 10.0.0.1/24
+Address = fd00::1/64
+ListenPort = 51820
+PrivateKey = testkey==
+MTU = 1420
+Table = 123
+PostUp = ip route add 10.0.0.0/24 dev wg0
+SaveConfig = true
+
+[Peer]
+PublicKey = peerpub==
+PresharedKey = pskbase64==
+AllowedIPs = 10.0.0.2/32
+Endpoint = 203.0.113.1:51820
+";
+        let spec = crate::parse::parse_interface_conf("wg0", original).unwrap();
+        let rendered = render_interface_conf(&spec);
+        for expected in [
+            "Address = 10.0.0.1/24",
+            "Address = fd00::1/64",
+            "MTU = 1420",
+            "Table = 123",
+            "PostUp = ip route add 10.0.0.0/24 dev wg0",
+            "SaveConfig = true",
+            "PresharedKey = pskbase64==",
+            "PublicKey = peerpub==",
+            "Endpoint = 203.0.113.1:51820",
+        ] {
+            assert!(
+                rendered.contains(expected),
+                "round-trip dropped `{expected}`:\n{rendered}"
+            );
+        }
+    }
+
+    /// A `[Peer]` carrying only unrecognized keys must not render an empty
+    /// `PublicKey = ` line.
+    #[test]
+    fn roundtrip_does_not_emit_empty_public_key_line() {
+        let original = "\
+[Interface]
+Address = 10.0.0.1/24
+
+[Peer]
+PresharedKey = pskbase64==
+";
+        let spec = crate::parse::parse_interface_conf("wg0", original).unwrap();
+        let rendered = render_interface_conf(&spec);
+        assert!(
+            !rendered.contains("PublicKey = \n") && !rendered.contains("PublicKey =\n"),
+            "an empty PublicKey line must not be rendered:\n{rendered}"
+        );
+        assert!(rendered.contains("PresharedKey = pskbase64=="));
+        assert_eq!(
+            rendered.matches("PublicKey").count(),
+            0,
+            "no PublicKey line at all: {rendered}"
+        );
     }
 }

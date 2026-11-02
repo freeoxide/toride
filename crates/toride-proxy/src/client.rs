@@ -311,11 +311,6 @@ mod tests {
 
     #[test]
     fn non_dry_run_reload_actually_runs_command() {
-        // Non-dry-run: the reload command must reach the runner. The strict-mode
-        // exact match is consumed only if `nginx -s reload` is actually issued;
-        // in dry-run no command would run and the exact match would be left
-        // unconsumed (harmless here). The assertion is simply that reload()
-        // returns Ok AND we can observe the recorded call on the probe.
         let probe = toride_runner::FakeRunner::new().respond(
             CommandSpec::new("nginx").args(["-s", "reload"]),
             CommandOutput::from_stdout("ok"),

@@ -357,23 +357,6 @@ impl WafRequest {
         self.body = body.into();
         self
     }
-
-    /// Return the inputs that should be scanned: path, query, header values,
-    /// and body. The method itself is deliberately NOT scanned.
-    fn scanable_inputs(&self) -> Vec<&str> {
-        let mut inputs: Vec<&str> = Vec::with_capacity(3 + self.headers.len());
-        inputs.push(&self.path);
-        if !self.query.is_empty() {
-            inputs.push(&self.query);
-        }
-        for (_, v) in &self.headers {
-            inputs.push(v.as_str());
-        }
-        if !self.body.is_empty() {
-            inputs.push(&self.body);
-        }
-        inputs
-    }
 }
 
 /// A single rule match against a request.
@@ -453,31 +436,35 @@ impl WafEngine {
     /// Disabled rules and a disabled config short-circuit to [`WafDecision::Allow`].
     /// In [`WafMode::Detection`] every match is logged but none block. In
     /// [`WafMode::Prevention`] a match at or above the configured block
-    /// threshold produces a `Block` decision.
+    /// threshold produces a `Block` decision; the scan stops at the first
+    /// such match, so a `Block` carries the matches seen up to and including
+    /// the blocking one, not the full match set.
     pub fn evaluate(&self, request: &WafRequest) -> WafDecision {
         if !self.config.enabled {
             return WafDecision::Allow;
         }
 
-        let inputs = request.scanable_inputs();
+        let prevention = self.config.mode == WafMode::Prevention;
         let mut matches: Vec<WafMatch> = Vec::new();
 
-        for rule in self.config.enabled_rules() {
-            for (idx, input) in inputs.iter().enumerate() {
-                if let Some(m) = rule.pattern.find(input) {
-                    let field = field_name(idx, request);
-                    let snippet = truncate(&input[m.start()..m.end()], 80);
-                    matches.push(WafMatch {
-                        rule_id: rule.id.clone(),
-                        rule_type: rule.rule_type,
-                        severity: rule.severity,
-                        field,
-                        snippet,
-                    });
-                    // One match per rule is enough; stop scanning further
-                    // inputs for this rule.
-                    break;
+        'rules: for rule in self.config.rules.iter().filter(|r| r.enabled) {
+            for (field, input) in scanable_inputs(request) {
+                let Some(m) = rule.pattern.find(input) else {
+                    continue;
+                };
+                matches.push(WafMatch {
+                    rule_id: rule.id.clone(),
+                    rule_type: rule.rule_type,
+                    severity: rule.severity,
+                    field,
+                    snippet: truncate(&input[m.start()..m.end()], 80),
+                });
+                if prevention && rule.severity >= self.config.block_threshold {
+                    break 'rules;
                 }
+                // One match per rule is enough; stop scanning further
+                // inputs for this rule.
+                break;
             }
         }
 
@@ -485,8 +472,7 @@ impl WafEngine {
             return WafDecision::Allow;
         }
 
-        // Decide block vs log based on mode + threshold.
-        let should_block = self.config.mode == WafMode::Prevention
+        let should_block = prevention
             && matches
                 .iter()
                 .any(|m| m.severity >= self.config.block_threshold);
@@ -499,23 +485,21 @@ impl WafEngine {
     }
 }
 
-/// Map a scanable-inputs index to a human-readable field name.
-fn field_name(idx: usize, request: &WafRequest) -> &'static str {
-    // inputs layout: [path, (query?), (header values...), (body?)]
-    if idx == 0 {
-        return "path";
-    }
-    let mut cursor = 1;
-    if !request.query.is_empty() {
-        if idx == cursor {
-            return "query";
-        }
-        cursor += 1;
-    }
-    if idx >= cursor && idx < cursor + request.headers.len() {
-        return "header";
-    }
-    "body"
+/// Yield each scanable input of `request` with its field label: the path,
+/// then the query and body when non-empty, plus every header value. The
+/// request method is deliberately NOT scanned. Allocation-free.
+fn scanable_inputs(request: &WafRequest) -> impl Iterator<Item = (&'static str, &str)> {
+    let has_query = !request.query.is_empty();
+    let has_body = !request.body.is_empty();
+    std::iter::once(("path", request.path.as_str()))
+        .chain(has_query.then_some(("query", request.query.as_str())))
+        .chain(
+            request
+                .headers
+                .iter()
+                .map(|(_, value)| ("header", value.as_str())),
+        )
+        .chain(has_body.then_some(("body", request.body.as_str())))
 }
 
 /// Truncate a match snippet to `max` chars, appending an ellipsis if cut.

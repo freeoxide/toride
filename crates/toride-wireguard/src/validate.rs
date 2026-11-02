@@ -113,24 +113,50 @@ pub fn validate_allowed_ips_str(ips: &str) -> Result<()> {
 // validate_endpoint
 // ---------------------------------------------------------------------------
 
-/// Validate a peer endpoint as a `host:port` socket address.
+/// Validate a peer endpoint as `host:port`.
 ///
-/// Accepts both IPv4 (e.g. `1.2.3.4:51820`) and IPv6 (e.g. `[fd00::1]:51820`)
-/// socket addresses, matching what the `wg` tool expects for the `endpoint`
-/// argument. Hostnames are not accepted here because `wg set` itself only
-/// resolves them at apply time and a syntactic check cannot prove validity.
+/// Accepts IPv4 (e.g. `1.2.3.4:51820`) and IPv6 (e.g. `[fd00::1]:51820`)
+/// socket addresses, and `host:port` endpoints whose host is a syntactically
+/// valid DNS name (e.g. `vpn.example.com:51820`): `wg set` accepts hostnames
+/// and resolves them at apply time, so a purely syntactic check is the
+/// strongest stance available without doing the resolution ourselves.
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidAddress`] if the value is not a parseable socket
-/// address.
+/// Returns [`Error::InvalidAddress`] if the value is neither a parseable
+/// socket address nor a `dns-name:port` pair.
 pub fn validate_endpoint(endpoint: &str) -> Result<()> {
-    if endpoint.parse::<std::net::SocketAddr>().is_err() {
-        return Err(Error::InvalidAddress(format!(
-            "invalid endpoint (expected host:port): {endpoint}"
-        )));
+    if endpoint.parse::<std::net::SocketAddr>().is_ok() {
+        return Ok(());
     }
-    Ok(())
+    if let Some((host, port)) = endpoint.rsplit_once(':') {
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        if !host.is_empty() && is_valid_dns_name(host) && port.parse::<u16>().is_ok_and(|p| p != 0)
+        {
+            return Ok(());
+        }
+    }
+    Err(Error::InvalidAddress(format!(
+        "invalid endpoint (expected host:port): {endpoint}"
+    )))
+}
+
+/// Whether `name` is a syntactically valid DNS name: dot-separated labels of
+/// ASCII letters, digits, and hyphens, each 1-63 bytes, none starting or
+/// ending with a hyphen, and at least one label.
+fn is_valid_dns_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 253 {
+        return false;
+    }
+    name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +239,11 @@ mod tests {
         assert!(validate_endpoint("1.2.3.4:51820").is_ok());
         assert!(validate_endpoint("[fd00::1]:51820").is_ok());
         assert!(validate_endpoint("0.0.0.0:0").is_ok());
+        assert!(
+            validate_endpoint("vpn.example.com:51820").is_ok(),
+            "wg set accepts hostname endpoints and resolves them at apply time"
+        );
+        assert!(validate_endpoint("vpn-1.example.co.uk:51820").is_ok());
     }
 
     #[test]
@@ -221,5 +252,9 @@ mod tests {
         assert!(validate_endpoint(":51820").is_err()); // no host
         assert!(validate_endpoint("not-an-endpoint").is_err());
         assert!(validate_endpoint("1.2.3.4:99999").is_err()); // port out of range
+        assert!(validate_endpoint("vpn.example.com:0").is_err()); // port 0
+        assert!(validate_endpoint("-bad.example.com:51820").is_err()); // leading hyphen label
+        assert!(validate_endpoint("bad..example.com:51820").is_err()); // empty label
+        assert!(validate_endpoint("bad example.com:51820").is_err()); // space in host
     }
 }

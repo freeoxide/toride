@@ -56,7 +56,7 @@ impl BackupManager {
             ))
         })?;
 
-        let timestamp = chrono_now_string();
+        let timestamp = epoch_nanos_string();
         let dest = backup_dir.join(format!("{timestamp}.conf"));
         fs::copy(&source, &dest).map_err(|e| {
             Error::ConfigWrite(format!(
@@ -135,12 +135,14 @@ impl BackupManager {
 // ---------------------------------------------------------------------------
 
 /// Generate a filesystem-safe timestamp string for backup filenames.
-fn chrono_now_string() -> String {
-    // Use a simple approach without depending on chrono.
+///
+/// Nanosecond precision so two backups taken within the same second cannot
+/// silently overwrite each other.
+fn epoch_nanos_string() -> String {
     let duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    format!("{}", duration.as_secs())
+    format!("{}", duration.as_nanos())
 }
 
 // ---------------------------------------------------------------------------
@@ -176,8 +178,8 @@ mod tests {
     }
 
     #[test]
-    fn chrono_now_string_is_numeric() {
-        let s = chrono_now_string();
+    fn epoch_nanos_string_is_numeric() {
+        let s = epoch_nanos_string();
         assert!(s.chars().all(|c| c.is_ascii_digit()));
     }
 }

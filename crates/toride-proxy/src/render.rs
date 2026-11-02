@@ -23,16 +23,22 @@ use crate::spec::{ProxySpec, ServerBlock};
 /// assert!(config.contains("proxy_pass http://127.0.0.1:3000"));
 /// ```
 pub fn render_nginx_server_block(block: &ServerBlock) -> String {
-    render_nginx_server_block_inner(block, false)
+    render_nginx_server_block_inner(block, false, None)
 }
 
 /// Render a server block, optionally emitting the modern `http2 on;`
-/// directive (nginx 1.25.1+) after the listen lines of TLS blocks.
+/// directive (nginx 1.25.1+) after the listen lines of TLS blocks and
+/// splicing `prepend_directives` (one directive per line) between the proxy
+/// location block and the caller's extra directives.
 ///
 /// The `http2` listen parameter has been deprecated since nginx 1.25.1, so
 /// HTTP/2 is expressed as its own directive and only when the caller's spec
 /// asked for it.
-fn render_nginx_server_block_inner(block: &ServerBlock, http2: bool) -> String {
+fn render_nginx_server_block_inner(
+    block: &ServerBlock,
+    http2: bool,
+    prepend_directives: Option<&str>,
+) -> String {
     let mut lines = Vec::new();
 
     // Server block open
@@ -84,6 +90,14 @@ fn render_nginx_server_block_inner(block: &ServerBlock, http2: bool) -> String {
     lines.push("        proxy_set_header X-Forwarded-Proto $scheme;".into());
     lines.push("    }".into());
 
+    // Spliced security headers (or other caller directives), then any extra
+    // directives, before the closing brace.
+    if let Some(directives) = prepend_directives {
+        for directive in directives.lines() {
+            lines.push(format!("    {directive}"));
+        }
+    }
+
     // Extra directives
     for directive in &block.extra_directives {
         lines.push(format!("    {directive}"));
@@ -117,23 +131,16 @@ pub fn render_nginx_server_block_with_headers(
         return render_nginx_server_block(block);
     }
 
-    // Build a synthetic block whose extra_directives prepend the security
-    // headers, preserving any caller-supplied directives afterwards. This keeps
-    // a single rendering code path rather than duplicating the block layout.
-    let mut combined: Vec<String> = directives
-        .lines()
-        .map(std::string::ToString::to_string)
-        .collect();
-    combined.extend(block.extra_directives.iter().cloned());
-
-    let mut synthetic = block.clone();
-    synthetic.extra_directives = combined;
-    render_nginx_server_block(&synthetic)
+    render_nginx_server_block_inner(block, false, Some(&directives))
 }
 
 /// Render a complete Caddyfile from a [`ProxySpec`].
 ///
 /// Produces Caddy-format configuration for all server blocks in the spec.
+/// Each site address is explicit so plaintext blocks cannot silently pick up
+/// Caddy's auto-HTTPS: a block without TLS renders as `http://host[:port]`,
+/// and a TLS block carries its certificate paths via `tls <cert> <key>` plus
+/// an explicit `:port` whenever the port differs from the scheme default.
 ///
 /// # Example
 ///
@@ -149,18 +156,65 @@ pub fn render_nginx_server_block_with_headers(
 /// assert!(caddyfile.contains("reverse_proxy 127.0.0.1:3000"));
 /// ```
 pub fn render_caddyfile(spec: &ProxySpec) -> String {
+    render_caddyfile_inner(spec, None)
+}
+
+/// Render a Caddyfile with security headers injected into every site block.
+///
+/// This is the Caddy counterpart of [`render_nginx_server_block_with_headers`]:
+/// [`SecurityHeaders::to_caddyfile_directives`] lines are emitted after the
+/// `reverse_proxy` directive. Pass `None` to render without headers
+/// (equivalent to [`render_caddyfile`]).
+pub fn render_caddyfile_with_headers(
+    spec: &ProxySpec,
+    headers: Option<&SecurityHeaders>,
+) -> String {
+    let Some(headers) = headers else {
+        return render_caddyfile(spec);
+    };
+    let directives = headers.to_caddyfile_directives();
+    if directives.is_empty() {
+        return render_caddyfile(spec);
+    }
+    render_caddyfile_inner(spec, Some(&directives))
+}
+
+/// Caddy's default HTTPS and HTTP ports; addresses omit them explicitly.
+const CADDY_HTTPS_PORT: u16 = 443;
+const CADDY_HTTP_PORT: u16 = 80;
+
+/// Format a block's Caddy site address from its TLS state and listen port.
+fn caddy_site_address(block: &ServerBlock) -> String {
+    match &block.tls {
+        Some(_) if block.listen_port == CADDY_HTTPS_PORT => block.server_name.clone(),
+        Some(_) => format!("{}:{}", block.server_name, block.listen_port),
+        None if block.listen_port == CADDY_HTTP_PORT => {
+            format!("http://{}", block.server_name)
+        }
+        None => format!("http://{}:{}", block.server_name, block.listen_port),
+    }
+}
+
+fn render_caddyfile_inner(spec: &ProxySpec, header_directives: Option<&str>) -> String {
     let mut blocks = Vec::new();
 
     for block in &spec.server_blocks {
         let mut lines = Vec::new();
 
-        // Site address
-        lines.push(format!("{} {{", block.server_name));
+        lines.push(format!("{} {{", caddy_site_address(block)));
 
-        // Reverse proxy
+        if let Some(tls) = &block.tls {
+            lines.push(format!("    tls {} {}", tls.cert_path, tls.key_path));
+        }
+
         lines.push(format!("    reverse_proxy {}", block.upstream));
 
-        // Extra directives
+        if let Some(directives) = header_directives {
+            for directive in directives.lines() {
+                lines.push(format!("    {directive}"));
+            }
+        }
+
         for directive in &block.extra_directives {
             lines.push(format!("    {directive}"));
         }
@@ -225,7 +279,7 @@ pub fn render_nginx_config(spec: &ProxySpec) -> String {
     let mut blocks = Vec::new();
 
     for block in &spec.server_blocks {
-        let block_config = render_nginx_server_block_inner(block, spec.http2);
+        let block_config = render_nginx_server_block_inner(block, spec.http2, None);
         blocks.push(block_config);
     }
 
@@ -323,8 +377,98 @@ mod tests {
             .build();
 
         let caddyfile = render_caddyfile(&spec);
-        assert!(caddyfile.contains("example.com {"));
+        // No TLS configured: the address must say http:// explicitly so
+        // Caddy's auto-HTTPS cannot redirect this site.
+        assert!(caddyfile.contains("http://example.com:443 {"));
         assert!(caddyfile.contains("reverse_proxy 127.0.0.1:3000"));
+    }
+
+    /// A plaintext block on port 80 renders as `http://host`, so Caddy's
+    /// auto-HTTPS cannot pick it up; a non-default port stays in the address.
+    #[test]
+    fn render_caddyfile_plaintext_addresses_are_explicit_http() {
+        let spec = ProxySpec::builder()
+            .block(ServerBlock::new("a.example.com", 80, "127.0.0.1:3000"))
+            .block(ServerBlock::new("b.example.com", 8080, "127.0.0.1:3000"))
+            .build();
+
+        let caddyfile = render_caddyfile(&spec);
+        assert!(
+            caddyfile.contains("http://a.example.com {"),
+            "default HTTP port is explicit about the scheme:\n{caddyfile}"
+        );
+        assert!(
+            caddyfile.contains("http://b.example.com:8080 {"),
+            "non-default plaintext port stays in the address:\n{caddyfile}"
+        );
+    }
+
+    /// A TLS block keeps HTTPS (the Caddy default), names a non-443 port
+    /// explicitly, and carries its certificate paths via `tls`.
+    #[test]
+    fn render_caddyfile_tls_blocks_name_certs_and_ports() {
+        let spec = ProxySpec::builder()
+            .block(
+                ServerBlock::new("a.example.com", 443, "127.0.0.1:3000").with_tls(TlsConfig::new(
+                    "a.example.com",
+                    "/etc/letsencrypt/live/a/fullchain.pem",
+                    "/etc/letsencrypt/live/a/privkey.pem",
+                )),
+            )
+            .block(
+                ServerBlock::new("b.example.com", 8443, "127.0.0.1:3000").with_tls(TlsConfig::new(
+                    "b.example.com",
+                    "/etc/letsencrypt/live/b/fullchain.pem",
+                    "/etc/letsencrypt/live/b/privkey.pem",
+                )),
+            )
+            .build();
+
+        let caddyfile = render_caddyfile(&spec);
+        assert!(
+            caddyfile.contains("a.example.com {"),
+            "443 is the HTTPS default and is omitted:\n{caddyfile}"
+        );
+        assert!(
+            caddyfile.contains("b.example.com:8443 {"),
+            "non-default TLS port stays in the address:\n{caddyfile}"
+        );
+        assert!(
+            caddyfile.contains(
+                "tls /etc/letsencrypt/live/a/fullchain.pem /etc/letsencrypt/live/a/privkey.pem"
+            ),
+            "configured certificate paths must reach the Caddyfile:\n{caddyfile}"
+        );
+        assert!(
+            !caddyfile.contains("http://"),
+            "TLS blocks stay on HTTPS:\n{caddyfile}"
+        );
+    }
+
+    /// The header entry point must ship the same policy the nginx path ships.
+    #[test]
+    fn render_caddyfile_with_headers_injects_header_directives() {
+        use crate::nginx_headers::SecurityHeaders;
+        let spec = ProxySpec::builder()
+            .block(ServerBlock::new("example.com", 443, "127.0.0.1:3000"))
+            .build();
+
+        let plain = render_caddyfile(&spec);
+        let with_headers = render_caddyfile_with_headers(&spec, Some(&SecurityHeaders::strict()));
+
+        assert!(
+            with_headers.contains("header Strict-Transport-Security \"max-age=63072000"),
+            "HSTS must render as a caddy header directive:\n{with_headers}"
+        );
+        assert!(
+            with_headers.contains("header Content-Security-Policy"),
+            "CSP must render as a caddy header directive:\n{with_headers}"
+        );
+        assert_eq!(
+            plain,
+            render_caddyfile_with_headers(&spec, None),
+            "None must equal the plain render"
+        );
     }
 
     #[test]

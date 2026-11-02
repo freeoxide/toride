@@ -1,7 +1,10 @@
-//! Diagnostic engine for proxy installations.
+//! Diagnostic engine for nginx installations.
 //!
 //! Provides doctor checks for proxy configuration, security headers,
-//! certificate expiry, and service status.
+//! certificate expiry, and service status. Every check targets nginx: the
+//! service probe runs `systemctl status nginx`, the config check parses
+//! nginx.conf, and the header check reads the managed site files; a Caddy
+//! deployment has no doctor coverage.
 
 use crate::error::Result;
 use crate::parse::{parse_nginx_status, parse_nginx_version};
@@ -446,20 +449,21 @@ impl<'a> Doctor<'a> {
 
     /// Check certificate expiry.
     ///
-    /// For each live certbot certificate, shells out to `openssl x509 -enddate`
-    /// to read real expiry and pushes a [`CertInfo`] into `certs_out`. This is
-    /// what makes [`ProxyReport::certificates`] (and
-    /// [`ProxyReport::has_expired_certs`]) reflect reality instead of staying
-    /// empty. Findings are still emitted for missing cert files and for certs
-    /// that are expired or near expiry.
+    /// For each live certbot certificate, reads real expiry (in-process PEM
+    /// walk first, `openssl x509 -enddate` as fallback) and pushes a
+    /// [`CertInfo`] into `certs_out`. This is what makes
+    /// [`ProxyReport::certificates`] (and [`ProxyReport::has_expired_certs`])
+    /// reflect reality instead of staying empty. Findings are still emitted
+    /// for missing cert files and for certs that are expired or near expiry.
     fn check_certificates(
         &self,
         certs_out: &mut Vec<crate::report::CertInfo>,
     ) -> Vec<DoctorFinding> {
-        use crate::certs_parse::read_cert_expiry;
+        use crate::certs_parse::CertExpiryReader;
         use std::time::SystemTime;
 
         let mut findings = Vec::new();
+        let expiry_reader = CertExpiryReader::new(self.runner);
 
         // List certificates in the certbot live directory
         if self.paths.certbot_live_dir.is_dir() {
@@ -482,11 +486,12 @@ impl<'a> Doctor<'a> {
                         continue;
                     }
 
-                    // Read real expiry via openssl. Degrades to is_valid=false
-                    // on any failure (missing openssl, parse error): never
-                    // panics.
+                    // Expiry comes from the in-process PEM walk, falling back
+                    // to openssl; any failure degrades to is_valid=false and
+                    // never panics.
                     let now = SystemTime::now();
-                    let expiry = read_cert_expiry(&cert_path, self.runner, now)
+                    let expiry = expiry_reader
+                        .read(&cert_path, now)
                         .unwrap_or_else(|_| crate::certs_parse::CertExpiry::unknown());
 
                     let cert_info = crate::report::CertInfo::new(

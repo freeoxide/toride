@@ -78,7 +78,7 @@ fn bench_site_apply(c: &mut Criterion) {
         let after = tree_bytes(dir.path());
         let written = after.saturating_sub(before);
         println!(
-            "site_apply: {WRITES_PER_PASS} sequential write_site_config calls over {site_count} seeded sites wrote {written} net bytes to disk (site files plus pre-mutation backups; same-second backups share one epoch-named file)"
+            "site_apply: {WRITES_PER_PASS} sequential write_site_config calls over {site_count} seeded sites wrote {written} net bytes to disk (site files plus per-file pre-mutation backups, pruned to the newest few)"
         );
         assert!(
             written > SITE_CONFIG_BYTES as u64,

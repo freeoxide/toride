@@ -24,8 +24,8 @@ impl<'a> ConfigManager<'a> {
         Self { paths }
     }
 
-    /// Snapshot the current proxy configuration and persist it to
-    /// [`ProxyPaths::backup_dir`].
+    /// Snapshot `source`, the file a write path is about to overwrite, and
+    /// persist the copy to [`ProxyPaths::backup_dir`] (pruned per file).
     ///
     /// Shared by every write path below. Backup failures are surfaced as
     /// `Error::ConfigWrite` rather than silently swallowed, because a missing
@@ -37,10 +37,11 @@ impl<'a> ConfigManager<'a> {
     ///
     /// Returns [`Error::ConfigWrite`] if the snapshot cannot be built or
     /// persisted.
-    pub fn backup(&self) -> Result<()> {
-        let snapshot = backup::create_backup(self.paths)
+    pub fn backup_file(&self, source: &std::path::Path) -> Result<()> {
+        let snapshot = backup::create_backup(source)
             .map_err(|e| Error::ConfigWrite(format!("create backup: {e}")))?;
         backup::save_backup_to_disk(self.paths, &snapshot)
+            .map(|_| ())
             .map_err(|e| Error::ConfigWrite(format!("persist backup: {e}")))
     }
 
@@ -172,7 +173,7 @@ impl<'a> ConfigManager<'a> {
     ///
     /// Returns [`Error::ConfigWrite`] if the backup or write fails.
     pub fn write_site_config(&self, domain: &str, content: &str) -> Result<()> {
-        self.backup()?;
+        self.backup_file(&self.paths.nginx_site_path(domain))?;
 
         let site_path = self.paths.nginx_site_path(domain);
         if let Some(parent) = site_path.parent() {
@@ -200,7 +201,7 @@ impl<'a> ConfigManager<'a> {
     ///
     /// Returns [`Error::ConfigWrite`] if the backup or write fails.
     pub fn write_nginx_config(&self, content: &str) -> Result<()> {
-        self.backup()?;
+        self.backup_file(&self.paths.nginx_conf)?;
         if let Some(parent) = self.paths.nginx_conf.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Error::ConfigWrite(format!("create nginx dir: {e}")))?;
@@ -225,7 +226,7 @@ impl<'a> ConfigManager<'a> {
     ///
     /// Returns [`Error::ConfigWrite`] if the backup or write fails.
     pub fn write_caddyfile_config(&self, content: &str) -> Result<()> {
-        self.backup()?;
+        self.backup_file(&self.paths.caddyfile)?;
         if let Some(parent) = self.paths.caddyfile.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Error::ConfigWrite(format!("create caddy dir: {e}")))?;
@@ -304,6 +305,11 @@ mod tests {
         let paths = ProxyPaths::with_root(dir.path());
         let mgr = ConfigManager::new(&paths);
 
+        // Seed an existing config so the backup has prior content to capture;
+        // a first write of a new file has nothing to back up.
+        std::fs::create_dir_all(&paths.nginx_sites_available).unwrap();
+        std::fs::write(paths.nginx_site_path("example.com"), "old config").unwrap();
+
         mgr.write_site_config("example.com", "server { listen 80; }")
             .unwrap();
 
@@ -311,12 +317,19 @@ mod tests {
         let written = std::fs::read_to_string(paths.nginx_site_path("example.com")).unwrap();
         assert!(written.contains("listen 80"));
 
-        // Backup persisted to disk.
+        // Backup persisted to disk, named after the mutated file and holding
+        // the prior bytes verbatim.
         let entries: Vec<_> = std::fs::read_dir(&paths.backup_dir).unwrap().collect();
-        assert!(entries.iter().any(|e| {
-            e.as_ref()
-                .is_ok_and(|e| e.file_name().to_string_lossy().starts_with("proxy-backup-"))
-        }));
+        let backup = entries
+            .iter()
+            .find_map(|e| {
+                e.as_ref()
+                    .ok()
+                    .filter(|e| e.file_name().to_string_lossy().starts_with("example.com."))
+            })
+            .expect("an example.com.*.bak backup exists");
+        let backup_content = std::fs::read_to_string(backup.path()).unwrap();
+        assert_eq!(backup_content, "old config");
     }
 
     #[test]

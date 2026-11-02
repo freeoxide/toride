@@ -214,6 +214,61 @@ impl SecurityHeaders {
 
         lines.join("\n")
     }
+
+    /// Render the same header set as Caddy `header` directives, mirroring
+    /// [`SecurityHeaders::to_nginx_directives`] header for header so both
+    /// backends ship one policy.
+    pub fn to_caddyfile_directives(&self) -> String {
+        let mut lines = Vec::new();
+
+        if self.hsts_max_age > 0 {
+            let mut hsts = format!("max-age={}", self.hsts_max_age);
+            if self.hsts_include_subdomains {
+                hsts.push_str("; includeSubDomains");
+            }
+            if self.hsts_preload {
+                hsts.push_str("; preload");
+            }
+            lines.push(format!("header Strict-Transport-Security \"{hsts}\""));
+        }
+
+        if self.x_frame_options != XFrameOptions::None {
+            lines.push(format!(
+                "header X-Frame-Options \"{}\"",
+                self.x_frame_options
+            ));
+        }
+
+        if self.x_content_type_options != ContentTypeOptions::None {
+            lines.push(format!(
+                "header X-Content-Type-Options \"{}\"",
+                self.x_content_type_options
+            ));
+        }
+
+        lines.push("header X-XSS-Protection \"1; mode=block\"".into());
+
+        lines.push(format!(
+            "header Referrer-Policy \"{}\"",
+            self.referrer_policy
+        ));
+
+        if !self.content_security_policy.is_empty() {
+            lines.push(format!(
+                "header Content-Security-Policy \"{}\"",
+                self.content_security_policy
+            ));
+        }
+
+        if !self.permissions_policy.is_empty() {
+            lines.push(format!(
+                "header Permissions-Policy \"{}\"",
+                self.permissions_policy
+            ));
+        }
+
+        lines.join("\n")
+    }
 }
 
 #[cfg(test)]

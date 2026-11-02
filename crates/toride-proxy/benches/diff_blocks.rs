@@ -75,7 +75,11 @@ fn bench_diff_blocks(c: &mut Criterion) {
             fixture.modified + fixture.added,
             "modified plus added blocks are changed"
         );
-        assert_eq!(removed.len(), fixture.removed);
+        assert_eq!(
+            removed.len(),
+            fixture.removed + fixture.modified,
+            "dropped blocks plus superseded modified blocks are removed"
+        );
         let summary = diff_summary(&fixture.current, &fixture.desired);
         assert!(summary.starts_with("Added: new-0.example.com"), "{summary}");
         assert!(summary.contains("Removed: site-"), "{summary}");

@@ -80,7 +80,7 @@ impl<'a> NginxManager<'a> {
     ///
     /// Renders the server block to Nginx config and writes it to
     /// `sites-available`. Optionally creates a symlink in `sites-enabled`.
-    /// A pre-mutation backup of the existing config is created first via
+    /// A pre-mutation backup of the existing site file is created first via
     /// [`crate::backup::create_backup`] so the change can be rolled back.
     ///
     /// # Errors
@@ -111,18 +111,14 @@ impl<'a> NginxManager<'a> {
         let config = render_nginx_server_block_with_headers(block, headers);
         let site_path = self.paths.nginx_site_path(&block.server_name);
 
-        // Ensure the directory exists
         if let Some(parent) = site_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Create a pre-mutation backup before overwriting. The backup captures
-        // the current sites-available directory (and nginx.conf / Caddyfile)
-        // and persists it to `backup_dir` so the change can be rolled back. A
-        // backup failure is non-fatal: we log and continue rather than
-        // blocking a legitimate write, matching how operators expect "best
-        // effort" snapshots to behave.
-        match crate::backup::create_backup(self.paths) {
+        // Best-effort pre-mutation backup of exactly the file being
+        // overwritten; a failure logs and continues rather than blocking the
+        // write.
+        match crate::backup::create_backup(&site_path) {
             Ok(snapshot) => {
                 if let Err(e) = crate::backup::save_backup_to_disk(self.paths, &snapshot) {
                     tracing::warn!("nginx: persisting pre-write backup failed (continuing): {e}");
@@ -312,15 +308,16 @@ mod tests {
         let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000");
         mgr.write_site(&block, false).unwrap();
 
-        // Backup directory must now exist and contain a snapshot file.
+        // Backup directory must now exist and contain a snapshot named after
+        // the mutated site file.
         assert!(backup_dir.is_dir());
         let entries: Vec<_> = std::fs::read_dir(backup_dir).unwrap().collect();
         assert!(
             entries.iter().any(|e| {
                 e.as_ref()
-                    .is_ok_and(|e| e.file_name().to_string_lossy().starts_with("proxy-backup-"))
+                    .is_ok_and(|e| e.file_name().to_string_lossy().starts_with("example.com."))
             }),
-            "expected a proxy-backup-*.txt snapshot in backup_dir"
+            "expected an example.com.*.bak snapshot in backup_dir"
         );
 
         // The site file was overwritten with the new config.

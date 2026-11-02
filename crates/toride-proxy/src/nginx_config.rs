@@ -143,17 +143,14 @@ pub fn parse_nginx_config(content: &str) -> Result<Vec<Directive>> {
             cleaned
         };
 
-        let parts: Vec<&str> = content_part.split_whitespace().collect();
-        if parts.is_empty() {
+        let mut words = content_part.split_whitespace();
+        let Some(name) = words.next() else {
             continue;
-        }
-
-        let name = parts[0].to_string();
-        let args: Vec<String> = parts[1..].iter().map(|s| (*s).to_string()).collect();
+        };
 
         let directive = Directive {
-            name,
-            args,
+            name: name.to_string(),
+            args: words.map(str::to_string).collect(),
             has_block: has_brace,
             children: Vec::new(),
         };
@@ -175,21 +172,32 @@ pub fn parse_server_blocks(content: &str) -> Result<Vec<ParsedServerBlock>> {
     let directives = parse_nginx_config(content)?;
 
     let mut blocks = Vec::new();
-    extract_server_blocks(&directives, &mut blocks);
+    extract_server_blocks(directives, &mut blocks);
     Ok(blocks)
 }
 
-/// Recursively extract server blocks from parsed directives.
-fn extract_server_blocks(directives: &[Directive], blocks: &mut Vec<ParsedServerBlock>) {
+/// Recursively extract server blocks from parsed directives, consuming the
+/// tree: each `server` block's children move into the [`ParsedServerBlock`]
+/// instead of being deep-cloned. Nested blocks (e.g. inside `http { ... }`)
+/// are walked the same way; nested `server` blocks inside a `server` are
+/// invalid nginx and are not searched for once one is extracted.
+fn extract_server_blocks(directives: Vec<Directive>, blocks: &mut Vec<ParsedServerBlock>) {
     for directive in directives {
-        if directive.name == "server" && directive.has_block {
-            blocks.push(ParsedServerBlock {
-                directives: directive.children.clone(),
-            });
+        let Directive {
+            name,
+            has_block,
+            children,
+            ..
+        } = directive;
+        if !has_block {
+            continue;
         }
-        // Also check nested blocks (e.g. inside `http { ... }`)
-        if directive.has_block {
-            extract_server_blocks(&directive.children, blocks);
+        if name == "server" {
+            blocks.push(ParsedServerBlock {
+                directives: children,
+            });
+        } else {
+            extract_server_blocks(children, blocks);
         }
     }
 }

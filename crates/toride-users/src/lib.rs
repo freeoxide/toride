@@ -78,6 +78,10 @@ pub mod validate;
 #[cfg(feature = "client")]
 pub mod client;
 
+/// Shared capture-style execution helper for the shadow-utils wrappers.
+#[cfg(feature = "client")]
+pub(crate) mod capture;
+
 /// Service management for user-related system daemons.
 #[cfg(feature = "service")]
 pub mod service;

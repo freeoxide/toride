@@ -20,11 +20,21 @@ fn not_after_output() -> CommandOutput {
 }
 
 fn live_tree(cert_count: usize) -> TempDir {
+    live_tree_with(cert_count, FIXTURE_CERT)
+}
+
+/// Seed a live tree whose fullchain files exist but cannot be parsed in
+/// process, forcing every read down the `openssl` fallback path.
+fn live_tree_unparseable(cert_count: usize) -> TempDir {
+    live_tree_with(cert_count, "not a certificate\n")
+}
+
+fn live_tree_with(cert_count: usize, cert_content: &str) -> TempDir {
     let dir = TempDir::new().expect("cert_scan tempdir");
     for i in 0..cert_count {
         let site = dir.path().join(format!("site-{i}.example.com"));
         std::fs::create_dir_all(&site).expect("site dir");
-        std::fs::write(site.join("fullchain.pem"), FIXTURE_CERT).expect("fullchain.pem");
+        std::fs::write(site.join("fullchain.pem"), cert_content).expect("fullchain.pem");
     }
     dir
 }
@@ -53,16 +63,46 @@ fn bench_cert_scan_fake(c: &mut Criterion, now: SystemTime) {
     }
 
     for cert_count in CERT_COUNTS {
+        // The in-process leg is the production path: real fixture PEMs parse
+        // without any runner consultation.
         let tree = live_tree(cert_count);
         let live_dir = tree.path().to_path_buf();
 
-        let runner = FakeRunner::new().push_response(not_after_output());
+        let runner = FakeRunner::new();
         let valid = scan_expiry(&live_dir, &runner, now);
         assert_eq!(valid, cert_count, "every fixture cert must read as valid");
 
         group.throughput(Throughput::Elements(cert_count as u64));
         group.bench_with_input(
-            criterion::BenchmarkId::new("scan_fake_runner", cert_count),
+            criterion::BenchmarkId::new("scan_in_process", cert_count),
+            &live_dir,
+            |b, live_dir| {
+                b.iter_batched(
+                    FakeRunner::new,
+                    |runner| black_box(scan_expiry(live_dir, &runner, now)),
+                    BatchSize::NumIterations(1),
+                );
+            },
+        );
+    }
+
+    for cert_count in CERT_COUNTS {
+        // The fallback leg forces the openssl probe (files that cannot be
+        // parsed in process) and answers it from a canned response, measuring
+        // the Rust-side cost of the pre-in-process-parse scan path.
+        let tree = live_tree_unparseable(cert_count);
+        let live_dir = tree.path().to_path_buf();
+
+        let runner = FakeRunner::new().push_response(not_after_output());
+        let valid = scan_expiry(&live_dir, &runner, now);
+        assert_eq!(
+            valid, cert_count,
+            "the canned openssl response must validate every fallback read"
+        );
+
+        group.throughput(Throughput::Elements(cert_count as u64));
+        group.bench_with_input(
+            criterion::BenchmarkId::new("scan_openssl_fallback", cert_count),
             &live_dir,
             |b, live_dir| {
                 b.iter_batched(

@@ -108,13 +108,17 @@ pub fn parse_wg_showconf(interface: &str, output: &str) -> Result<WireguardSpec>
 ///
 /// Supports the standard `[Interface]` and `[Peer]` sections with their
 /// respective keys: `Address`, `ListenPort`, `PrivateKey`, `DNS`,
-/// `PublicKey`, `AllowedIPs`, `Endpoint`, `PersistentKeepalive`.
+/// `PublicKey`, `AllowedIPs`, `Endpoint`, `PersistentKeepalive`. Repeated
+/// `Address` and `DNS` lines are accumulated in file order. Keys outside this
+/// set (e.g. `MTU`, `Table`, `PostUp`, `PresharedKey`) are preserved verbatim
+/// in [`WireguardSpec::extra`] / [`PeerSpec::extra`] so a read-then-write
+/// cycle never drops them.
 ///
 /// # Errors
 ///
 /// Returns [`Error::ConfigParse`] if the config contains invalid syntax.
 pub fn parse_interface_conf(interface_name: &str, content: &str) -> Result<WireguardSpec> {
-    let mut spec = WireguardSpec::new(interface_name.to_owned(), String::new());
+    let mut spec = WireguardSpec::new(interface_name.to_owned(), Vec::new());
     let mut current_section: Option<String> = None;
     let mut current_peer: Option<PeerSpec> = None;
 
@@ -147,15 +151,15 @@ pub fn parse_interface_conf(interface_name: &str, content: &str) -> Result<Wireg
 
         match current_section.as_deref() {
             Some("Interface") => match key {
-                "Address" => value.clone_into(&mut spec.address),
+                "Address" => spec.addresses.push(value.to_owned()),
                 "ListenPort" => {
                     spec.listen_port = value
                         .parse()
                         .map_err(|_| Error::ConfigParse(format!("invalid ListenPort: {value}")))?;
                 }
                 "PrivateKey" => spec.private_key = Some(value.to_owned()),
-                "DNS" => spec.dns = Some(value.to_owned()),
-                _ => {} // ignore unknown keys
+                "DNS" => spec.dns_servers.push(value.to_owned()),
+                _ => spec.extra.push((key.to_owned(), value.to_owned())),
             },
             Some("Peer") => {
                 if let Some(ref mut peer) = current_peer {
@@ -171,7 +175,7 @@ pub fn parse_interface_conf(interface_name: &str, content: &str) -> Result<Wireg
                                 Error::ConfigParse(format!("invalid PersistentKeepalive: {value}"))
                             })?);
                         }
-                        _ => {} // ignore unknown keys
+                        _ => peer.extra.push((key.to_owned(), value.to_owned())),
                     }
                 }
             }
@@ -216,16 +220,71 @@ PersistentKeepalive = 25
 ";
         let spec = parse_interface_conf("wg0", conf).unwrap();
         assert_eq!(spec.name, "wg0");
-        assert_eq!(spec.address, "10.0.0.1/24");
+        assert_eq!(spec.addresses, vec!["10.0.0.1/24"]);
         assert_eq!(spec.listen_port, 51820);
         assert_eq!(spec.private_key.as_deref(), Some("abc123base64=="));
-        assert_eq!(spec.dns.as_deref(), Some("1.1.1.1"));
+        assert_eq!(spec.dns_servers, vec!["1.1.1.1"]);
         assert_eq!(spec.peers.len(), 1);
         let peer = &spec.peers[0];
         assert_eq!(peer.public_key, "peerpubkey==");
         assert_eq!(peer.allowed_ips, vec!["10.0.0.2/32"]);
         assert_eq!(peer.endpoint.as_deref(), Some("203.0.113.1:51820"));
         assert_eq!(peer.persistent_keepalive, Some(25));
+    }
+
+    /// Dual-stack interfaces use two `Address` lines; both must survive a
+    /// parse instead of collapsing to the last one, and repeated `DNS` lines
+    /// accumulate too.
+    #[test]
+    fn parse_accumulates_repeated_address_and_dns_lines() {
+        let conf = "\
+[Interface]
+Address = 10.0.0.1/24
+Address = fd00::1/64
+DNS = 1.1.1.1
+DNS = 8.8.8.8
+";
+        let spec = parse_interface_conf("wg0", conf).unwrap();
+        assert_eq!(spec.addresses, vec!["10.0.0.1/24", "fd00::1/64"]);
+        assert_eq!(spec.dns_servers, vec!["1.1.1.1", "8.8.8.8"]);
+    }
+
+    /// Keys outside the modeled set (the wg-quick standard set like MTU,
+    /// Table, PostUp, and peer PresharedKey) must be preserved verbatim so a
+    /// read-then-write cycle never silently drops them.
+    #[test]
+    fn parse_preserves_unknown_keys_verbatim() {
+        let conf = "\
+[Interface]
+Address = 10.0.0.1/24
+MTU = 1420
+Table = off
+PostUp = ip route add 10.0.0.0/24 dev wg0
+FwMark = 0x1
+SaveConfig = true
+
+[Peer]
+PresharedKey = pskbase64==
+AllowedIPs = 10.0.0.2/32
+";
+        let spec = parse_interface_conf("wg0", conf).unwrap();
+        assert_eq!(
+            spec.extra,
+            vec![
+                ("MTU".to_owned(), "1420".to_owned()),
+                ("Table".to_owned(), "off".to_owned()),
+                (
+                    "PostUp".to_owned(),
+                    "ip route add 10.0.0.0/24 dev wg0".to_owned()
+                ),
+                ("FwMark".to_owned(), "0x1".to_owned()),
+                ("SaveConfig".to_owned(), "true".to_owned()),
+            ]
+        );
+        assert_eq!(
+            spec.peers[0].extra,
+            vec![("PresharedKey".to_owned(), "pskbase64==".to_owned())]
+        );
     }
 
     #[test]
@@ -251,7 +310,7 @@ AllowedIPs = 10.0.0.3/32, fd00::3/128
     fn parse_empty_conf() {
         let spec = parse_interface_conf("wg0", "").unwrap();
         assert_eq!(spec.name, "wg0");
-        assert_eq!(spec.address, "");
+        assert!(spec.addresses.is_empty(), "no Address lines were parsed");
         assert!(spec.peers.is_empty());
     }
 

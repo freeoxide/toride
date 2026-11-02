@@ -44,18 +44,20 @@ pub fn restart_service(service: &str) -> Result<()> {
 
 /// Reload a systemd service (send SIGHUP).
 ///
-/// Executes `systemctl reload <service>` via [`toride_runner::CommandSpec`].
+/// Executes `systemctl reload -- <service>` via [`toride_runner::CommandSpec`],
+/// validating the name first so a leading `-` cannot become a systemctl flag.
 /// This operation is not provided by `toride-service`, so it is implemented
 /// locally using the shared runner infrastructure.
 ///
 /// # Errors
 ///
-/// - [`Error::Other`] if `systemctl` returns a non-zero exit code.
+/// - [`Error::Other`] if the name is rejected by validation or `systemctl`
+///   returns a non-zero exit code.
 pub fn reload_service(service: &str) -> Result<()> {
-    use toride_runner::{CommandSpec, Runner};
+    use toride_runner::Runner;
 
     let runner = toride_runner::DuctRunner;
-    let spec = CommandSpec::new("systemctl").arg("reload").arg(service);
+    let spec = reload_spec(service)?;
     let output = runner.run(&spec).map_err(|e| Error::Other(e.to_string()))?;
 
     if output.success {
@@ -70,6 +72,41 @@ pub fn reload_service(service: &str) -> Result<()> {
         };
         Err(Error::Other(detail))
     }
+}
+
+/// Validate a service name before handing it to `systemctl`, mirroring the
+/// guard `toride-service` applies to its own verbs.
+///
+/// # Errors
+///
+/// Returns [`Error::Other`] for empty names, a leading `-` (flag injection),
+/// path separators, and embedded NUL bytes.
+fn validate_service_name(service: &str) -> Result<()> {
+    if service.is_empty() {
+        return Err(Error::Other("service name must not be empty".to_owned()));
+    }
+    if service.starts_with('-') {
+        return Err(Error::Other(format!(
+            "service name must not start with '-': {service:?}"
+        )));
+    }
+    if service.contains('/') {
+        return Err(Error::Other(format!(
+            "service name must not contain a path separator: {service:?}"
+        )));
+    }
+    if service.contains('\0') {
+        return Err(Error::Other(format!(
+            "service name must not contain a NUL byte: {service:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// Build the `systemctl reload -- <service>` spec after validating the name.
+fn reload_spec(service: &str) -> Result<toride_runner::CommandSpec> {
+    validate_service_name(service)?;
+    Ok(toride_runner::CommandSpec::new("systemctl").args(["reload", "--", service]))
 }
 
 /// Ensure `sshd` is running after PAM or authentication changes.
@@ -131,14 +168,16 @@ impl ServiceManager {
 
     /// Reload a service (send SIGHUP).
     ///
-    /// Uses [`toride_runner::CommandSpec`] directly since `reload` is not
-    /// exposed by [`toride_service::ServiceManager`].
+    /// Uses [`reload_spec`] (validated name, `--`-terminated argv) since
+    /// `reload` is not exposed by [`toride_service::ServiceManager`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Other`] on a rejected name or a non-zero exit.
     pub fn reload(&self, service: &str) -> Result<()> {
         use toride_runner::Runner;
 
-        let spec = toride_runner::CommandSpec::new("systemctl")
-            .arg("reload")
-            .arg(service);
+        let spec = reload_spec(service)?;
         let output = self
             .runner
             .run(&spec)
@@ -173,4 +212,32 @@ impl Default for ServiceManager {
 fn new_manager() -> toride_service::ServiceManager {
     let runner = Box::new(toride_runner::DuctRunner);
     toride_service::ServiceManager::new(runner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reload_rejects_flag_shaped_and_invalid_names() {
+        for name in ["-x", "", "../etc/passwd", "ss\0hd"] {
+            let err = reload_service(name)
+                .err()
+                .unwrap_or_else(|| panic!("name {name:?} must be rejected"));
+            assert!(
+                matches!(err, Error::Other(_)),
+                "expected a validation error for {name:?}, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reload_spec_terminates_options_with_double_dash() {
+        let spec = reload_spec("sshd").expect("valid name");
+        assert_eq!(spec.program, "systemctl");
+        assert_eq!(
+            spec.args,
+            vec!["reload".to_owned(), "--".to_owned(), "sshd".to_owned()]
+        );
+    }
 }
