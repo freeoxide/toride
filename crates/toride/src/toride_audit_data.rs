@@ -319,10 +319,6 @@ async fn collect_real_audit(
         let auditd_running = auditd.is_running().unwrap_or(false);
         let auditd_status = auditd.status().unwrap_or_default();
 
-        // ── AIDE integrity status (unless cached) ─────────────────────────
-        // `aide --check` re-hashes the monitored filesystem (minutes on a real
-        // host), so this probe carries the longest TTL: when the cache is
-        // fresh the spawn is skipped entirely.
         let integrity = if let Some(cached) = cached_integrity.filter(|_| use_integrity_cache) {
             cached
         } else {
@@ -573,7 +569,7 @@ mod tests {
     /// The integrity TTL mirrors the backend memoization window and is
     /// strictly longer than the findings cadence: `aide --check` re-hashes
     /// the monitored filesystem, so a 60s integrity TTL would keep a re-hash
-    /// running continuously (the safety-state-9 hazard).
+    /// running continuously.
     #[test]
     fn integrity_ttl_mirrors_backend_and_exceeds_findings_ttl() {
         assert_eq!(

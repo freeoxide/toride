@@ -192,10 +192,6 @@ fn split_options(raw: &str) -> (BTreeMap<String, ToolOptionValue>, &str) {
 }
 
 /// Split an option string into `key=value` pairs on commas outside quotes.
-///
-/// Splitting on every comma (the previous behavior) made a value containing
-/// a comma unparseable: `tags=a,b` yielded `tags="a"` plus a phantom
-/// `b=true` flag, and [`ToolOptionValue::StringList`] was unreachable.
 fn parse_option_list(s: &str) -> BTreeMap<String, ToolOptionValue> {
     let mut map = BTreeMap::new();
     for pair in split_pairs_outside_quotes(s) {

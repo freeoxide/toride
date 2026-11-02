@@ -321,7 +321,6 @@ impl ToolsContent {
                 Style::new().fg(p.text).add_modifier(Modifier::BOLD),
             ),
         ]));
-        // Findings hint line: only when there are missing-expected tools.
         let missing_expected = self
             .findings
             .iter()

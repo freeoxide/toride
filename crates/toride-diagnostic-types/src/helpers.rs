@@ -148,8 +148,7 @@ mod tests {
     }
 
     /// The mode-mismatch arm and the stat-error arm of the same check must
-    /// emit the same `perms:{path}` id shape; the mismatch arm previously
-    /// carried a stray trailing backtick.
+    /// emit the same `perms:{path}` id shape.
     #[test]
     #[cfg(unix)]
     fn check_file_permissions_finding_ids_match_across_arms() {

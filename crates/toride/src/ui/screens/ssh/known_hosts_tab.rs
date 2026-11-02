@@ -497,7 +497,6 @@ impl KnownHostsTab {
 
             let mut spans = Vec::new();
 
-            // Icon: accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
                 Style::new().fg(if is_selected || is_hovered {
@@ -528,7 +527,6 @@ impl KnownHostsTab {
             let padded = format!("{:width$}", "", width = host_w.saturating_sub(host_chars));
             spans.push(Span::raw(padded));
 
-            // Key type: show primary or count when grouped
             if host.key_types.len() > 1 {
                 spans.push(Span::styled(
                     format!(" {} ", host.key_type),

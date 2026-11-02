@@ -573,7 +573,6 @@ impl ConfigTab {
 
             let mut spans = Vec::new();
 
-            // Icon: accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
                 Style::new().fg(if is_selected || is_hovered {

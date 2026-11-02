@@ -1,4 +1,4 @@
-//! Steady-state cache-hit cost of every TTL collector (tui-13, tui-14):
+//! Steady-state cache-hit cost of every TTL collector:
 //! each collector is primed on the stub fixture host, then one
 //! start-plus-poll cycle is measured per iteration.
 //!

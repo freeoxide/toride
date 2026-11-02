@@ -742,7 +742,7 @@ mod tests {
 
     /// Within the status TTL a second `status()` call must spawn nothing:
     /// `aide --check` re-hashes the monitored filesystem, so a polling
-    /// consumer must not trigger it every poll (safety-state-9 gate).
+    /// consumer must not trigger it every poll.
     #[test]
     fn repeated_status_within_ttl_spawns_no_additional_checks() {
         let tmp = TempDir::new().unwrap();

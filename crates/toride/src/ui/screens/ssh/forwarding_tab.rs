@@ -441,7 +441,6 @@ impl ForwardingTab {
             // Store hitbox for mouse detection.
             self.row_hitboxes.push(row_area);
 
-            // Selection or hover highlight: covers all rows of the session.
             if is_selected || is_hovered_session {
                 for x in row_area.x..row_area.right() {
                     if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {

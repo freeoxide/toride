@@ -405,7 +405,6 @@ impl UsersContent {
             Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
         )));
 
-        // passwd: note incompleteness on macOS.
         let (icon, text, color) = read_badge(self.passwd_read, p);
         lines.push(Line::from(vec![
             Span::styled("  passwd   ", Style::new().fg(p.text_muted)),

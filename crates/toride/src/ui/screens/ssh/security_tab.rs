@@ -1772,7 +1772,7 @@ mod tests {
         // bob must START in the allow list so the L5 both-lists mirror
         // (`allowed_users.retain(|u| u != &username)`) has real work to do.
         // With allowed_users empty the retain is a no-op and deleting the
-        // mirror line would still pass: exactly the false confidence F15 flags.
+        // mirror line would still pass.
         let mut data = sample_data();
         data.access_info.allowed_users = vec!["bob".into()];
         let mut tab = SecurityTab::new();

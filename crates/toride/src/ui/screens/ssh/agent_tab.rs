@@ -512,7 +512,6 @@ impl AgentTab {
         let line1_area = Rect::new(inner.x, inner.y, inner.width, 1);
         frame.render_widget(Paragraph::new(status_line), line1_area);
 
-        // Line 2: key count: show both agent-reported count and displayed count
         let count_display = if self.keys.len() == self.status.key_count {
             format!("{} keys loaded", self.keys.len())
         } else {
@@ -582,7 +581,6 @@ impl AgentTab {
 
             let mut spans = Vec::new();
 
-            // Icon: accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
                 Style::new().fg(if is_selected || is_hovered {

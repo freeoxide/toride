@@ -1,5 +1,4 @@
-//! Times the `ControlMaster` candidate fan-out with a fake verifier
-//! (ssh-data-subsystems-24).
+//! Times the `ControlMaster` candidate fan-out with a fake verifier.
 //!
 //! Each socket's `ssh -O check` spawn is replaced by a verifier that sleeps
 //! a fixed delay, so the measurement isolates the bounded-concurrency sweep

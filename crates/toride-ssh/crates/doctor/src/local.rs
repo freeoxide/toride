@@ -2375,8 +2375,7 @@ impl Check for AgentIdentityCheck<'_> {
             }
 
             // Fan the per-key `ssh-keygen -lf` probes out under the same
-            // bound as the other checks; a long IdentityFile list no longer
-            // serializes the whole doctor run.
+            // bound as the other checks.
             let targets: Vec<(String, std::path::PathBuf, std::path::PathBuf)> = identity_files
                 .iter()
                 .map(|raw_path| {

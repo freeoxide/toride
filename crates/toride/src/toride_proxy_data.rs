@@ -540,14 +540,6 @@ fn scan_certbot_live_dir_at(
             tracing::debug!("proxy certbot live dir: {domain} has no fullchain.pem, skipping");
             continue;
         }
-        // Resolve the REAL expiry via the in-process PEM walk (openssl
-        // fallback). On any failure the read degrades to
-        // CertExpiry::unknown() (is_valid=false, empty not_after), which the
-        // UI renders as '?' (expiry unknown): strictly safer than the
-        // previous is_valid=true placeholder. It never returns Err in
-        // practice (the Result shape is forward-compat), but we swallow any
-        // internal error to the same unknown state to keep the read-only
-        // contract that this scan never crashes the collector.
         let expiry = expiry_reader.read(&fullchain, now).unwrap_or_else(|e| {
             tracing::debug!(
                 "proxy certbot live dir: read_cert_expiry internal error for {domain}: {e}"

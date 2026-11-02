@@ -3302,7 +3302,7 @@ mod tests {
         }
     }
 
-    /// compat-28: the typed Unit and Firewall steps must be expressible
+    /// The typed Unit and Firewall steps must be expressible
     /// and serializable even though execution wiring is deferred, and
     /// planning must skip them rather than fail.
     #[test]

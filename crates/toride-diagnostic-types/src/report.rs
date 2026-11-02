@@ -163,8 +163,7 @@ mod tests {
         assert_eq!(r.actionable().len(), 2);
     }
 
-    /// `checked_at` must be a real RFC 3339 UTC timestamp, not the literal
-    /// `"<now>"` placeholder previously stored here.
+    /// `checked_at` must be a real RFC 3339 UTC timestamp.
     #[test]
     fn new_stamps_a_parseable_rfc3339_utc_timestamp() {
         let r = DoctorReport::new("ssh", vec![]);
