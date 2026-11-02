@@ -1,6 +1,6 @@
 %YAML 1.2
 # ---------------------------------------------------------------------------
-# SYNTHETIC DEP-11 catalog subset — benchmark fixture, never fetched.
+# SYNTHETIC DEP-11 catalog subset: benchmark fixture, never fetched.
 #
 # Hand-written for benches/dep11_parse.rs (the F14 parse-half pin): a few
 # components shaped like `tests/fixtures/appstream/debian-sid-main-amd64.yml`

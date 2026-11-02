@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn aws_metal_bare_metal_not_flagged() {
         // i3.metal shares EC2 vendor strings: the ".metal" guard must keep it
-        // as bare metal so a powerful metal instance isn't wrongly frozen.
+        // as bare metal so a large metal instance isn't wrongly frozen.
         let mut p = FixtureProbe::new();
         p.files.insert("/sys/class/dmi/id/sys_vendor", "Amazon EC2");
         p.files.insert("/sys/class/dmi/id/product_name", "i3.metal");

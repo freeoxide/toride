@@ -549,8 +549,8 @@ landed differently, deliberately:
 
 ## 4. Field mappings (source → normalized)
 
-Verified against the named fixtures; `—` = dropped (documented, not lost:
-the adapter's wire structs keep them if a later wave needs them).
+Verified against the named fixtures; dropped fields are documented, not
+lost: the adapter's wire structs keep them if a later wave needs them.
 
 ### 4.1 Homebrew cask: `parse_cask_json` (fixtures `cask-brave-browser.json`, `cask-visual-studio-code.json`)
 

@@ -30,7 +30,7 @@ toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["tok
 # Offline detection of the mise binary ($PATH + the managed install
 # location). `default-features = false` keeps the installer's HTTP/archive
 # engine out of this crate's graph: no reqwest (rustls -> ring), no xz2
-# (lzma-sys) — the C build scripts that keep toride-mise on CI's portable
+# (lzma-sys): the C build scripts that keep toride-mise on CI's portable
 # macOS/Windows lists.
 toride-installer = { path = "../toride-installer", version = "0.2.0", default-features = false }
 thiserror = { workspace = true }
@@ -62,7 +62,7 @@ serde_json = { workspace = true }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 # serde_parse: the serde_utils JSON kernels over committed fixtures
-# (ls --json / outdated --json). Hermetic — no mise binary, no network.
+# (ls --json / outdated --json). Hermetic: no mise binary, no network.
 [[bench]]
 name = "serde_parse"
 harness = false

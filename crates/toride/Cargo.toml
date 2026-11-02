@@ -12,10 +12,14 @@ categories = ["command-line-utilities", "os"]
 [lib]
 name = "toride"
 path = "src/lib.rs"
+# cargo bench must pass criterion flags (--baseline pre) to the [[bench]]
+# targets below; libtest rejects them, so the lib never benches via cargo.
+bench = false
 
 [[bin]]
 name = "toride"
 path = "src/main.rs"
+bench = false
 
 [dependencies]
 ratatui = "0.30"
@@ -90,7 +94,7 @@ testty = "0.9"
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
 criterion = "0.8"
 
-# F01 kernel: full-frame Dashboard render cost via TestBackend (hermetic —
+# F01 kernel: full-frame Dashboard render cost via TestBackend (hermetic:
 # fixed fixture state, no terminal, no collectors).
 [[bench]]
 name = "dashboard_render"

@@ -249,8 +249,8 @@ impl LogsContent {
         if self.sources.is_empty() {
             // Honest empty state: NO log sources exist on this host. This is
             // NOT a "coming soon" placeholder: it is the literal truth
-            // surfaced so the operator knows the section is wired and simply
-            // has nothing to show.
+            // surfaced so the operator knows the section is wired and has
+            // nothing to show.
             let msg = Line::from(vec![
                 Span::styled("· ", Style::new().fg(p.text_dim)),
                 Span::styled(

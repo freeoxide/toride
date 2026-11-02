@@ -110,13 +110,7 @@ pub struct ProxyCollector {
     /// Carries the bundle AND whether the cached report was reused for this
     /// poll. See [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector)
     /// for the freshness-timestamp rationale.
-    rx: Option<
-        oneshot::Receiver<(
-            ProxyDataBundle,
-            bool,
-            Option<toride_proxy::report::ProxyReport>,
-        )>,
-    >,
+    rx: Option<oneshot::Receiver<ProxyOutcome>>,
     /// Cached doctor report from the last collection. Unlike fail2ban, the
     /// proxy backend has NO status-only probe path: the doctor IS the single
     /// probe that produces status, backend, `server_blocks`, certificates AND
@@ -126,12 +120,20 @@ pub struct ProxyCollector {
     cached_report: Option<toride_proxy::report::ProxyReport>,
     /// When the report cache was last refreshed.
     report_fresh_at: Option<std::time::Instant>,
-    cached_bundle: Option<ProxyDataBundle>,
+    cached_bundle: Option<std::sync::Arc<ProxyDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
 /// How long to keep the cached report before re-running the doctor suite.
 const REPORT_TTL: std::time::Duration = std::time::Duration::from_mins(1);
+
+/// Channel payload: the delivered bundle, whether it was cache-served, and
+/// the owning report on a fresh doctor run (see [`ProxyCollector::poll`]).
+type ProxyOutcome = (
+    std::sync::Arc<ProxyDataBundle>,
+    bool,
+    Option<toride_proxy::report::ProxyReport>,
+);
 
 impl ProxyCollector {
     /// Create a new collector with no pending collection.
@@ -167,7 +169,7 @@ impl ProxyCollector {
             && at.elapsed() < REPORT_TTL
         {
             self.rx = Some(rx);
-            let bundle = bundle.clone();
+            let bundle = std::sync::Arc::clone(bundle);
             tokio::spawn(async move {
                 let _ = tx.send((bundle, true, None));
             });
@@ -182,7 +184,7 @@ impl ProxyCollector {
         tokio::spawn(async move {
             let (bundle, reused_cache, fresh_report) =
                 collect_real_proxy(use_cache, cached_report).await;
-            let _ = tx.send((bundle, reused_cache, fresh_report));
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache, fresh_report));
         });
     }
 
@@ -193,7 +195,7 @@ impl ProxyCollector {
     /// updated, but the freshness timestamp is only advanced when the doctor
     /// was actually re-run (not on a cache-hit poll): otherwise the 60s TTL
     /// would be re-armed forever with the same cached data on every 2s refresh.
-    pub async fn poll(&mut self) -> Option<ProxyDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<ProxyDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
@@ -211,7 +213,7 @@ impl ProxyCollector {
                         self.cached_report = Some(report.clone());
                     }
                     self.report_fresh_at = Some(std::time::Instant::now());
-                    self.cached_bundle = Some(bundle.clone());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
                     self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
@@ -412,7 +414,7 @@ async fn collect_real_proxy(
         // the certbot live dir directly (no binary needed) so the certs table
         // shows real domains even when certbot itself is missing. Existing
         // entries from the report (if any) are kept; newly-discovered domains
-        // are appended. A missing directory is not fatal: it simply yields no
+        // are appended. A missing directory is not fatal: it yields no
         // extra certs (and the doctor surfaces `cert.no-certbot-dir`).
         //
         // For each discovered fullchain.pem we shell out once to `openssl x509
@@ -519,6 +521,10 @@ fn scan_certbot_live_dir_at(
         // Common on macOS / hosts without certbot; not worth a warning.
         return;
     };
+    // One reader per scan: the openssl-presence probe runs once for the whole
+    // directory, and each healthy certificate parses in process without a
+    // spawn at all.
+    let expiry_reader = toride_proxy::certs_parse::CertExpiryReader::new(runner);
 
     let known: std::collections::HashSet<String> = certs.iter().map(|c| c.domain.clone()).collect();
 
@@ -534,20 +540,20 @@ fn scan_certbot_live_dir_at(
             tracing::debug!("proxy certbot live dir: {domain} has no fullchain.pem, skipping");
             continue;
         }
-        // Resolve the REAL expiry via openssl. On any failure read_cert_expiry
-        // degrades to CertExpiry::unknown() (is_valid=false, empty not_after),
-        // which the UI renders as '?' (expiry unknown): strictly safer than
-        // the previous is_valid=true placeholder. It never returns Err in
+        // Resolve the REAL expiry via the in-process PEM walk (openssl
+        // fallback). On any failure the read degrades to
+        // CertExpiry::unknown() (is_valid=false, empty not_after), which the
+        // UI renders as '?' (expiry unknown): strictly safer than the
+        // previous is_valid=true placeholder. It never returns Err in
         // practice (the Result shape is forward-compat), but we swallow any
         // internal error to the same unknown state to keep the read-only
         // contract that this scan never crashes the collector.
-        let expiry = toride_proxy::certs_parse::read_cert_expiry(&fullchain, runner, now)
-            .unwrap_or_else(|e| {
-                tracing::debug!(
-                    "proxy certbot live dir: read_cert_expiry internal error for {domain}: {e}"
-                );
-                toride_proxy::certs_parse::CertExpiry::unknown()
-            });
+        let expiry = expiry_reader.read(&fullchain, now).unwrap_or_else(|e| {
+            tracing::debug!(
+                "proxy certbot live dir: read_cert_expiry internal error for {domain}: {e}"
+            );
+            toride_proxy::certs_parse::CertExpiry::unknown()
+        });
         tracing::debug!(
             "proxy certbot live dir: appended domain {domain} with expiry {:?} (valid={}, days={})",
             expiry.not_after,

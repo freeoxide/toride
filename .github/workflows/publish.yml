@@ -259,7 +259,7 @@ jobs:
               kind="$(publish_state::error_kind "$body")"
               case "$kind" in
                 auth)
-                  echo "error: crates.io rejected the ${crate} upload as an auth failure (401/403/credential); CARGO_REGISTRY_TOKEN is missing, expired, or lacks scope — aborting the whole run" >&2
+                  echo "error: crates.io rejected the ${crate} upload as an auth failure (401/403/credential); CARGO_REGISTRY_TOKEN is missing, expired, or lacks scope; aborting the whole run" >&2
                   printf '%s\n' "$body" >&2
                   exit 1
                   ;;
