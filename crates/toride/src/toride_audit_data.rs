@@ -86,12 +86,12 @@ pub struct AuditCollector {
     /// Carries the bundle plus which expensive probes actually ran. Each
     /// cache's freshness clock is advanced only for probes that ran; a
     /// cache-hit poll never re-arms its own TTL.
-    rx: Option<oneshot::Receiver<(AuditDataBundle, PollRan)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<AuditDataBundle>, PollRan)>>,
     /// Cached doctor findings from the last collection.
     cached_findings: Option<Vec<AuditFindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
-    cached_bundle: Option<AuditDataBundle>,
+    cached_bundle: Option<std::sync::Arc<AuditDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
     /// Cached AIDE integrity status from the last collection.
     cached_integrity: Option<IntegrityStateEntry>,
@@ -170,7 +170,7 @@ impl AuditCollector {
             && at.elapsed() < FINDINGS_TTL
         {
             self.rx = Some(rx);
-            let bundle = bundle.clone();
+            let bundle = std::sync::Arc::clone(bundle);
             tokio::spawn(async move {
                 let _ = tx.send((bundle, PollRan::default()));
             });
@@ -189,7 +189,7 @@ impl AuditCollector {
                 cached_integrity,
             )
             .await;
-            let _ = tx.send((bundle, ran));
+            let _ = tx.send((std::sync::Arc::new(bundle), ran));
         });
     }
 
@@ -200,7 +200,7 @@ impl AuditCollector {
     /// freshness clock) only for probes that actually ran; a cache-hit poll
     /// leaves that cache untouched so its TTL is never re-armed with the same
     /// data, and a failed collection never overwrites a good cached value.
-    pub async fn poll(&mut self) -> Option<AuditDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<AuditDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
@@ -208,7 +208,7 @@ impl AuditCollector {
                     if ran.doctor {
                         self.cached_findings = Some(bundle.findings.clone());
                         self.findings_fresh_at = Some(std::time::Instant::now());
-                        self.cached_bundle = Some(bundle.clone());
+                        self.cached_bundle = Some(std::sync::Arc::clone(bundle));
                         self.bundle_fresh_at = Some(std::time::Instant::now());
                     }
                     if ran.integrity {

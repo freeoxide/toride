@@ -88,12 +88,12 @@ pub struct UsersCollector {
     /// poll. The freshness timestamp must only be advanced when the doctor was
     /// actually re-run (`took_cache == false`); otherwise every cache-hit poll
     /// would reset the TTL clock with the SAME (already-cached) findings.
-    rx: Option<oneshot::Receiver<(UsersDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<UsersDataBundle>, bool)>>,
     /// Cached doctor findings from the last collection.
     cached_findings: Option<Vec<UserFindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
-    cached_bundle: Option<UsersDataBundle>,
+    cached_bundle: Option<std::sync::Arc<UsersDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -132,7 +132,7 @@ impl UsersCollector {
             && at.elapsed() < FINDINGS_TTL
         {
             self.rx = Some(rx);
-            let bundle = bundle.clone();
+            let bundle = std::sync::Arc::clone(bundle);
             tokio::spawn(async move {
                 let _ = tx.send((bundle, true));
             });
@@ -146,7 +146,7 @@ impl UsersCollector {
         self.rx = Some(rx);
         tokio::spawn(async move {
             let (bundle, took_cache) = collect_real_users(use_cache, cached_findings).await;
-            let _ = tx.send((bundle, took_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), took_cache));
         });
     }
 
@@ -157,17 +157,17 @@ impl UsersCollector {
     /// updated to the freshly-returned findings, but the freshness timestamp is
     /// only advanced when the doctor was actually re-run (not on a cache-hit
     /// poll).
-    pub async fn poll(&mut self) -> Option<UsersDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<UsersDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, took_cache)) = result {
+                if let Some((ref bundle, took_cache)) = result
+                    && !took_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    if !took_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                        self.cached_bundle = Some(bundle.clone());
-                        self.bundle_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)

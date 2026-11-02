@@ -90,12 +90,12 @@ pub struct TailscaleCollector {
     /// (`used_cache == false`); otherwise every cache-hit poll would reset the TTL clock
     /// with the SAME (already-cached) findings and the cache would never expire for the
     /// lifetime of the app.
-    rx: Option<oneshot::Receiver<(TailscaleDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<TailscaleDataBundle>, bool)>>,
     /// Cached doctor findings from the last collection.
     cached_findings: Option<Vec<TailscaleFindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
-    cached_bundle: Option<TailscaleDataBundle>,
+    cached_bundle: Option<std::sync::Arc<TailscaleDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -134,7 +134,7 @@ impl TailscaleCollector {
             && at.elapsed() < FINDINGS_TTL
         {
             self.rx = Some(rx);
-            let bundle = bundle.clone();
+            let bundle = std::sync::Arc::clone(bundle);
             tokio::spawn(async move {
                 let _ = tx.send((bundle, true));
             });
@@ -172,7 +172,7 @@ impl TailscaleCollector {
                     )
                 }
             };
-            let _ = tx.send((bundle, reused_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache));
         });
     }
 
@@ -183,22 +183,17 @@ impl TailscaleCollector {
     /// freshly-returned findings, but the freshness timestamp is only advanced when the
     /// doctor was actually re-run (not on a cache-hit poll): otherwise the 60s TTL
     /// would be re-armed forever with the same cached data on every 2s refresh.
-    pub async fn poll(&mut self) -> Option<TailscaleDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<TailscaleDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
+                if let Some((ref bundle, used_cache)) = result
+                    && !used_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    // Only advance the freshness clock when the doctor was actually
-                    // re-run. On a cache-hit poll the findings are the SAME data we
-                    // already cached, so resetting the TTL here would let the cache live
-                    // forever as long as the 2s refresh tick keeps firing inside the TTL
-                    // window.
-                    if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                        self.cached_bundle = Some(bundle.clone());
-                        self.bundle_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)
@@ -257,16 +252,20 @@ async fn collect_real_tailscale(
     // probe cannot block the others. A timed-out or errored probe yields `None` for its
     // subsystem and the bundle is assembled from whatever succeeded.
     //
+    // Status and topology come from ONE LocalAPI fetch via status_and_topology;
+    // separate calls would fetch and parse the same status document twice per tick.
+    //
     // The doctor is skipped when the cache is fresh; its slot is computed after the join
     // from either the cache or the freshly-run report.
-    let (status_r, topology_r, netcheck_r, dns_r, doctor_r) = tokio::join!(
+    let (status_topology_r, netcheck_r, dns_r, doctor_r) = tokio::join!(
         timeout_probe(async {
             client
-                .status_report()
+                .status_and_topology()
                 .await
-                .map(toride_tailscale_convert::convert_status)
+                .map(|(report, topology)| {
+                    (toride_tailscale_convert::convert_status(report), topology)
+                })
         }),
-        timeout_probe(async { client.topology().await }),
         timeout_probe(async {
             client
                 .netcheck()
@@ -289,7 +288,10 @@ async fn collect_real_tailscale(
     );
 
     // ── Assemble the bundle from whatever probes returned ───────────────────
-    let status = status_r.unwrap_or_else(empty_status);
+    let (status, topology_r) = match status_topology_r {
+        Some((status, topology)) => (status, Some(topology)),
+        None => (empty_status(), None),
+    };
     // topology_r is Option<TailnetTopology>: timeout_probe already collapsed
     // Result/timeout into None.
     let (peers, topology_ok) = match topology_r {

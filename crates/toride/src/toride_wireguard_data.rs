@@ -86,12 +86,12 @@ pub struct WireguardCollector {
     /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
     /// would reset the TTL clock with the SAME (already-cached) findings and
     /// the cache would never expire for the lifetime of the app.
-    rx: Option<oneshot::Receiver<(WireguardDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<WireguardDataBundle>, bool)>>,
     /// Cached doctor findings from the last collection.
     cached_findings: Option<Vec<FindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
-    cached_bundle: Option<WireguardDataBundle>,
+    cached_bundle: Option<std::sync::Arc<WireguardDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -131,7 +131,7 @@ impl WireguardCollector {
             && at.elapsed() < FINDINGS_TTL
         {
             self.rx = Some(rx);
-            let bundle = bundle.clone();
+            let bundle = std::sync::Arc::clone(bundle);
             tokio::spawn(async move {
                 let _ = tx.send((bundle, true));
             });
@@ -149,7 +149,7 @@ impl WireguardCollector {
                 reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
             )]
             let (bundle, used_cache) = collect_real_wireguard(use_cache, cached_findings).await;
-            let _ = tx.send((bundle, used_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), used_cache));
         });
     }
 
@@ -161,22 +161,17 @@ impl WireguardCollector {
     /// only advanced when the doctor was actually re-run (not on a cache-hit
     /// poll): otherwise the 60s TTL would be re-armed forever with the same
     /// cached data on every 2s refresh.
-    pub async fn poll(&mut self) -> Option<WireguardDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<WireguardDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
+                if let Some((ref bundle, used_cache)) = result
+                    && !used_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    // Only advance the freshness clock when the doctor was
-                    // actually re-run. On a cache-hit poll the findings are the
-                    // SAME data we already cached, so resetting the TTL here
-                    // would let the cache live forever as long as the 2s refresh
-                    // tick keeps firing inside the TTL window.
-                    if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                        self.cached_bundle = Some(bundle.clone());
-                        self.bundle_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)

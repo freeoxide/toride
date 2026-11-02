@@ -13,9 +13,13 @@ use toride_tailscale::tailnet::TailnetTopology;
 
 const PEER_COUNTS: [usize; 3] = [10, 100, 500];
 
-const SAMPLE_SIZE: usize = 30;
-const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
-const WARM_UP_TIME: Duration = Duration::from_millis(500);
+/// The microsecond-scale cases (10 peers) flap well past their real delta on
+/// a 30-sample run, so this group measures longer and takes more samples than
+/// criterion's defaults; the medians here need to stay comparable across
+/// runs against a saved baseline.
+const SAMPLE_SIZE: usize = 100;
+const MEASUREMENT_TIME: Duration = Duration::from_secs(4);
+const WARM_UP_TIME: Duration = Duration::from_secs(1);
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -124,6 +128,18 @@ fn fetch_count_oracle() {
     let rt = runtime();
     let server = CountingServer::spawn(status_text(PEER_COUNTS[0]));
     let client = TailscaleClient::with_base_url(server.url());
+
+    let (report, topology) = rt
+        .block_on(client.status_and_topology())
+        .expect("status and topology answer from one fetch");
+    assert!(report.connected);
+    assert_eq!(topology.peers().len(), PEER_COUNTS[0]);
+    assert_eq!(
+        server.requests.swap(0, Ordering::Relaxed),
+        1,
+        "status_and_topology must fetch the status document exactly once"
+    );
+
     let report = rt.block_on(client.status_report()).expect("status answers");
     assert!(report.connected);
     let topology = rt.block_on(client.topology()).expect("topology answers");
@@ -131,7 +147,7 @@ fn fetch_count_oracle() {
     assert_eq!(
         server.requests.load(Ordering::Relaxed),
         2,
-        "status_report plus topology fetch the same status document twice today; the shared-fetch target is 1"
+        "the separate accessors each perform their own fetch"
     );
 }
 
@@ -162,6 +178,14 @@ fn status_parse(criterion: &mut Criterion) {
                         .and_then(|peers| peers.as_object())
                         .map_or(0, serde_json::Map::len),
                 );
+            });
+        });
+
+        group.bench_function(format!("typed_parse_{peers}_peers"), |b| {
+            b.iter(|| {
+                let document: toride_tailscale::models::StatusDocument =
+                    serde_json::from_str(black_box(text)).expect("document parses");
+                black_box(document.peer.len());
             });
         });
 

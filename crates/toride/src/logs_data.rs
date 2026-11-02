@@ -126,9 +126,9 @@ const LOGS_TTL: Duration = Duration::from_secs(6);
 /// minute.
 pub struct LogsCollector {
     /// Carries the in-flight bundle. `None` when no collection is running.
-    rx: Option<oneshot::Receiver<(bool, LogsDataBundle)>>,
+    rx: Option<oneshot::Receiver<(bool, std::sync::Arc<LogsDataBundle>)>>,
     /// Last freshly collected bundle and when it was collected.
-    cache: Option<(std::time::Instant, LogsDataBundle)>,
+    cache: Option<(std::time::Instant, std::sync::Arc<LogsDataBundle>)>,
 }
 
 impl LogsCollector {
@@ -162,7 +162,7 @@ impl LogsCollector {
         if let Some((at, bundle)) = &self.cache
             && at.elapsed() < LOGS_TTL
         {
-            let bundle = bundle.clone();
+            let bundle = std::sync::Arc::clone(bundle);
             tokio::spawn(async move {
                 let _ = tx.send((false, bundle));
             });
@@ -170,7 +170,7 @@ impl LogsCollector {
         }
         tokio::spawn(async move {
             let bundle = collect_real_logs().await;
-            let _ = tx.send((true, bundle));
+            let _ = tx.send((true, std::sync::Arc::new(bundle)));
         });
     }
 
@@ -181,7 +181,7 @@ impl LogsCollector {
     /// task panicked before sending). A freshly collected bundle refreshes the
     /// TTL cache; a re-shipped cache hit does not. The receiver is always
     /// cleared after this call.
-    pub async fn poll(&mut self) -> Option<LogsDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<LogsDataBundle>> {
         let (fresh, bundle) = match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
@@ -191,7 +191,7 @@ impl LogsCollector {
             None => return None,
         };
         if fresh {
-            self.cache = Some((std::time::Instant::now(), bundle.clone()));
+            self.cache = Some((std::time::Instant::now(), std::sync::Arc::clone(&bundle)));
         }
         Some(bundle)
     }

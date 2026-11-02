@@ -31,7 +31,14 @@ pub enum Error {
     BinaryNotFound(String),
 
     /// An external command exited with a non-zero status.
-    #[error("command failed: {program} exited with status {code:?}")]
+    ///
+    /// The captured stderr (scrubbed and length-capped at construction) is
+    /// part of the rendered message, so log and CLI consumers see the actual
+    /// failure reason.
+    #[error(
+        "command failed: {program} exited with status {}: {stderr}",
+        exit_status_text(*code)
+    )]
     CommandFailed {
         /// The program that was invoked (e.g. `tailscale`).
         program: String,
@@ -92,9 +99,55 @@ impl From<toride_service::Error> for Error {
     }
 }
 
+/// Render an exit code for [`Error::CommandFailed`]: the numeric status, or
+/// `signal` when the process died without one.
+fn exit_status_text(code: Option<i32>) -> String {
+    match code {
+        Some(code) => code.to_string(),
+        None => "signal".to_owned(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Crate-level result alias
 // ---------------------------------------------------------------------------
 
 /// Crate-level result alias used throughout the library.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_failed_display_includes_the_captured_stderr() {
+        let err = Error::CommandFailed {
+            program: "tailscale".to_owned(),
+            code: Some(1),
+            stderr: "not logged in\n".to_owned(),
+        };
+        let text = err.to_string();
+        assert!(
+            text.contains("not logged in"),
+            "the scrubbed stderr must reach the Display output: {text}"
+        );
+        assert!(
+            text.contains("exited with status 1"),
+            "the numeric exit status must be named: {text}"
+        );
+    }
+
+    #[test]
+    fn command_failed_display_names_signal_termination() {
+        let err = Error::CommandFailed {
+            program: "tailscale".to_owned(),
+            code: None,
+            stderr: String::new(),
+        };
+        let text = err.to_string();
+        assert!(
+            text.contains("signal"),
+            "a missing exit code must render as signal termination: {text}"
+        );
+    }
+}

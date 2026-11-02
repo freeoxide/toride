@@ -26,11 +26,12 @@ use crate::report::TailscaleReport;
 ///
 /// Composes the lower-level modules (`api`, `status`, `tailnet`, `dns`,
 /// `acl`, `netcheck`) into a unified interface. All operations are async
-/// and communicate with the local Tailscale daemon over HTTP.
+/// and communicate with the local Tailscale daemon's LocalAPI (the
+/// tailscaled Unix socket by default; see [`crate::api`]).
 ///
 /// # Construction
 ///
-/// - [`TailscaleClient::new`] -- default client targeting `localhost:41642`.
+/// - [`TailscaleClient::new`] -- default client on the LocalAPI socket.
 /// - [`TailscaleClient::with_base_url`] -- custom API base URL.
 ///
 /// # Subsystem accessors
@@ -71,13 +72,14 @@ impl TailscaleClient {
     ///
     /// This is the primary convenience method for checking whether the
     /// local Tailscale daemon is connected and what identity it holds.
+    /// One LocalAPI fetch, deserialized straight into the typed document.
     ///
     /// # Errors
     ///
     /// Returns an error if the API request fails.
     pub async fn status_report(&self) -> Result<TailscaleReport> {
-        let status = crate::status::NodeStatus::from_api(&self.api).await?;
-        Ok(status.to_report())
+        let doc = self.api.get_status_document().await?;
+        Ok(crate::status::NodeStatus::report_from_document(&doc))
     }
 
     /// Check if the local node is connected to the tailnet.
@@ -86,17 +88,44 @@ impl TailscaleClient {
     ///
     /// Returns an error if the API request fails.
     pub async fn is_connected(&self) -> Result<bool> {
-        let status = crate::status::NodeStatus::from_api(&self.api).await?;
-        Ok(status.connection() == crate::report::ConnectionStatus::Connected)
+        let doc = self.api.get_status_document().await?;
+        Ok(doc.is_connected())
     }
 
     /// Fetch the tailnet topology including all peers.
+    ///
+    /// One LocalAPI fetch. Callers needing both this and
+    /// [`TailscaleClient::status_report`] should prefer
+    /// [`TailscaleClient::status_and_topology`], which shares a single fetch.
     ///
     /// # Errors
     ///
     /// Returns an error if the API request fails.
     pub async fn topology(&self) -> Result<crate::tailnet::TailnetTopology> {
-        crate::tailnet::TailnetTopology::from_api(&self.api).await
+        let doc = self.api.get_status_document().await?;
+        Ok(crate::tailnet::TailnetTopology::from_document(&doc))
+    }
+
+    /// Fetch the status report and tailnet topology from one LocalAPI
+    /// round trip.
+    ///
+    /// Both views derive from the same status document, so a caller that
+    /// needs both (e.g. a dashboard refresh) halves the requests and the
+    /// parsing work compared to calling
+    /// [`status_report`](TailscaleClient::status_report) and
+    /// [`topology`](TailscaleClient::topology) separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the API request fails.
+    pub async fn status_and_topology(
+        &self,
+    ) -> Result<(TailscaleReport, crate::tailnet::TailnetTopology)> {
+        let doc = self.api.get_status_document().await?;
+        Ok((
+            crate::status::NodeStatus::report_from_document(&doc),
+            crate::tailnet::TailnetTopology::from_document(&doc),
+        ))
     }
 
     /// Run a network connectivity check.

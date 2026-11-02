@@ -95,6 +95,34 @@ pub(crate) struct SshStateCache {
     config_hosts: Mutex<Option<Stamped<FileStamp, Vec<ConfigHostEntry>>>>,
     forwarding: Mutex<Option<ForwardingCacheSlot>>,
     sshd: Mutex<Option<Stamped<FileStamp, SshdSnapshot>>>,
+    tmp_scan: Mutex<Option<TmpScanMemo>>,
+}
+
+/// Memoized `/tmp` `ssh-*` candidate scan: the directory stamp observed when
+/// the entries were last walked, when that walk ran, plus the per-entry
+/// stamps found then.
+struct TmpScanMemo {
+    dir: FileStamp,
+    walked_at: std::time::Instant,
+    entries: Vec<(PathBuf, Option<FileStamp>)>,
+}
+
+/// Minimum spacing between `/tmp` re-walks when the directory keeps churning;
+/// bounds a busy `/tmp` (100k+ entries) to one walk per interval at the cost
+/// of up to one interval of staleness for brand-new `ssh-*` sockets.
+const TMP_RESCAN_INTERVAL_MS: u64 = 500;
+
+#[cfg(test)]
+thread_local! {
+    static TMP_RESCAN_AGE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+fn tmp_rescan_interval_elapsed(walked_at: std::time::Instant) -> bool {
+    #[cfg(test)]
+    let age_offset = std::time::Duration::from_millis(TMP_RESCAN_AGE_MS.with(std::cell::Cell::get));
+    #[cfg(not(test))]
+    let age_offset = std::time::Duration::ZERO;
+    walked_at.elapsed() + age_offset >= std::time::Duration::from_millis(TMP_RESCAN_INTERVAL_MS)
 }
 
 type CertCacheSlot =
@@ -121,6 +149,7 @@ impl SshStateCache {
             config_hosts: Mutex::new(None),
             forwarding: Mutex::new(None),
             sshd: Mutex::new(None),
+            tmp_scan: Mutex::new(None),
         }
     }
 }
@@ -1631,35 +1660,76 @@ async fn collect_forwarding(mgr: &toride_ssh::SshManager) -> Result<Vec<ForwardS
 }
 
 /// Stamp the candidate control-socket set the forward service would probe:
-/// the `~/.ssh` `cm-`/`control-`/`mux-`/`ctrl-` entries with per-file stamps,
-/// plus ONE directory stamp for `/tmp` (whose `ssh-` entries live directly in
-/// the directory, so its mtime covers create/remove of candidates without a
-/// per-entry scan; /tmp can hold tens of thousands of unrelated files).
-fn forwarding_stamp(paths: Option<&toride_ssh::SshPaths>) -> Vec<(PathBuf, Option<FileStamp>)> {
-    forwarding_stamp_raw(paths.map(toride_ssh::SshPaths::ssh_dir))
+/// the `~/.ssh` `cm-`/`control-`/`mux-`/`ctrl-` entries and the `/tmp` `ssh-`
+/// entries, each with a per-file stamp.
+///
+/// Per-entry stamps (not one `/tmp` directory stamp) are load-bearing:
+/// `/tmp`'s own mtime flips on every unrelated tempdir create or remove,
+/// which would defeat the forwarding cache on any active host. Walking a
+/// busy `/tmp` is not free, so the walk is memoized in `cache` behind one
+/// `/tmp` stat: only a changed directory stamp triggers a re-walk, and the
+/// memoized entries make unrelated churn invisible to the stamp.
+fn forwarding_stamp(
+    paths: Option<&toride_ssh::SshPaths>,
+    cache: &SshStateCache,
+) -> Vec<(PathBuf, Option<FileStamp>)> {
+    let mut out = Vec::new();
+    collect_ssh_dir_candidates(paths.map(toride_ssh::SshPaths::ssh_dir), &mut out);
+    out.extend(memoized_tmp_candidates(Path::new("/tmp"), cache));
+    out.sort();
+    out
 }
 
-fn forwarding_stamp_raw(ssh_dir: Option<&Path>) -> Vec<(PathBuf, Option<FileStamp>)> {
-    let mut out = Vec::new();
-    if let Some(ssh_dir) = ssh_dir
-        && let Ok(entries) = std::fs::read_dir(ssh_dir)
+fn collect_ssh_dir_candidates(ssh_dir: Option<&Path>, out: &mut Vec<(PathBuf, Option<FileStamp>)>) {
+    let Some(ssh_dir) = ssh_dir else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(ssh_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if ["cm-", "control-", "mux-", "ctrl-"]
+            .iter()
+            .any(|p| name.starts_with(p))
+        {
+            let path = entry.path();
+            let stamp = stamp_path(&path);
+            out.push((path, stamp));
+        }
+    }
+}
+
+fn memoized_tmp_candidates(dir: &Path, cache: &SshStateCache) -> Vec<(PathBuf, Option<FileStamp>)> {
+    let Some(dir_stamp) = stamp_path(dir) else {
+        return Vec::new();
+    };
+    let mut slot = cache.tmp_scan.lock().expect("tmp scan memo mutex poisoned");
+    if let Some(memo) = slot.as_ref()
+        && (memo.dir == dir_stamp || !tmp_rescan_interval_elapsed(memo.walked_at))
     {
-        for entry in entries.flatten() {
+        return memo.entries.clone();
+    }
+    let mut entries = Vec::new();
+    if let Ok(read) = std::fs::read_dir(dir) {
+        for entry in read.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            let matches_prefix = ["cm-", "control-", "mux-", "ctrl-"]
-                .iter()
-                .any(|p| name.starts_with(p));
-            if matches_prefix {
+            if name.starts_with("ssh-") {
                 let path = entry.path();
-                out.push((path.clone(), stamp_path(&path)));
+                let stamp = stamp_path(&path);
+                entries.push((path, stamp));
             }
         }
     }
-    let tmp = Path::new("/tmp");
-    out.push((tmp.to_path_buf(), stamp_path(tmp)));
-    out.sort();
-    out
+    entries.sort();
+    *slot = Some(TmpScanMemo {
+        dir: dir_stamp,
+        walked_at: std::time::Instant::now(),
+        entries: entries.clone(),
+    });
+    entries
 }
 
 async fn collect_forwarding_cached(
@@ -1667,7 +1737,7 @@ async fn collect_forwarding_cached(
     paths: Option<&toride_ssh::SshPaths>,
     cache: &SshStateCache,
 ) -> Result<Vec<ForwardSessionEntry>, ()> {
-    let stamp = forwarding_stamp(paths);
+    let stamp = forwarding_stamp(paths, cache);
     let cacheable = stamp.iter().all(|(_, s)| s.is_some());
 
     if cacheable {
@@ -3593,38 +3663,61 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
     }
 
     #[test]
-    fn forwarding_stamp_tracks_ssh_dir_candidates_and_tmp_dir() {
-        struct FixturePaths {
-            dir: tempfile::TempDir,
-        }
-        impl FixturePaths {
-            fn ssh_dir(&self) -> &Path {
-                self.dir.path()
-            }
-        }
-        let fixture = FixturePaths {
-            dir: tempfile::tempdir().expect("tempdir"),
-        };
-        std::fs::write(fixture.ssh_dir().join("cm-one"), b"x").expect("write socket candidate");
-        let stamp = forwarding_stamp_raw(Some(fixture.ssh_dir()));
+    fn ssh_dir_candidates_carry_per_file_stamps() {
+        let fixture = tempfile::tempdir().expect("tempdir");
+        let ssh_dir = fixture.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).expect("mkdir ssh dir");
+        std::fs::write(ssh_dir.join("cm-one"), b"x").expect("write socket candidate");
+
+        let mut stamp = Vec::new();
+        collect_ssh_dir_candidates(Some(&ssh_dir), &mut stamp);
+        stamp.sort();
         assert!(
             stamp
                 .iter()
                 .any(|(p, s)| p.ends_with("cm-one") && s.is_some()),
             "ssh_dir candidates carry per-file stamps: {stamp:?}"
         );
-        assert!(
-            stamp
-                .iter()
-                .any(|(p, s)| p == Path::new("/tmp") && s.is_some()),
-            "/tmp is stamped by directory metadata, not a per-entry scan"
-        );
 
-        std::fs::write(fixture.ssh_dir().join("cm-two"), b"x").expect("write second candidate");
-        let changed = forwarding_stamp_raw(Some(fixture.ssh_dir()));
+        std::fs::write(ssh_dir.join("cm-two"), b"x").expect("write second candidate");
+        let mut changed = Vec::new();
+        collect_ssh_dir_candidates(Some(&ssh_dir), &mut changed);
+        changed.sort();
         assert_ne!(
             stamp, changed,
             "a new socket candidate must change the stamp"
+        );
+    }
+
+    #[test]
+    fn tmp_candidate_stamp_ignores_unrelated_churn_and_tracks_new_candidates() {
+        let tmp = tempfile::tempdir().expect("tempdir standing in for /tmp");
+        std::fs::write(tmp.path().join("ssh-one"), b"x").expect("write ssh- candidate");
+        let cache = SshStateCache::new();
+
+        let before = memoized_tmp_candidates(tmp.path(), &cache);
+        assert_eq!(
+            before.len(),
+            1,
+            "only ssh-* entries are stamped, nothing else in the directory"
+        );
+
+        std::fs::write(tmp.path().join("unrelated"), b"x").expect("touch unrelated entry");
+        std::fs::remove_file(tmp.path().join("unrelated")).expect("remove unrelated entry");
+        let after_churn = memoized_tmp_candidates(tmp.path(), &cache);
+        assert_eq!(
+            before, after_churn,
+            "unrelated create/remove churn (which flips the directory mtime and \
+             forces a memo re-walk) must not change the stamped candidate set"
+        );
+
+        std::fs::write(tmp.path().join("ssh-two"), b"x").expect("write second candidate");
+        TMP_RESCAN_AGE_MS.with(|age| age.set(TMP_RESCAN_INTERVAL_MS + 10));
+        let after_new = memoized_tmp_candidates(tmp.path(), &cache);
+        TMP_RESCAN_AGE_MS.with(|age| age.set(0));
+        assert_ne!(
+            before, after_new,
+            "a new ssh-* candidate must change the stamp"
         );
     }
 

@@ -52,6 +52,8 @@ macro_rules! sweep_arm {
             });
         });
         let before = $host.spawn_count();
+        let before_by_name: std::collections::HashMap<String, usize> =
+            $host.spawn_breakdown().into_iter().collect();
         $rt.block_on(async {
             collector.start();
             let _ = collector.poll().await;
@@ -60,9 +62,18 @@ macro_rules! sweep_arm {
         if spawns == 0 {
             println!("collector_cache_hit: {} -> cache-served cycle", $id);
         } else {
+            let names = $host
+                .spawn_breakdown()
+                .into_iter()
+                .filter_map(|(name, total)| {
+                    let delta = total - before_by_name.get(&name).copied().unwrap_or(0);
+                    (delta > 0).then_some(format!("{name} x {delta}"))
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
             println!(
-                "collector_cache_hit: {} -> {spawns} subprocess spawns per cycle (no cache hit)",
-                $id
+                "collector_cache_hit: {} -> {spawns} subprocess spawns per cycle ({names})",
+                $id,
             );
         }
     }};

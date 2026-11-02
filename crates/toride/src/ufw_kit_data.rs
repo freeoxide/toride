@@ -40,10 +40,10 @@ pub struct FirewallDataBundle {
 /// long-lived [`ufw_kit::Ufw`] client carries its own read caches across ticks.
 pub struct FirewallCollector {
     client: Arc<ufw_kit::Ufw>,
-    rx: Option<oneshot::Receiver<(FirewallDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<FirewallDataBundle>, bool)>>,
     cached_findings: Option<Vec<FindingEntry>>,
     findings_fresh_at: Option<std::time::Instant>,
-    cached_bundle: Option<FirewallDataBundle>,
+    cached_bundle: Option<std::sync::Arc<FirewallDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -85,7 +85,7 @@ impl FirewallCollector {
             && at.elapsed() < FINDINGS_TTL
         {
             self.rx = Some(rx);
-            let bundle = bundle.clone();
+            let bundle = std::sync::Arc::clone(bundle);
             tokio::spawn(async move {
                 let _ = tx.send((bundle, true));
             });
@@ -104,23 +104,24 @@ impl FirewallCollector {
                 reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
             )]
             let (bundle, used_cache) = collect_real_ufw(client, use_cache, cached_findings).await;
-            let _ = tx.send((bundle, used_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), used_cache));
         });
     }
 
     /// Returns `Some(bundle)` once the collection completes, `None` if still
-    /// pending; the freshness clock advances only when the doctor re-ran.
-    pub async fn poll(&mut self) -> Option<FirewallDataBundle> {
+    /// pending; the freshness clock advances only when the doctor re-ran, and
+    /// a cache-hit poll re-ships the cached `Arc` by refcount.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<FirewallDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
+                if let Some((ref bundle, used_cache)) = result
+                    && !used_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                        self.cached_bundle = Some(bundle.clone());
-                        self.bundle_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)

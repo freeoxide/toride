@@ -38,8 +38,8 @@ pub struct MiseDataBundle {
 /// Manages periodic async collection of mise data with a 60s whole-bundle
 /// cache: a cache-hit tick runs no mise subprocess.
 pub struct MiseCollector {
-    rx: Option<oneshot::Receiver<(MiseDataBundle, bool)>>,
-    cached_bundle: Option<MiseDataBundle>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<MiseDataBundle>, bool)>>,
+    cached_bundle: Option<std::sync::Arc<MiseDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -84,7 +84,14 @@ impl MiseCollector {
             self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
         let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
-        let handle = tokio::spawn(async move { collect_real_mise(use_cache, cached_bundle).await });
+        // TTL hit: re-ship the cached Arc by refcount, no mise subprocess.
+        if use_cache && let Some(bundle) = cached_bundle {
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
+        let handle = tokio::spawn(async move { collect_real_mise(false, None).await });
         tokio::spawn(async move {
             let (bundle, reused_cache) = match handle.await {
                 Ok(tuple) => tuple,
@@ -96,20 +103,21 @@ impl MiseCollector {
                     )
                 }
             };
-            let _ = tx.send((bundle, reused_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache));
         });
     }
 
     /// Returns `Some(bundle)` once the collection completes, `None` while
-    /// still pending; a degraded bundle is never cached, so the next tick retries.
-    pub async fn poll(&mut self) -> Option<MiseDataBundle> {
+    /// still pending; a degraded bundle is never cached, so the next tick
+    /// retries. A cache-hit poll re-ships the cached `Arc` by refcount.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<MiseDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
                 if let Some((ref bundle, used_cache)) = result
                     && !used_cache
                 {
-                    self.cached_bundle = Some(bundle.clone());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
                     self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
@@ -433,7 +441,7 @@ mod tests {
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = MiseCollector::new();
-        collector.cached_bundle = Some(empty_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(empty_bundle()));
         collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
         assert!(collector.cached_bundle.is_none());
@@ -730,7 +738,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn cache_hit_returns_cached_bundle_without_reprobing() {
         let mut collector = MiseCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 
@@ -766,7 +774,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = MiseCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 

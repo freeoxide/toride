@@ -9,6 +9,7 @@
 //! node.
 
 use crate::Result;
+use crate::models::StatusDocument;
 use crate::report::PeerInfo;
 
 // ---------------------------------------------------------------------------
@@ -63,6 +64,32 @@ impl TailnetTopology {
     pub async fn from_api(api: &crate::api::TailscaleApi) -> Result<Self> {
         let status = api.get_status().await?;
         Self::from_status_json(&status)
+    }
+
+    /// Build a topology from the typed status document, the fetch path the
+    /// [`crate::client::TailscaleClient`] uses: peers come straight off the
+    /// deserialized entries, with the same skip-and-sort semantics as
+    /// [`TailnetTopology::from_status_json`].
+    pub(crate) fn from_document(doc: &StatusDocument) -> Self {
+        let mut peers: Vec<PeerInfo> = doc
+            .peer
+            .values()
+            .filter_map(|entry| {
+                let name = entry.host_name.as_deref()?.to_owned();
+                Some(PeerInfo {
+                    name,
+                    ip_addresses: entry.tailscale_ips.clone(),
+                    online: entry.online,
+                    exit_node: entry.exit_node_option,
+                })
+            })
+            .collect();
+        peers.sort_by(|a, b| a.name.cmp(&b.name));
+        Self {
+            tailnet_name: doc.tailnet_name().to_owned(),
+            self_name: doc.self_name().to_owned(),
+            peers,
+        }
     }
 
     /// Build a topology from a parsed `tailscale status --json` document.
@@ -136,10 +163,9 @@ impl TailnetTopology {
 /// - `HostName` -- the peer's hostname
 /// - `TailscaleIPs` -- array of IP strings
 /// - `Online` -- boolean
-/// - `ExitNodeOption` -- boolean (this peer is *available* as an exit node)
-/// - `ExitNodeOption` is also used as the "is exit node" signal; a peer that
-///   the current node is actively routing through appears with `ExitNodeOption`
-///   set. We treat a truthy `ExitNodeOption` as "exit node".
+/// - `ExitNodeOption` -- boolean: this peer is *available* as an exit node.
+///   This is availability only; it does not mean the current node is routing
+///   through the peer (that in-use signal is the top-level `ExitNodeStatus`).
 ///
 /// Peers missing a hostname are skipped.
 pub(crate) fn parse_peers(status: &serde_json::Value) -> Vec<PeerInfo> {
@@ -223,6 +249,19 @@ mod tests {
         assert_eq!(topo.tailnet_name(), "example.ts.net");
         assert_eq!(topo.self_name(), "my-host");
         assert_eq!(topo.peers().len(), 3);
+    }
+
+    /// The typed fetch path must produce the same topology as the raw-JSON
+    /// path for the same document, including the skip-and-sort semantics.
+    #[test]
+    fn typed_topology_matches_the_raw_json_topology() {
+        let doc: crate::models::StatusDocument =
+            serde_json::from_value(sample_status()).expect("sample parses as typed document");
+        let typed = TailnetTopology::from_document(&doc);
+        let raw = TailnetTopology::from_status_json(&sample_status()).unwrap();
+        assert_eq!(typed.tailnet_name(), raw.tailnet_name());
+        assert_eq!(typed.self_name(), raw.self_name());
+        assert_eq!(typed.peers(), raw.peers());
     }
 
     #[test]
