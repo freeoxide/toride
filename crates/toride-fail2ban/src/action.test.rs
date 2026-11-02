@@ -397,6 +397,7 @@ fn exec_with_env_vars_prefixes_the_command() {
     assert_eq!(exec.env.get("TORIDE_TEST_VAR").unwrap(), "hello");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn env_prefix_reaches_the_runner_argv() {
     let mut fake = crate::command::FakeRunner::new();
@@ -416,6 +417,7 @@ fn env_prefix_reaches_the_runner_argv() {
     assert_eq!(calls[0].1[1], "env 'TORIDE_TEST_VAR=hello' true");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn env_with_invalid_name_is_rejected() {
     let cmds = make_platform_commands(&["true"], &[], &[]);

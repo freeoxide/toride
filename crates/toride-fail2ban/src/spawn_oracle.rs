@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn canned_jail_list_makes_per_jail_spawns_countable() {
         let runner = CountingRunner::new().with_client_status(CANNED_JAIL_STATUS);
-        let doctor = Doctor::new(&runner);
+        let doctor = Doctor::with_client_bin(&runner, std::path::PathBuf::from("fail2ban-client"));
         doctor
             .run(&DoctorScope::All)
             .expect("doctor(All) completes with canned jails");

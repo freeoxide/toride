@@ -1083,6 +1083,7 @@ fn test_scan_jail_then_ban_ip_then_unban_ip_full_cycle() {
 /// Purging an expired ban in Execute mode must run the jail's unban action so
 /// expiry also lifts the firewall block (verified through a marker file the
 /// action's real `sh -c` invocation appends to).
+#[cfg(target_os = "linux")]
 #[test]
 fn purge_expired_executes_the_jails_unban_action() {
     let dir = tempdir().unwrap();

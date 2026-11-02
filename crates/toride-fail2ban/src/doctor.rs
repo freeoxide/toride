@@ -121,6 +121,16 @@ impl<'a> Doctor<'a> {
         }
     }
 
+    /// Create a diagnostic engine with `fail2ban-client` pinned to `path`,
+    /// skipping PATH discovery; tests use this to stay hermetic on hosts
+    /// without a Fail2Ban install.
+    #[must_use]
+    pub fn with_client_bin(runner: &'a dyn Runner, path: PathBuf) -> Self {
+        let doctor = Self::new(runner);
+        doctor.run_cache.borrow_mut().client_bin = ClientBin::Found(path);
+        doctor
+    }
+
     fn client_bin(&self) -> Result<PathBuf> {
         let mut cache = self.run_cache.borrow_mut();
         if matches!(cache.client_bin, ClientBin::Unfetched) {
@@ -233,7 +243,10 @@ impl<'a> Doctor<'a> {
     /// back to the other-write bit. Group membership is not evaluated.
     #[cfg_attr(
         not(unix),
-        expect(unused_variables, reason = "non-unix falls through to metadata only")
+        expect(
+            clippy::unused_self,
+            reason = "the uid walk is unix-only; non-unix uses metadata alone"
+        )
     )]
     fn rollback_writable(&self, dir: &std::path::Path) -> Result<bool> {
         let metadata = std::fs::metadata(dir)?;

@@ -98,3 +98,6 @@ fn session_fanout(c: &mut Criterion) {
 criterion_group!(benches, session_fanout);
 #[cfg(unix)]
 criterion_main!(benches);
+
+#[cfg(not(unix))]
+fn main() {}
