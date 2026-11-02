@@ -2644,6 +2644,158 @@ fn current_clock() -> String {
 mod tests {
     use super::*;
 
+    /// Cells of `backend` below the header row: the header carries the logo
+    /// shimmer and disk/net spinners, which advance with wall-clock time, so
+    /// frame parity is asserted on every row below it.
+    fn cells_below_header(backend: &ratatui::backend::TestBackend) -> String {
+        let buf = backend.buffer();
+        let area = buf.area;
+        let mut out = String::new();
+        for y in crate::ui::shell::HEADER_H..area.height {
+            for x in 0..area.width {
+                let cell = &buf[(x, y)];
+                out.push_str(cell.symbol());
+                out.push('|');
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn parity_status(hostname: &str) -> std::sync::Arc<TorideStatus> {
+        std::sync::Arc::new(crate::status_collector::tests::test_status(hostname))
+    }
+
+    fn parity_screen(hostname: &str) -> DashboardScreen {
+        let mut screen = DashboardScreen::new();
+        screen.set_active_theme(crate::ui::theme::Theme::Charm);
+        screen.set_status(parity_status(hostname));
+        screen
+    }
+
+    #[test]
+    fn render_parity_hit_frame_matches_miss_frame() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let palette = crate::ui::theme::CHARM;
+
+        let mut screen = parity_screen("parity-host");
+        let mut miss = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        miss.draw(|f| screen.view(f, palette)).unwrap();
+        assert!(
+            screen.modules_cache.key.is_some() && screen.stat_cache.key.is_some(),
+            "the first render must arm the panel caches"
+        );
+
+        let mut hit = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        hit.draw(|f| screen.view(f, palette)).unwrap();
+        assert_eq!(
+            cells_below_header(hit.backend()),
+            cells_below_header(miss.backend()),
+            "a cache-hit frame must be pixel-identical to the miss frame"
+        );
+
+        let mut hit_again = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        hit_again.draw(|f| screen.view(f, palette)).unwrap();
+        assert_eq!(
+            cells_below_header(hit_again.backend()),
+            cells_below_header(miss.backend()),
+            "repeated cache-hit frames must stay pixel-identical"
+        );
+    }
+
+    #[test]
+    fn render_parity_after_focus_change_matches_fresh_screen() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let palette = crate::ui::theme::CHARM;
+
+        let mut fresh = parity_screen("parity-focus");
+        fresh.handle_key(KeyCode::Tab);
+        let mut fresh_t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        fresh_t.draw(|f| fresh.view(f, palette)).unwrap();
+
+        let mut primed = parity_screen("parity-focus");
+        let mut prime_terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        prime_terminal.draw(|f| primed.view(f, palette)).unwrap();
+        primed.handle_key(KeyCode::Tab);
+        let mut after = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        after.draw(|f| primed.view(f, palette)).unwrap();
+
+        assert_eq!(
+            cells_below_header(after.backend()),
+            cells_below_header(fresh_t.backend()),
+            "an input-driven frame off the primed caches must equal a fresh render"
+        );
+    }
+
+    #[test]
+    fn render_parity_after_status_change_matches_fresh_screen() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let palette = crate::ui::theme::CHARM;
+
+        let mut fresh = parity_screen("parity-old");
+        fresh.set_status(parity_status("parity-new"));
+        let mut fresh_t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        fresh_t.draw(|f| fresh.view(f, palette)).unwrap();
+
+        let mut primed = parity_screen("parity-old");
+        let mut prime_terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        prime_terminal.draw(|f| primed.view(f, palette)).unwrap();
+        primed.set_status(parity_status("parity-new"));
+        let mut after = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        after.draw(|f| primed.view(f, palette)).unwrap();
+
+        assert_eq!(
+            cells_below_header(after.backend()),
+            cells_below_header(fresh_t.backend()),
+            "a status delivery must invalidate exactly the status-keyed panels"
+        );
+    }
+
+    #[test]
+    fn render_parity_after_content_change_matches_fresh_screen() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use std::sync::Arc;
+        let palette = crate::ui::theme::CHARM;
+        let jail_bundle = |bans: usize| -> Arc<crate::fail2ban_data::Fail2banDataBundle> {
+            Arc::new(crate::fail2ban_data::Fail2banDataBundle {
+                available: true,
+                service_active: true,
+                service_enabled: false,
+                version: Some("1.1.0".to_string()),
+                jails: vec![crate::ui::screens::fail2ban::JailEntry {
+                    name: "sshd".to_string(),
+                    is_running: true,
+                    banned_count: bans,
+                    total_bans: bans,
+                    file_count: 0,
+                }],
+                bans: Vec::new(),
+                findings: Vec::new(),
+                fw_nft_available: None,
+                fw_iptables_available: None,
+                unavailable_reason: None,
+            })
+        };
+
+        let mut fresh = parity_screen("parity-content");
+        fresh.set_fail2ban_data(&jail_bundle(3));
+        let mut fresh_t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        fresh_t.draw(|f| fresh.view(f, palette)).unwrap();
+
+        let mut primed = parity_screen("parity-content");
+        let mut prime_terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        prime_terminal.draw(|f| primed.view(f, palette)).unwrap();
+        primed.set_fail2ban_data(&jail_bundle(3));
+        let mut after = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        after.draw(|f| primed.view(f, palette)).unwrap();
+
+        assert_eq!(
+            cells_below_header(after.backend()),
+            cells_below_header(fresh_t.backend()),
+            "a bundle delivery must invalidate exactly the managed-content-keyed panels"
+        );
+    }
+
     #[test]
     fn shell_focus_cycles_sidebar_content() {
         let mut s = DashboardScreen::new();
