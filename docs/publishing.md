@@ -49,6 +49,13 @@ version number is released at a time. The
 `.github/workflows/publish.yml` workflow is the authoritative path for
 this set.
 
+Release checklist, two halves: `PUBLISH_ORDER` in
+`.github/workflows/ci.yml` (machine-checked) and the dependency
+snippets in the root `README.md` plus the crate READMEs (toride-apps,
+toride-fs, toride-installer, toride-registry, toride-runner), which
+must carry the version being published. A `0.x` caret never crosses
+`0.1` to `0.2`, so a stale snippet never resolves to the new release.
+
 ## The per-crate state machine
 
 Before touching any crate, the workflow classifies it against the live

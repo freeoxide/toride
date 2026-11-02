@@ -21,7 +21,7 @@ The heavy features stay off the default sets so a minimal dependency graph is th
 
 ```toml
 [dependencies]
-toride-apps = "0.1"
+toride-apps = "0.2"
 ```
 
 The release process (ordering, version lockstep, changelog conventions) is documented in [docs/publishing.md](docs/publishing.md).
