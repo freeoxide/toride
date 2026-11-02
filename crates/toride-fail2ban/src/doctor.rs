@@ -92,7 +92,7 @@ impl RunCache {
 pub struct Doctor<'a> {
     runner: &'a dyn Runner,
     paths: crate::SystemPaths,
-    pinned_client_bin: Option<PathBuf>,
+    pinned_binaries: std::collections::HashMap<&'static str, PathBuf>,
     run_cache: RefCell<RunCache>,
 }
 
@@ -118,24 +118,29 @@ impl<'a> Doctor<'a> {
         Self {
             runner,
             paths,
-            pinned_client_bin: None,
+            pinned_binaries: std::collections::HashMap::new(),
             run_cache: RefCell::new(RunCache::default()),
         }
     }
 
-    /// Create a diagnostic engine with `fail2ban-client` pinned to `path`,
-    /// bypassing PATH discovery on every run; tests use this to stay hermetic
-    /// on hosts without a Fail2Ban install.
+    /// Pin the binary `name` to `path`, bypassing PATH discovery for every
+    /// run of this instance; tests use this to stay hermetic on hosts
+    /// without a Fail2Ban install.
     #[must_use]
-    pub fn with_client_bin(runner: &'a dyn Runner, path: PathBuf) -> Self {
-        Self {
-            pinned_client_bin: Some(path),
-            ..Self::new(runner)
+    pub fn with_binary(mut self, name: &'static str, path: PathBuf) -> Self {
+        self.pinned_binaries.insert(name, path);
+        self
+    }
+
+    fn find_binary_pinned(&self, name: &'static str) -> Result<PathBuf> {
+        if let Some(path) = self.pinned_binaries.get(name) {
+            return Ok(path.clone());
         }
+        find_binary(name)
     }
 
     fn client_bin(&self) -> Result<PathBuf> {
-        if let Some(path) = &self.pinned_client_bin {
+        if let Some(path) = self.pinned_binaries.get("fail2ban-client") {
             return Ok(path.clone());
         }
         let mut cache = self.run_cache.borrow_mut();
@@ -410,7 +415,7 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        match find_binary("fail2ban-regex") {
+        match self.find_binary_pinned("fail2ban-regex") {
             Ok(path) => {
                 findings.push(
                     Finding::new(
@@ -1905,7 +1910,7 @@ impl<'a> Doctor<'a> {
     fn check_regex(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        match find_binary("fail2ban-regex") {
+        match self.find_binary_pinned("fail2ban-regex") {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-regex");
 
