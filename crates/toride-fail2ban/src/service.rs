@@ -30,53 +30,23 @@
 //!   enables lower-latency service control and richer structured metadata from
 //!   systemd properties.  **Not yet implemented.**
 //!
-//! - **Optional `service-manager` feature:** A portable service management
-//!   abstraction that works across init systems (OpenRC, runit, s6, etc.), not
-//!   just systemd.  **Not yet implemented.**
-//!
 //! # Non-systemd environments
 //!
 //! In v1 the service manager targets `systemctl` exclusively.  For non-systemd
 //! hosts the caller can supply a [`FakeRunner`](crate::command::FakeRunner) that translates calls to the
-//! local service manager, or simply avoid using this module altogether -- many
-//! applications should only manage config and let the deploy system handle
+//! local service manager, or avoid using this module altogether -- many
+//! applications should manage config and let the deploy system handle
 //! restarts.
-
-// ---------------------------------------------------------------------------
-// Feature-gated stubs for planned backends
-// ---------------------------------------------------------------------------
-
-// The `systemd-zbus` feature is planned but not yet implemented.
-//
-// When complete it will provide direct D-Bus communication with systemd,
-// removing the need to shell out to `systemctl` for each operation.
-// Enable with `cargo build --features systemd-zbus`.
-//
-// FIXME: implement the D-Bus backend when the `systemd-zbus` feature is
-// activated.  The stub below shows the intended public surface; each method
-// should delegate to `zbus_systemd` instead of spawning `systemctl`.
-//
-// #[cfg(feature = "systemd-zbus")]
-// mod zbus_backend { ... }
 
 /// Placeholder module that marks the `systemd-zbus` feature as unimplemented.
 ///
 /// Enabling the feature currently has no effect beyond reserving the feature
-/// gate.  Once the `zbus_systemd` dependency is wired in, this module will be
-/// replaced with a D-Bus–backed [`ServiceManager`] variant.
+/// gate for a future D-Bus-backed [`ServiceManager`] variant.
 #[cfg(feature = "systemd-zbus")]
-pub mod systemd_zbus_stub {
-    //! **Not yet implemented.** This module exists so that the `systemd-zbus`
-    //! feature compiles without pulling in the heavy `zbus` dependency in v1.
-    //! See the project roadmap for scheduling.
-}
+pub mod systemd_zbus_stub {}
 
 use crate::command::{CommandOutput, Runner};
 use crate::{Error, Result};
-
-// ---------------------------------------------------------------------------
-// Re-export from toride-service
-// ---------------------------------------------------------------------------
 
 /// Re-export of the shared [`toride_service::ServiceManager`] type.
 ///
@@ -85,10 +55,6 @@ use crate::{Error, Result};
 /// fixed service name set at construction, which is more ergonomic for the
 /// fail2ban use case.
 pub use toride_service::ServiceManager as SharedServiceManager;
-
-// ---------------------------------------------------------------------------
-// ServiceManager
-// ---------------------------------------------------------------------------
 
 /// Manages the Fail2Ban systemd service through a [`Runner`].
 ///
@@ -104,10 +70,6 @@ pub struct ServiceManager<'a> {
 }
 
 impl<'a> ServiceManager<'a> {
-    // -----------------------------------------------------------------------
-    // Constructors
-    // -----------------------------------------------------------------------
-
     /// Create a manager targeting the default `"fail2ban"` service unit.
     pub fn new(runner: &'a dyn Runner) -> Self {
         Self {
@@ -127,10 +89,6 @@ impl<'a> ServiceManager<'a> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Query operations
-    // -----------------------------------------------------------------------
-
     /// Check whether the service unit is currently active (running).
     ///
     /// Returns `Ok(true)` when `systemctl is-active <unit>` exits with code 0,
@@ -149,10 +107,6 @@ impl<'a> ServiceManager<'a> {
         let output = self.run_systemctl(&["is-enabled", &self.service_name])?;
         Ok(output.success)
     }
-
-    // -----------------------------------------------------------------------
-    // Lifecycle operations
-    // -----------------------------------------------------------------------
 
     /// Start the service unit.
     ///
@@ -235,10 +189,6 @@ impl<'a> ServiceManager<'a> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Journal access
-    // -----------------------------------------------------------------------
-
     /// Tail recent journal entries for the service unit.
     ///
     /// Returns the last `lines` lines from `journalctl -u <unit> -n <lines>
@@ -272,10 +222,6 @@ impl<'a> ServiceManager<'a> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
-
     /// Execute a `systemctl` subcommand through the runner.
     ///
     /// Logs the full command at debug level (with sensitive values redacted
@@ -289,10 +235,6 @@ impl<'a> ServiceManager<'a> {
         self.runner.run("systemctl", args)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Private helper
-// ---------------------------------------------------------------------------
 
 /// Build an [`Error::CommandFailed`] from a failed command's output.
 ///
@@ -316,10 +258,6 @@ fn command_failed(
     };
     Error::CommandFailed(detail)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "service.test.rs"]

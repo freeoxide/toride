@@ -1,4 +1,4 @@
-# toride workspace conventions — survey brief
+# toride workspace conventions: survey brief
 
 Scope: what a new crate in this workspace should look like, derived from the
 root `Cargo.toml` and two sibling crates (`toride-installer`, `toride-mise`).
@@ -10,19 +10,19 @@ Reference shapes: `crates/toride-installer/Cargo.toml`, `crates/toride-mise/Carg
 
 Section order in both siblings:
 
-1. `[package]` — `name`, then the workspace-inherited fields by reference:
+1. `[package]`: `name`, then the workspace-inherited fields by reference:
    `version.workspace = true`, `edition.workspace = true`,
    `license.workspace = true`, `repository.workspace = true`
    (installer Cargo.toml:2-8; mise Cargo.toml:1-7). `description` is written
    per crate (one line). `rust-version` is optional: toride-installer pins
    `rust-version = "1.91"` (installer Cargo.toml:5), toride-mise omits it.
-2. `[features]` — `default = [...]` first, then one line per feature. Feature
+2. `[features]`: `default = [...]` first, then one line per feature. Feature
    gates pull optional deps with `dep:` syntax and carry a comment explaining
    *why* the gate exists (installer's `http` feature, Cargo.toml:10-20, exists
    so offline consumers avoid the C-build-script deps reqwest/ring and
    xz2/lzma-sys; mise gates `json`/`toml`/`diagnostics`/`tracing`/`bootstrap`/
    `miette`/`blocking`, mise Cargo.toml:9-17).
-3. `[dependencies]` — workspace-managed deps are declared as
+3. `[dependencies]`: workspace-managed deps are declared as
    `name = { workspace = true }` (e.g. `thiserror`, `camino`, `tokio`,
    installer Cargo.toml:23-40). Versions/features live centrally in the root
    `[workspace.dependencies]` (root Cargo.toml:12-46: serde with `derive`,
@@ -34,11 +34,11 @@ Section order in both siblings:
    version = "0.1.0", features = ["duct-runner"] }` (installer Cargo.toml:34);
    `default-features = false` when the sibling's engine is unwanted
    (mise's `toride-installer` dep, mise Cargo.toml:26).
-4. `[dev-dependencies]` — test-only; may re-enable features the normal build
+4. `[dev-dependencies]`: test-only; may re-enable features the normal build
    excludes (installer re-declares `toride-runner` with `"fake"`,
    Cargo.toml:42-46; mise dev-deps: `tempfile`, `insta`, `tokio`,
    mise Cargo.toml:47-51).
-5. `[lints]` — always last, always exactly:
+5. `[lints]`: always last, always exactly:
 
    ```toml
    [lints]
@@ -52,7 +52,7 @@ Section order in both siblings:
 Workspace membership is the glob `members = ["crates/*", "crates/toride-ssh/crates/*"]`
 (root Cargo.toml:2), so a new crate under `crates/` needs **no** root edit.
 There is no `rustfmt.toml` or `clippy.toml` at the repo root (verified with
-`ls`) — default rustfmt formatting, ~100-col budget (a test comment in
+`ls`): default rustfmt formatting, ~100-col budget (a test comment in
 `crates/toride-installer/src/tools/mise.rs:507-508` explicitly works around
 "the 100-column budget" using `concat!`).
 
@@ -70,7 +70,7 @@ Both crates open with the same block, immediately after the module `//!` docs:
 
 (`crates/toride-installer/src/lib.rs:97-101`). toride-mise adds one more,
 `#![allow(clippy::return_self_not_must_use)]`
-(`crates/toride-mise/src/lib.rs:23-28`) — its consume-and-return builders
+(`crates/toride-mise/src/lib.rs:23-28`): its consume-and-return builders
 return `Self` heavily. A new crate should copy the installer four and add the
 fifth only if it has fluent builders.
 
@@ -79,7 +79,7 @@ fifth only if it has fluent builders.
 `src/error.rs` opens with `//! Error types for the <crate> crate.` (installer
 error.rs:1; mise error.rs:1).
 
-- **Alias + enum naming.** toride-installer uses the unprefixed pair —
+- **Alias + enum naming.** toride-installer uses the unprefixed pair:
   `pub type Result<T> = std::result::Result<T, Error>;` and `pub enum Error`
   (installer error.rs:4,14; re-exported as the crate's `Error`/`Result` at
   lib.rs:115). toride-mise, which has several error enums, prefixes: `MiseResult<T>`,
@@ -92,7 +92,7 @@ error.rs:1; mise error.rs:1).
   error.rs:12-13,52-59,168-169; mise error.rs:158-159,221-222). Struct
   variants with named fields; **every field gets its own `///` doc**
   (installer error.rs:19-24). toride-installer's top-level `Error` is
-  `#[non_exhaustive]` (error.rs:13); mise's are not — mirror whichever error
+  `#[non_exhaustive]` (error.rs:13); mise's are not: mirror whichever error
   surface you promise to keep stable.
 - **Variant docs** name the pipeline stage and cross-link crate items with
   intra-doc links (`[`crate::Tool`]`, `[`crate::Installer::install`]`,
@@ -110,13 +110,13 @@ error.rs:1; mise error.rs:1).
 - `lib.rs` = crate docs → attribute block → `pub mod` declarations → re-export
   block. toride-installer declares flat file modules, feature-gating the ones
   that need the engine: `#[cfg(feature = "http")] pub mod extract;`
-  (lib.rs:103-112), then a `// Re-exports — the public API surface.` section
+  (lib.rs:103-112), then a `// Re-exports: the public API surface.` section
   (lib.rs:114-131) flattening the API: `pub use error::{Error, Result};` etc.
 - toride-mise groups declarations under `// ---` banner comments: "file
   modules" then "directory modules" then "Re-exports" (lib.rs:30-71).
 - Directory modules have `mod.rs` plus one file per verb/domain
   (`src/tool/{install,registry,remote,uninstall,upgrade,…}.rs`,
-  `src/languages/{node,python,…}.rs`) — listing verified with `ls -R`.
+  `src/languages/{node,python,…}.rs`): listing verified with `ls -R`.
 - Feature-gated items repeat `#[cfg(feature = "http")]` on every item (struct,
   impl block, helper fn) rather than relying on module gating alone
   (installer tools/mise.rs:37-52,112,208,229,255).
@@ -141,7 +141,7 @@ Inside long files, sections are delimited with the banner idiom:
 - **Module-level `//!` docs** follow a template: `# <Crate/Module name>` title,
   prose summary, a bulleted "split / provides" list, `## Design` or
   `## Pipeline` (numbered stage list), and a `## Quick start` / `# Quick start`
-  section with a fenced doctest marked `rust,ignore` (installer lib.rs:1-95 —
+  section with a fenced doctest marked `rust,ignore` (installer lib.rs:1-95:
   five numbered pipeline stages; mise tools/mise.rs:1-35; mise client.rs:1-15).
   Doctests that would need the real `mise` binary or network are
   `rust,ignore`, not compiled.
@@ -176,14 +176,14 @@ Inside long files, sections are delimited with the banner idiom:
 - `typed-builder` exists in `[workspace.dependencies]` (root Cargo.toml:44) and
   is used for compile-time-checked builders in `toride-fail2ban`
   (`crates/toride-fail2ban/src/spec.rs:628`), but **neither surveyed crate uses
-  it** — prefer the hand-rolled pattern for new crates unless compile-time
+  it**: prefer the hand-rolled pattern for new crates unless compile-time
   required-field checking is needed.
 
 ## 7. Test style
 
 - **Inline `#[cfg(test)] mod tests` at the bottom of each source file** is the
   primary style (installer tools/mise.rs:335; mise tool/install.rs:482; mise
-  error.rs:399 — note non-`tests` names like `failure_kind_tests` are fine).
+  error.rs:399: note non-`tests` names like `failure_kind_tests` are fine).
   Large modules split by feature gate: installer installer.rs:905
   `mod tests` (ungated) and :1080 `mod engine_tests`; mise.rs adds
   `#[cfg(all(test, feature = "http"))] mod resolver_tests` (tools/mise.rs:359).
@@ -204,7 +204,7 @@ Inside long files, sections are delimited with the banner idiom:
   `tests/fixtures/homebrew/*.json`) + a manifest-dir-anchored helper.
 - **Snapshot tests** use `insta` (workspace dep, root Cargo.toml:26); each test
   parses a fixture and asserts a snapshot (mise tests/fixtures.rs doc, :1-6).
-- **Env-gated network tests**: `<CRATE>_INTEGRATION=1` —
+- **Env-gated network tests**: `<CRATE>_INTEGRATION=1`:
   `TORIDE_INSTALLER_INTEGRATION` and `TORIDE_MISE_INTEGRATION`. The pattern:
   file-level `#![cfg(feature = "http")]` (installer tests/integration.rs:16),
   a `should_run()` helper `matches!(env::var("TORIDE_MISE_INTEGRATION")
@@ -217,7 +217,7 @@ Inside long files, sections are delimited with the banner idiom:
   caveat (:151-155). Known-good pinned versions are named consts
   (`PINNED_VERSION = "2026.6.14"`, tests/integration.rs:102).
 - **Fake-runner tests**: mise tests build the client with
-  `toride_runner::FakeRunner` — `push_response(CommandOutput::from_stdout(..))`
+  `toride_runner::FakeRunner`: `push_response(CommandOutput::from_stdout(..))`
   for loose matching, or `.strict().respond(spec, output)` plus
   `assert_no_unmatched_calls()` / `assert_called_with(&spec)` for exact
   command assertions (mise tool/install.rs:490-508,591-631). A local
@@ -226,7 +226,7 @@ Inside long files, sections are delimited with the banner idiom:
 - **Test names** are snake_case behaviour sentences
   (`pinned_version_resolves_to_direct_url_no_network`, tools/mise.rs:571;
   `lockfile_not_found_classified_correctly`, mise error.rs:515). mise's
-  install tests prefix `test_` (tool/install.rs:499) — both styles are
+  install tests prefix `test_` (tool/install.rs:499): both styles are
   accepted; keep one per module.
 
 ## 8. Naming conventions

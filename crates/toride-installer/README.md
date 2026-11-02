@@ -6,8 +6,8 @@ byte cap, verifies the published digest (sha256 or sha512), extracts
 gzip/xz tarballs or places binaries, and installs atomically with mode
 `0o755`. No `curl | sh`.
 
-The offline half — `Detector`, `ToolVersion`, `Freshness`, and the
-`latest`/`LatestCache` probes — answers what is installed and how stale
+The offline half (`Detector`, `ToolVersion`, `Freshness`, and the
+`latest`/`LatestCache` probes) answers what is installed and how stale
 it is without any network.
 
 The `http` feature is **off the default set**: it carries the install
@@ -16,7 +16,7 @@ The default build is detection-only and free of C build scripts.
 
 ```toml
 [dependencies]
-toride-installer = { version = "0.1", features = ["http"] }
+toride-installer = { version = "0.2", features = ["http"] }
 ```
 
 [Changelog](CHANGELOG.md) · [Source](https://github.com/freeoxide/toride/tree/master/crates/toride-installer)

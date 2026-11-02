@@ -19,6 +19,7 @@ CommandSpec {
     cwd: None,
     output_mode: Capture,
     redact: true,
+    redact_flags: [],
     output_limit: None,
     env_precedence: ExplicitWins,
     path_resolution: OsSearch,

@@ -44,6 +44,30 @@ impl CertInfo {
         }
     }
 
+    /// Create a certificate info struct with an explicit validity flag.
+    ///
+    /// Callers that computed the expiry instant derive `is_valid` from
+    /// `expiry_epoch > now_epoch` instead of `days_remaining > 0`, so a
+    /// certificate inside its final 24 hours stays `is_valid = true` with
+    /// `days_remaining = 0`.
+    pub fn from_expiry_state(
+        domain: impl Into<String>,
+        issuer: impl Into<String>,
+        not_before: impl Into<String>,
+        not_after: impl Into<String>,
+        days_remaining: i64,
+        is_valid: bool,
+    ) -> Self {
+        Self {
+            domain: domain.into(),
+            issuer: issuer.into(),
+            not_before: not_before.into(),
+            not_after: not_after.into(),
+            days_remaining,
+            is_valid,
+        }
+    }
+
     /// Returns `true` if the certificate will expire within the given number of days.
     pub fn expires_within(&self, days: i64) -> bool {
         self.days_remaining >= 0 && self.days_remaining <= days

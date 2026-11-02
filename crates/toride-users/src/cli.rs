@@ -130,7 +130,7 @@ impl Cli {
                         for finding in &report.findings {
                             writeln!(
                                 writer,
-                                "[{}] {} — {}",
+                                "[{}] {}: {}",
                                 finding.severity, finding.id, finding.title
                             )
                             .ok();

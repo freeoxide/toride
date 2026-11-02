@@ -55,6 +55,7 @@
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use sysinfo::System;
 
 use crate::TorideStatus;
 use crate::presets::Preset;
@@ -65,14 +66,63 @@ pub struct Collector {
     interval: Duration,
     preset: Preset,
     toggles: MetricToggles,
-    previous: Option<(Instant, (std::time::SystemTime, SystemStatus))>,
+    sys: Option<System>,
+    previous: Option<(Instant, (std::time::SystemTime, PrevSnapshot))>,
+}
+
+/// The delta-relevant slice of a previous [`SystemStatus`].
+///
+/// [`compute_delta`] reads a handful of scalar counters, the per-core usage
+/// list, and the pid set; storing this slim view between collects avoids
+/// deep-cloning the whole snapshot (process list, static info, sensors).
+#[derive(Debug, Clone)]
+struct PrevSnapshot {
+    cpu_usage: Option<f64>,
+    per_core_usage: Vec<f64>,
+    bytes_received: u64,
+    bytes_transmitted: u64,
+    rx_packets_total: u64,
+    tx_packets_total: u64,
+    disk_io: crate::system::DiskIoSnapshot,
+    process_total: u64,
+    pids: std::collections::HashSet<u32>,
+    gpu: Vec<(Option<f32>, Option<f32>)>,
+}
+
+impl From<&SystemStatus> for PrevSnapshot {
+    fn from(status: &SystemStatus) -> Self {
+        Self {
+            cpu_usage: status.cpu_usage,
+            per_core_usage: status.cpu_cores.iter().map(|c| c.usage).collect(),
+            bytes_received: status.network.bytes_received,
+            bytes_transmitted: status.network.bytes_transmitted,
+            rx_packets_total: status
+                .network_interfaces
+                .iter()
+                .map(|i| i.packets_received)
+                .sum(),
+            tx_packets_total: status
+                .network_interfaces
+                .iter()
+                .map(|i| i.packets_transmitted)
+                .sum(),
+            disk_io: status.disk_io,
+            process_total: u64::try_from(status.processes.total_count).unwrap_or(u64::MAX),
+            pids: status.processes.processes.iter().map(|p| p.pid).collect(),
+            gpu: status
+                .gpu
+                .iter()
+                .map(|g| (g.utilization, g.temperature))
+                .collect(),
+        }
+    }
 }
 
 /// Per-metric collection toggles.
 ///
 /// When a toggle is `false`, the corresponding metric's fields are zeroed /
 /// emptied in the produced [`SystemStatus`] after collection, regardless of the
-/// configured [`Preset`] (the probe itself still runs — toggles gate the
+/// configured [`Preset`] (the probe itself still runs; toggles gate the
 /// output, not the collection). Core always-collected fields (hostname,
 /// `os_info`, uptime, load average) are never affected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +296,7 @@ impl Collector {
                 processes: true,
                 gpu: true,
             },
+            sys: None,
             previous: None,
         }
     }
@@ -329,6 +380,12 @@ impl Collector {
     /// no previous snapshot to compare against. Subsequent calls return
     /// a [`SystemDelta`] containing the differences and rates.
     ///
+    /// The collector retains one sysinfo handle across collects and only
+    /// sleeps [`sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`] before the first
+    /// sample; later collects refresh incrementally with no sleep, so CPU
+    /// usage is valid as long as consecutive collects are at least ~200 ms
+    /// apart.
+    ///
     /// This method returns immediately without waiting for the interval.
     /// Use [`collect_after_interval`](Self::collect_after_interval) to
     /// enforce the configured interval between snapshots.
@@ -343,17 +400,23 @@ impl Collector {
     /// assert!(delta.is_none()); // First call has no delta.
     /// ```
     pub fn collect(&mut self) -> (TorideStatus, Option<SystemDelta>) {
-        let mut status = TorideStatus::collect_with_preset(self.preset);
+        let first_sample = self.previous.is_none();
+        let sys = self.sys.get_or_insert_with(SystemStatus::new_system);
+        if first_sample {
+            sys.refresh_cpu_usage();
+            std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        }
+        let mut status = TorideStatus::collect_with_preset_and_system(self.preset, sys);
         status.apply_toggles(self.toggles);
         let now = Instant::now();
         let now_sys = std::time::SystemTime::now();
         let delta = self
             .previous
             .as_ref()
-            .map(|(prev_time, (_prev_sys, prev_status))| {
-                compute_delta(prev_status, &status.system, prev_time.elapsed(), now_sys)
+            .map(|(prev_time, (_prev_sys_time, prev_snapshot))| {
+                compute_delta(prev_snapshot, &status.system, prev_time.elapsed(), now_sys)
             });
-        self.previous = Some((now, (now_sys, status.system.clone())));
+        self.previous = Some((now, (now_sys, PrevSnapshot::from(&status.system))));
         (status, delta)
     }
 
@@ -546,6 +609,7 @@ impl CollectorBuilder {
         Collector {
             interval: self.interval,
             preset: self.preset,
+            sys: None,
             toggles: MetricToggles {
                 cpu: self.collect_cpu,
                 memory: self.collect_memory,
@@ -586,7 +650,7 @@ impl Collector {
     reason = "prev/curr and rx/tx packet counters are domain-accurate names for network deltas"
 )]
 fn compute_delta(
-    prev: &SystemStatus,
+    prev: &PrevSnapshot,
     curr: &SystemStatus,
     elapsed: Duration,
     to: std::time::SystemTime,
@@ -597,27 +661,17 @@ fn compute_delta(
     let bytes_received_delta = curr
         .network
         .bytes_received
-        .saturating_sub(prev.network.bytes_received);
+        .saturating_sub(prev.bytes_received);
     let bytes_transmitted_delta = curr
         .network
         .bytes_transmitted
-        .saturating_sub(prev.network.bytes_transmitted);
+        .saturating_sub(prev.bytes_transmitted);
 
-    // Packet deltas: sum across all interfaces
-    let prev_rx_packets: u64 = prev
-        .network_interfaces
-        .iter()
-        .map(|i| i.packets_received)
-        .sum();
+    // Packet deltas: sums across all interfaces
     let curr_rx_packets: u64 = curr
         .network_interfaces
         .iter()
         .map(|i| i.packets_received)
-        .sum();
-    let prev_tx_packets: u64 = prev
-        .network_interfaces
-        .iter()
-        .map(|i| i.packets_transmitted)
         .sum();
     let curr_tx_packets: u64 = curr
         .network_interfaces
@@ -638,17 +692,17 @@ fn compute_delta(
         } else {
             0.0
         },
-        packets_received_delta: curr_rx_packets.saturating_sub(prev_rx_packets),
-        packets_transmitted_delta: curr_tx_packets.saturating_sub(prev_tx_packets),
+        packets_received_delta: curr_rx_packets.saturating_sub(prev.rx_packets_total),
+        packets_transmitted_delta: curr_tx_packets.saturating_sub(prev.tx_packets_total),
     };
 
     // Per-core CPU delta
     let per_core_cpu_delta =
-        if prev.cpu_cores.len() == curr.cpu_cores.len() && !prev.cpu_cores.is_empty() {
-            prev.cpu_cores
+        if prev.per_core_usage.len() == curr.cpu_cores.len() && !prev.per_core_usage.is_empty() {
+            prev.per_core_usage
                 .iter()
                 .zip(curr.cpu_cores.iter())
-                .map(|(p, c)| c.usage - p.usage)
+                .map(|(p, c)| c.usage - p)
                 .collect()
         } else {
             Vec::new()
@@ -694,17 +748,15 @@ fn compute_delta(
     };
 
     // Process delta
-    let process = if prev.processes.total_count > 0 && curr.processes.total_count > 0 {
-        let prev_pids: std::collections::HashSet<u32> =
-            prev.processes.processes.iter().map(|p| p.pid).collect();
+    let process = if prev.process_total > 0 && curr.processes.total_count > 0 {
         let curr_pids: std::collections::HashSet<u32> =
             curr.processes.processes.iter().map(|p| p.pid).collect();
-        let new_count = u32::try_from(curr_pids.difference(&prev_pids).count()).unwrap_or(u32::MAX);
+        let new_count = u32::try_from(curr_pids.difference(&prev.pids).count()).unwrap_or(u32::MAX);
         let exited_count =
-            u32::try_from(prev_pids.difference(&curr_pids).count()).unwrap_or(u32::MAX);
+            u32::try_from(prev.pids.difference(&curr_pids).count()).unwrap_or(u32::MAX);
         Some(ProcessDelta {
             count_delta: i64::try_from(curr.processes.total_count).unwrap_or(i64::MAX)
-                - i64::try_from(prev.processes.total_count).unwrap_or(i64::MAX),
+                - i64::try_from(prev.process_total).unwrap_or(i64::MAX),
             new_count,
             exited_count,
         })
@@ -718,11 +770,11 @@ fn compute_delta(
         Some(
             (0..len)
                 .map(|i| GpuDelta {
-                    utilization_delta: match (prev.gpu[i].utilization, curr.gpu[i].utilization) {
+                    utilization_delta: match (prev.gpu[i].0, curr.gpu[i].utilization) {
                         (Some(p), Some(c)) => Some(c - p),
                         _ => None,
                     },
-                    temperature_delta: match (prev.gpu[i].temperature, curr.gpu[i].temperature) {
+                    temperature_delta: match (prev.gpu[i].1, curr.gpu[i].temperature) {
                         (Some(p), Some(c)) => Some(c - p),
                         _ => None,
                     },
@@ -773,7 +825,7 @@ impl SystemStatus {
     #[must_use]
     pub fn diff(&self, previous: &SystemStatus, elapsed: Duration) -> SystemDelta {
         let to = std::time::SystemTime::now();
-        compute_delta(previous, self, elapsed, to)
+        compute_delta(&PrevSnapshot::from(previous), self, elapsed, to)
     }
 }
 
@@ -962,7 +1014,12 @@ mod tests {
     fn compute_delta_zero_elapsed_produces_zero_rates() {
         let prev = make_system_status(Some(50.0), 1000, 500);
         let curr = make_system_status(Some(60.0), 2000, 1500);
-        let delta = compute_delta(&prev, &curr, Duration::ZERO, std::time::SystemTime::now());
+        let delta = compute_delta(
+            &PrevSnapshot::from(&prev),
+            &curr,
+            Duration::ZERO,
+            std::time::SystemTime::now(),
+        );
 
         assert_eq!(delta.elapsed, Duration::ZERO);
         assert_eq!(delta.network.bytes_received_delta, 1000);
@@ -979,7 +1036,7 @@ mod tests {
         let prev = make_system_status(None, u64::MAX - 10, u64::MAX - 5);
         let curr = make_system_status(None, 100, 200);
         let delta = compute_delta(
-            &prev,
+            &PrevSnapshot::from(&prev),
             &curr,
             Duration::from_secs(1),
             std::time::SystemTime::now(),
@@ -997,7 +1054,7 @@ mod tests {
         let prev = make_system_status(None, 100, 200);
         let curr = make_system_status(None, 300, 600);
         let delta = compute_delta(
-            &prev,
+            &PrevSnapshot::from(&prev),
             &curr,
             Duration::from_secs(2),
             std::time::SystemTime::now(),
@@ -1016,7 +1073,7 @@ mod tests {
         let prev = make_system_status(None, 100, 200);
         let curr = make_system_status(Some(75.0), 300, 600);
         let delta = compute_delta(
-            &prev,
+            &PrevSnapshot::from(&prev),
             &curr,
             Duration::from_secs(1),
             std::time::SystemTime::now(),
@@ -1027,7 +1084,7 @@ mod tests {
         let prev = make_system_status(Some(75.0), 100, 200);
         let curr = make_system_status(None, 300, 600);
         let delta = compute_delta(
-            &prev,
+            &PrevSnapshot::from(&prev),
             &curr,
             Duration::from_secs(1),
             std::time::SystemTime::now(),
@@ -1040,7 +1097,7 @@ mod tests {
         let prev = make_system_status(Some(0.0), 0, 0);
         let curr = make_system_status(Some(100.0), u64::MAX, u64::MAX);
         let delta = compute_delta(
-            &prev,
+            &PrevSnapshot::from(&prev),
             &curr,
             Duration::from_secs(1),
             std::time::SystemTime::now(),
@@ -1087,7 +1144,12 @@ mod tests {
             500_000 + 86_400 * 500,
         );
         let long_elapsed = Duration::from_hours(24);
-        let delta = compute_delta(&prev, &curr, long_elapsed, std::time::SystemTime::now());
+        let delta = compute_delta(
+            &PrevSnapshot::from(&prev),
+            &curr,
+            long_elapsed,
+            std::time::SystemTime::now(),
+        );
 
         assert_eq!(delta.elapsed, long_elapsed);
         assert_eq!(delta.cpu_usage_delta, Some(40.0));
@@ -1327,7 +1389,12 @@ mod tests {
         let prev = make_system_status(Some(50.0), 1000, 500);
         let curr = prev.clone();
         // Zero elapsed with identical snapshots should not cause division by zero
-        let delta = compute_delta(&prev, &curr, Duration::ZERO, std::time::SystemTime::now());
+        let delta = compute_delta(
+            &PrevSnapshot::from(&prev),
+            &curr,
+            Duration::ZERO,
+            std::time::SystemTime::now(),
+        );
         assert!((delta.network.bytes_received_rate).abs() < f64::EPSILON);
         assert!((delta.network.bytes_transmitted_rate).abs() < f64::EPSILON);
         assert_eq!(delta.network.bytes_received_delta, 0);
@@ -1342,7 +1409,7 @@ mod tests {
         curr.network.bytes_received = 50; // Wrapped around
         curr.network.bytes_transmitted = 25;
         let delta = compute_delta(
-            &prev,
+            &PrevSnapshot::from(&prev),
             &curr,
             Duration::from_secs(1),
             std::time::SystemTime::now(),

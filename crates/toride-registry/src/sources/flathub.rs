@@ -2,7 +2,7 @@
 //!
 //! Normalizes flathub.org into [`App`]s (DESIGN.md §4.3; survey:
 //! `docs/survey/flathub.md`). Flathub is the Linux GUI-app catalog for the
-//! Flatpak ecosystem; its web API is discovery + metadata only — the
+//! Flatpak ecosystem; its web API is discovery + metadata only: the
 //! payload itself is delivered by the `flatpak` CLI against the Flathub
 //! `OSTree` remote, so [`InstallMethod::Flatpak`] delegates both transfer and
 //! integrity (GPG at the `OSTree` layer) to that client.
@@ -16,7 +16,7 @@
 //!   (HTML description stripped to plain text), and [`parse_flatpakref`]
 //!   for the per-app `.flatpakref` pointer file consumed by the one-time
 //!   `flatpak remote-add` setup flow.
-//! - **Fetch half** (thin, raw body text out — never deserialized values,
+//! - **Fetch half** (thin, raw body text out: never deserialized values,
 //!   DESIGN.md §3.1): `FlathubClient` and the `FlathubAdapter` that
 //!   binds it to the [`Adapter`](crate::adapter::Adapter) trait. Both live
 //!   behind the crate's `http` feature so the parsers build fully offline
@@ -28,7 +28,7 @@
 //! ## Field-mapping notes
 //!
 //! - The search-hit `id` (`com_brave_Browser`, the `Meilisearch` document
-//!   key) is **not** the app id — identity is the dotted `app_id`
+//!   key) is **not** the app id: identity is the dotted `app_id`
 //!   (`com.brave.Browser`) everywhere: [`InstallMethod::Flatpak`],
 //!   [`SourceRef`], and the `appstream/{app_id}` path (flathub.md
 //!   §`app_id` convention).
@@ -38,7 +38,7 @@
 //!   appstream detail carries no `arches` key (verified against the
 //!   `DesktopAppstream` schema in the `openapi-v2.json` fixture), so the
 //!   detail parser falls back to the single arch named in
-//!   `bundle.value` (`app/{app_id}/{arch}/stable` — flathub.md §`app_id`),
+//!   `bundle.value` (`app/{app_id}/{arch}/stable`: flathub.md §`app_id`),
 //!   and to `[]` when that is missing too.
 //! - `releases[0]` is the current release; its wire `timestamp` is a
 //!   *string-encoded* int (`"1790208000"`) and is deserialized through a
@@ -77,19 +77,19 @@ use crate::model::{
 };
 use serde::Deserialize;
 
-/// Flathub web-API origin — everything the fetch half talks to lives under
+/// Flathub web-API origin: everything the fetch half talks to lives under
 /// this base (flathub.md §API surface; the `OSTree` payload host
 /// `dl.flathub.org` is only reached by the `flatpak` client, not by us).
 pub const API_BASE: &str = "https://flathub.org";
 
-/// Flatpak remote name this adapter installs from — the name
+/// Flatpak remote name this adapter installs from: the name
 /// `flatpak remote-add` is documented to configure (flathub.md §Installing)
 /// and the `remote` half of every [`InstallMethod::Flatpak`] this module
 /// emits.
 pub const REMOTE_NAME: &str = "flathub";
 
 // ---------------------------------------------------------------------------
-// Parse half — pure, `&str` in → normalized out
+// Parse half: pure, `&str` in → normalized out
 // ---------------------------------------------------------------------------
 
 /// `POST /api/v2/search` request body (`SearchQuery` in the `OpenAPI` spec;
@@ -101,14 +101,14 @@ struct SearchRequestBody {
     query: String,
 }
 
-/// One search hit — the `AppsIndex` schema subset this adapter consumes
+/// One search hit: the `AppsIndex` schema subset this adapter consumes
 /// (flathub.md §Search). Unknown keys (`verification_*`, `trending`,
 /// `installs_last_month`, `keywords`, `runtime`, `icons`, …) are ignored:
 /// `serde` skips them and the model deliberately drops them (DESIGN.md §2).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct SearchHit {
-    /// Dotted reverse-DNS app id — the identity field.
+    /// Dotted reverse-DNS app id: the identity field.
     app_id: String,
     /// Underscored `Meilisearch` document key (`com_brave_Browser`). Parsed
     /// to prove the id-vs-`app_id` distinction survives the wire; never
@@ -130,14 +130,14 @@ struct SearchHit {
     /// Nullable arch list; `None`/empty → `platforms: []` (unknown).
     arches: Option<Vec<String>>,
     /// `anyOf[string, string[]]` on the wire (bare string in both live
-    /// samples) — deserialized defensively; the model drops categories, so
+    /// samples): deserialized defensively; the model drops categories, so
     /// this is kept on the wire only (asserted by tests).
     #[serde(deserialize_with = "string_or_list_opt")]
     #[allow(dead_code)] // proves the anyOf parse; the model has no categories field
     main_categories: Option<Vec<String>>,
 }
 
-/// The `Meilisearch` search envelope. Only `hits` is consumed — the
+/// The `Meilisearch` search envelope. Only `hits` is consumed: the
 /// envelope leaks index internals (`processingTimeMs`,
 /// `facetDistribution`, `facetStats`, paging) that flathub.md §Limitations
 /// flags as unstable; serde ignores them.
@@ -148,14 +148,14 @@ struct SearchEnvelope {
     hits: Vec<SearchHit>,
 }
 
-/// One entry of the detail's `releases[]` — most recent first, only the
+/// One entry of the detail's `releases[]`: most recent first, only the
 /// first ~4 kept upstream (flathub.md §app detail).
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct Release {
     /// Sanitized version string (`"1.96.59"`).
     version: Option<String>,
-    /// Release time, unix seconds — **string-encoded** on the wire
+    /// Release time, unix seconds: **string-encoded** on the wire
     /// (`"1790208000"`); deserialized through [`string_or_int_unix`].
     #[serde(deserialize_with = "string_or_int_unix")]
     timestamp: Option<i64>,
@@ -165,7 +165,7 @@ struct Release {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct Bundle {
-    /// `"app/{app_id}/{arch}/stable"` — the single stable branch per arch;
+    /// `"app/{app_id}/{arch}/stable"`: the single stable branch per arch;
     /// the middle segment is the detail payload's only arch declaration.
     value: Option<String>,
 }
@@ -179,13 +179,13 @@ struct Urls {
     homepage: Option<String>,
 }
 
-/// `GET /api/v2/appstream/{app_id}` response — the `DesktopAppstream`
+/// `GET /api/v2/appstream/{app_id}` response: the `DesktopAppstream`
 /// subset this adapter consumes (flathub.md §app detail). Unknown keys
 /// (icons, screenshots, branding, metadata, kudos, …) are ignored.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct AppstreamDetail {
-    /// Dotted reverse-DNS app id — identity (unlike the search hit's `id`).
+    /// Dotted reverse-DNS app id: identity (unlike the search hit's `id`).
     id: String,
     /// Display name.
     name: String,
@@ -209,7 +209,7 @@ struct AppstreamDetail {
     urls: Option<Urls>,
 }
 
-/// Wire value that may be a bare JSON int or a string-encoded int —
+/// Wire value that may be a bare JSON int or a string-encoded int:
 /// flathub's release `timestamp` is `"1790208000"` (string) in both detail
 /// fixtures while the survey table types it as int elsewhere.
 #[derive(Debug, Deserialize)]
@@ -223,7 +223,7 @@ enum StringOrInt {
 
 /// Deserializes an `Option<i64>` from a JSON int or a string-encoded int;
 /// anything else (explicit `null`, wrong type, unparsable text) degrades
-/// to `None` — flathub.md §Limitations: "required = key present, not
+/// to `None`: flathub.md §Limitations: "required = key present, not
 /// non-null", so parse permissively.
 ///
 /// `#[allow(clippy::unnecessary_wraps)]`: serde's `deserialize_with`
@@ -255,7 +255,7 @@ enum StringOrList {
 
 /// Deserializes an `Option<Vec<String>>` from `anyOf[string, string[]]`;
 /// anything else degrades to `None` (same permissive posture as
-/// [`string_or_int_unix`], and the same serde-mandated `Result` signature —
+/// [`string_or_int_unix`], and the same serde-mandated `Result` signature:
 /// hence the same `unnecessary_wraps` allowance).
 #[allow(clippy::unnecessary_wraps)]
 fn string_or_list_opt<'de, D>(deserializer: D) -> std::result::Result<Option<Vec<String>>, D::Error>
@@ -287,7 +287,7 @@ pub fn parse_search_envelope(payload: &str) -> Result<Vec<App>> {
 }
 
 /// Parses a `GET /api/v2/appstream/{app_id}` response body into one
-/// normalized `App` — the heavy counterpart to the search stub: HTML
+/// normalized `App`: the heavy counterpart to the search stub: HTML
 /// description stripped, `releases[0]` → [`App::latest`], homepage mapped.
 ///
 /// # Errors
@@ -303,33 +303,33 @@ pub fn parse_appstream_detail(payload: &str) -> Result<App> {
 }
 
 /// The per-app `.flatpakref` pointer file
-/// (`https://dl.flathub.org/repo/appstream/{app_id}.flatpakref`) — INI-style
+/// (`https://dl.flathub.org/repo/appstream/{app_id}.flatpakref`): INI-style
 /// `[Flatpak Ref]` `key=value` pairs. Consumed only for the one-time
 /// `flatpak remote-add` setup flow; never normalized into [`App`]
 /// (DESIGN.md §4.3). Exactly the seven fields DESIGN.md §7 pins; other
 /// keys (`IsRuntime`, …) are ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FlatpakRef {
-    /// `Name=` — the dotted app id (`com.brave.Browser`).
+    /// `Name=`: the dotted app id (`com.brave.Browser`).
     pub name: Option<String>,
-    /// `Branch=` — the single stable branch (`stable`).
+    /// `Branch=`: the single stable branch (`stable`).
     pub branch: Option<String>,
-    /// `Title=` — human label (`com.brave.Browser from flathub`).
+    /// `Title=`: human label (`com.brave.Browser from flathub`).
     pub title: Option<String>,
-    /// `Url=` — the `OSTree` repo base (`https://dl.flathub.org/repo/`).
+    /// `Url=`: the `OSTree` repo base (`https://dl.flathub.org/repo/`).
     pub url: Option<String>,
-    /// `SuggestRemoteName=` — remote name to configure (`flathub`).
+    /// `SuggestRemoteName=`: remote name to configure (`flathub`).
     pub suggest_remote_name: Option<String>,
-    /// `GPGKey=` — armoured repo signing key for the remote-add flow.
+    /// `GPGKey=`: armoured repo signing key for the remote-add flow.
     pub gpg_key: Option<String>,
-    /// `RuntimeRepo=` — the `.flatpakrepo` the runtimes come from
+    /// `RuntimeRepo=`: the `.flatpakrepo` the runtimes come from
     /// (`https://dl.flathub.org/repo/flathub.flatpakrepo`).
     pub runtime_repo: Option<String>,
 }
 
 /// Parses a `.flatpakref` pointer file (INI-style `[Flatpak Ref]`
 /// `key=value`). Missing keys deserialize to `None`; the `[Flatpak Ref]`
-/// section header is mandatory — it is the format marker that separates a
+/// section header is mandatory: it is the format marker that separates a
 /// real pointer file from arbitrary text.
 ///
 /// # Errors
@@ -392,7 +392,7 @@ fn hit_to_app(hit: &SearchHit) -> Option<App> {
         name: hit.name.clone(),
         aliases: Vec::new(),
         summary: non_empty(hit.summary.clone()),
-        // Search descriptions are plain/markdown — mapped verbatim; only
+        // Search descriptions are plain/markdown: mapped verbatim; only
         // the appstream detail serves HTML (flathub.md §app detail).
         description: non_empty(hit.description.clone()),
         homepage: None, // hits carry no homepage; `lookup` fills it
@@ -414,7 +414,7 @@ fn detail_to_app(detail: AppstreamDetail) -> App {
         .releases
         .iter()
         // `releases[0]` is current; a leading release without a version
-        // string is malformed upstream — skip to the next rather than
+        // string is malformed upstream: skip to the next rather than
         // minting an empty-string version.
         .find(|release| {
             release
@@ -449,7 +449,7 @@ fn detail_to_app(detail: AppstreamDetail) -> App {
 }
 
 /// `platforms` for a payload's arch list: Linux × each entry, first-seen
-/// order preserved. An empty list — including `arches: null` — yields
+/// order preserved. An empty list (including `arches: null`) yields
 /// `[]` = "unknown", the claim-check-skipped case of DESIGN.md §3.3.
 /// Arch spellings outside [`decode_arch`] are skipped.
 fn platforms_from_arches(arches: &[String]) -> Vec<Platform> {
@@ -467,7 +467,7 @@ fn platforms_from_arches(arches: &[String]) -> Vec<Platform> {
 }
 
 /// `platforms` for the appstream detail: its `arches` key when present
-/// (not in today's schema — optional defensively), else the single arch
+/// (not in today's schema: optional defensively), else the single arch
 /// named in `bundle.value` (`app/{app_id}/{arch}/stable`, the detail
 /// payload's only arch declaration), else `[]` = unknown.
 fn detail_platforms(arches: Option<&[String]>, bundle: Option<&Bundle>) -> Vec<Platform> {
@@ -518,7 +518,7 @@ fn flatpak_install(app_id: &str) -> InstallMethod {
     }
 }
 
-/// The per-source identity row for the alias index — `repo: None` because
+/// The per-source identity row for the alias index: `repo: None` because
 /// the dotted app id is globally unique (DESIGN.md §2 `SourceRef::repo`).
 fn flathub_source(app_id: String, version: Option<Version>) -> SourceRef {
     SourceRef {
@@ -530,7 +530,7 @@ fn flathub_source(app_id: String, version: Option<Version>) -> SourceRef {
     }
 }
 
-/// `Some(text)` unless the string is empty/whitespace — the permissive
+/// `Some(text)` unless the string is empty/whitespace: the permissive
 /// encoding for fields upstream types as required-but-nullable.
 fn non_empty(text: String) -> Option<String> {
     non_empty_opt(Some(text))
@@ -546,7 +546,7 @@ fn non_empty_opt(text: Option<String>) -> Option<String> {
     }
 }
 
-/// Strips HTML markup to plain text — the appstream detail description is
+/// Strips HTML markup to plain text: the appstream detail description is
 /// HTML while the search hit's is plain/markdown (flathub.md §app detail).
 ///
 /// Block-level tags become line breaks, all other tags are dropped, the
@@ -555,7 +555,7 @@ fn non_empty_opt(text: Option<String>) -> Option<String> {
 /// (a run containing a newline → one newline, otherwise one space) to undo
 /// the source indentation the markup carries.
 fn html_to_text(html: &str) -> String {
-    // Pass 1 — tags: everything between `<` and `>` is markup. A block
+    // Pass 1: tags: everything between `<` and `>` is markup. A block
     // boundary emits a newline; an unterminated `<` is literal text, not
     // the start of a swallowed region.
     let mut stripped = String::with_capacity(html.len());
@@ -575,7 +575,7 @@ fn html_to_text(html: &str) -> String {
     }
     stripped.push_str(rest);
 
-    // Pass 2 — entities, `&amp;` deliberately last.
+    // Pass 2: entities, `&amp;` deliberately last.
     let mut text = stripped
         .replace("&lt;", "<")
         .replace("&gt;", ">")
@@ -587,7 +587,7 @@ fn html_to_text(html: &str) -> String {
         text = text.replace("&amp;", "&");
     }
 
-    // Pass 3 — whitespace collapse.
+    // Pass 3: whitespace collapse.
     let mut out = String::with_capacity(text.len());
     let mut pending_break = false;
     let mut pending_space = false;
@@ -609,7 +609,7 @@ fn html_to_text(html: &str) -> String {
     out.trim().to_owned()
 }
 
-/// Whether an HTML tag (`p`, `/p`, `br/`, …) is a block-level boundary —
+/// Whether an HTML tag (`p`, `/p`, `br/`, …) is a block-level boundary:
 /// i.e. whether stripping it should break the line rather than vanish.
 fn is_block_tag(tag: &str) -> bool {
     let name: String = tag
@@ -642,14 +642,14 @@ fn is_block_tag(tag: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch half — thin client + adapter (crate `http` feature, DESIGN.md §9)
+// Fetch half: thin client + adapter (crate `http` feature, DESIGN.md §9)
 // ---------------------------------------------------------------------------
 
 /// Descriptive User-Agent (DESIGN.md §3.2: `toride-registry/<source>/<version>`).
 #[cfg(feature = "http")]
 const USER_AGENT: &str = concat!("toride-registry/flathub/", env!("CARGO_PKG_VERSION"));
 
-/// `POST /api/v2/search` — the only write-shaped route this client uses
+/// `POST /api/v2/search`: the only write-shaped route this client uses
 /// (it is a read; the body is the query).
 #[cfg(feature = "http")]
 const SEARCH_PATH: &str = "/api/v2/search";
@@ -706,8 +706,8 @@ impl FlathubClient {
 
     /// `GET /api/v2/appstream/{app_id}` → raw response body.
     ///
-    /// `Ok(None)` is the documented 404 shape — the source has no app with
-    /// that id — and is exactly the [`Adapter::lookup`](crate::adapter::Adapter::lookup)
+    /// `Ok(None)` is the documented 404 shape: the source has no app with
+    /// that id, and is exactly the [`Adapter::lookup`](crate::adapter::Adapter::lookup)
     /// "no such entry" case; every other non-success status is an error.
     ///
     /// # Errors
@@ -782,7 +782,7 @@ impl crate::adapter::Adapter for FlathubAdapter {
 }
 
 /// Maps a reqwest failure onto [`Error::Http`] (the cause rides in
-/// `message` as text — the crate's `Error::Http` carries no typed source
+/// `message` as text: the crate's `Error::Http` carries no typed source
 /// field yet, error.rs).
 #[cfg(feature = "http")]
 fn http_error(url: &str, error: &reqwest::Error) -> Error {
@@ -793,7 +793,7 @@ fn http_error(url: &str, error: &reqwest::Error) -> Error {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — pure parse half against the frozen offline fixtures
+// Tests: pure parse half against the frozen offline fixtures
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -831,7 +831,7 @@ mod tests {
         assert_eq!(brave.id.as_str(), "com-brave-browser");
         assert_eq!(brave.name, "Brave");
         assert_eq!(brave.summary.as_deref(), Some("Fast Internet, AI, Adblock"));
-        // Search descriptions are plain/markdown — verbatim, not stripped.
+        // Search descriptions are plain/markdown: verbatim, not stripped.
         assert!(
             brave
                 .description
@@ -945,7 +945,7 @@ mod tests {
     #[test]
     fn meilisearch_facet_keys_are_ignored() {
         // Both fixtures leak facetDistribution / facetStats /
-        // processingTimeMs — flagged unstable by flathub.md §Limitations.
+        // processingTimeMs: flagged unstable by flathub.md §Limitations.
         // A clean parse proves they are tolerated and dropped.
         let apps = parse_search_envelope(&read_fixture("search-brave-browser.json"))
             .expect("facet-bearing envelope parses");
@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn arches_null_or_empty_means_unknown_platforms() {
-        // `arches: null` — the DESIGN.md §3.3 claim-check-skipped case.
+        // `arches: null`: the DESIGN.md §3.3 claim-check-skipped case.
         let null_arches = r#"{"hits":[{"app_id":"org.example.App","name":"Example",
             "summary":"s","description":"d","arches":null}]}"#;
         let apps = parse_search_envelope(null_arches).expect("parses");

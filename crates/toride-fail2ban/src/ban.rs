@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::store::Store;
 use crate::types::BanEntry;
+use crate::types::normalize_ip;
+
+const MAPPED_V6_PREFIX_OFFSET: u8 = 96;
 
 /// A CIDR network block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -149,7 +152,15 @@ impl CidrSet {
     }
 
     /// Add a CIDR block to the set.
+    ///
+    /// IPv4-mapped IPv6 blocks are converted to their IPv4 equivalent with
+    /// the prefix translated by the 96-bit mapped offset: `::ffff:10.0.0.0/120`
+    /// inserts as `10.0.0.0/24`. A mapped block whose prefix is shorter than
+    /// /96 spans non-mapped addresses and is skipped with a warning.
     pub fn insert(&mut self, block: CidrBlock) {
+        let Some(block) = mapped_v6_block_to_v4(&block) else {
+            return;
+        };
         match block.addr() {
             IpAddr::V4(addr) => {
                 if block.prefix() == 32 {
@@ -180,8 +191,11 @@ impl CidrSet {
     }
 
     /// Check if an IP is contained in any block in this set.
+    ///
+    /// IPv4-mapped IPv6 queries are normalized to IPv4 first.
     #[must_use]
     pub fn contains(&self, ip: IpAddr) -> bool {
+        let ip = normalize_ip(ip);
         match ip {
             IpAddr::V4(addr) => {
                 let bits = u32::from(addr);
@@ -201,7 +215,13 @@ impl CidrSet {
     }
 
     /// Remove a CIDR block from the set.
+    ///
+    /// IPv4-mapped IPv6 blocks are matched against the same converted IPv4
+    /// form [`insert`](Self::insert) stores.
     pub fn remove(&mut self, block: &CidrBlock) -> bool {
+        let Some(block) = mapped_v6_block_to_v4(block) else {
+            return false;
+        };
         match block.addr() {
             IpAddr::V4(addr) => {
                 if block.prefix() == 32 {
@@ -246,6 +266,23 @@ impl CidrSet {
     }
 }
 
+fn mapped_v6_block_to_v4(block: &CidrBlock) -> Option<CidrBlock> {
+    let IpAddr::V6(v6) = block.addr() else {
+        return Some(*block);
+    };
+    let Some(v4) = v6.to_ipv4_mapped() else {
+        return Some(*block);
+    };
+    if block.prefix() < MAPPED_V6_PREFIX_OFFSET {
+        tracing::warn!(
+            block = %block,
+            "IPv4-mapped CIDR with a prefix shorter than /96 spans non-mapped addresses; skipping"
+        );
+        return None;
+    }
+    CidrBlock::new(IpAddr::V4(v4), block.prefix() - MAPPED_V6_PREFIX_OFFSET).ok()
+}
+
 /// High-level ban manager combining storage and CIDR checking.
 pub struct BanManager {
     store: Store,
@@ -266,6 +303,9 @@ impl BanManager {
 
     /// Ban an IP address.
     ///
+    /// IPv4-mapped IPv6 addresses are normalized to their IPv4 form before
+    /// insertion, so both spellings of one address share a single ban.
+    ///
     /// # Errors
     ///
     /// Returns `AlreadyBanned` if the IP is already banned.
@@ -278,6 +318,7 @@ impl BanManager {
         ban_duration_secs: u64,
         reason: Option<String>,
     ) -> crate::Result<BanEntry> {
+        let ip = normalize_ip(ip);
         let now = Utc::now();
         let ban_duration_i64 = i64::try_from(ban_duration_secs).map_err(|_| {
             crate::Error::InvalidConfig(format!("ban duration {ban_duration_secs} exceeds maximum"))
@@ -306,6 +347,7 @@ impl BanManager {
     ///
     /// Returns `NotBanned` if the IP is not currently banned.
     pub fn unban(&self, ip: IpAddr, jail_name: &str) -> crate::Result<BanEntry> {
+        let ip = normalize_ip(ip);
         // Try exact IP match first.
         match self.store.remove_ban(ip, jail_name) {
             Ok(entry) => return Ok(entry),
@@ -331,7 +373,9 @@ impl BanManager {
     ///
     /// Uses CIDR-aware matching: an IP is considered banned if it falls
     /// within any banned CIDR block (e.g., `10.1.2.3` matches a `10.0.0.0/8` ban).
+    /// IPv4-mapped IPv6 queries are normalized to IPv4 first.
     pub fn is_banned(&self, ip: IpAddr) -> crate::Result<bool> {
+        let ip = normalize_ip(ip);
         let bans = self.store.get_bans(None)?;
         for ban in &bans {
             if ban.ip == ip {

@@ -243,7 +243,7 @@ impl SshTab for ForwardingTab {
                             for forward in &session.forwards {
                                 self.pending_ops.push(SshOp::ForwardCancel {
                                     control_path: session.control_path.clone(),
-                                    local_port: forward.local_port,
+                                    forward: forward.into(),
                                 });
                             }
                             let session = &mut self.sessions[self.selected];
@@ -351,12 +351,6 @@ impl SshTab for ForwardingTab {
         self.detail_open.is_some() || self.action_modal.is_some()
     }
 
-    fn close_modal(&mut self) {
-        self.detail_open = None;
-        self.detail_modal_rect = None;
-        self.action_modal = None;
-    }
-
     fn drain_ops(&mut self) -> Vec<SshOp> {
         std::mem::take(&mut self.pending_ops)
     }
@@ -447,7 +441,6 @@ impl ForwardingTab {
             // Store hitbox for mouse detection.
             self.row_hitboxes.push(row_area);
 
-            // Selection or hover highlight — covers all rows of the session.
             if is_selected || is_hovered_session {
                 for x in row_area.x..row_area.right() {
                     if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
@@ -895,7 +888,7 @@ mod tests {
         assert_eq!(tab.action_modal, Some(ActionModal::Cancel));
         assert!(tab.drain_ops().is_empty(), "no op before confirm");
 
-        // 'y' confirms — one ForwardCancel op per forward on the session.
+        // 'y' confirms: one ForwardCancel op per forward on the session.
         tab.handle_key(KeyCode::Char('y'));
         assert!(tab.action_modal.is_none());
 

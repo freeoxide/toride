@@ -13,7 +13,7 @@ use crate::Result;
 /// string.
 ///
 /// The raw JSON output from `tailscale status` is complex; this function
-/// extracts just the backend state field.
+/// extracts only the backend state field.
 ///
 /// # Arguments
 ///

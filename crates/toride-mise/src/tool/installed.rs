@@ -7,10 +7,7 @@ use serde::Deserialize;
 
 use crate::client::Mise;
 use crate::error::MiseResult;
-
-// ---------------------------------------------------------------------------
-// JSON response types
-// ---------------------------------------------------------------------------
+use crate::serde_utils::json_outputs::{LsOutput, LsToolEntry, OutdatedOutput};
 
 /// Status of a single installed tool version as reported by `mise ls --json`.
 #[derive(Debug, Clone, Deserialize)]
@@ -54,9 +51,51 @@ pub struct SourceInfo {
     pub requested: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// ListToolsRequest
-// ---------------------------------------------------------------------------
+fn ls_row(name: String, entry: LsToolEntry) -> ToolStatus {
+    let requested = entry.requested.clone();
+    ToolStatus {
+        name,
+        version: entry.version,
+        source: entry.source.map(|source| SourceInfo {
+            path: source.path,
+            requested: requested.clone(),
+        }),
+        active: entry.active,
+        install_path: entry.install_path,
+        installed: entry.installed,
+        missing: None,
+        outdated: None,
+        requested,
+    }
+}
+
+fn ls_rows(output: LsOutput) -> Vec<ToolStatus> {
+    output
+        .into_iter()
+        .flat_map(|(name, entries)| {
+            entries
+                .into_iter()
+                .map(move |entry| ls_row(name.clone(), entry))
+        })
+        .collect()
+}
+
+fn outdated_rows(output: OutdatedOutput) -> Vec<ToolStatus> {
+    output
+        .into_iter()
+        .map(|(name, entry)| ToolStatus {
+            name,
+            version: entry.current,
+            source: None,
+            active: None,
+            install_path: None,
+            installed: None,
+            missing: None,
+            outdated: Some(true),
+            requested: entry.requested,
+        })
+        .collect()
+}
 
 /// Parameters for a `mise ls` invocation.
 ///
@@ -76,10 +115,15 @@ pub struct ListToolsRequest {
     /// Include an outdated flag in results.
     pub outdated: bool,
     /// Filter results to tools whose name starts with this prefix.
+    ///
+    /// Applied in this crate over the full `mise ls --json` listing: mise's
+    /// positional argument is an exact tool lookup (bare-array output, and a
+    /// partial name is rejected with "not found in mise tool registry"),
+    /// not a prefix filter.
     pub prefix: Option<String>,
     /// Only include tools whose install directory is on the local machine.
     pub local_only: bool,
-    /// Include tools from all config sources (not just the current project).
+    /// Include tools from all config sources (not only the current project).
     pub all_sources: bool,
     /// Only include tools that are safe to prune (unused / stale installs).
     pub prunable_only: bool,
@@ -133,7 +177,7 @@ impl ListToolsRequest {
         self
     }
 
-    /// Include tools from all config sources, not just the current project.
+    /// Include tools from all config sources, not only the current project.
     pub fn all_sources(mut self) -> Self {
         self.all_sources = true;
         self
@@ -146,28 +190,28 @@ impl ListToolsRequest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
-
 impl Mise {
     /// List all known tool versions (installed, missing, and active).
     ///
-    /// Invokes `mise ls --json`. When mise returns `{}` (no tools installed),
-    /// returns an empty vec.
+    /// Invokes `mise ls --json`, which emits an object keyed by tool name.
+    /// Each entry list is flattened into rows carrying the key as the tool
+    /// name. When mise returns `{}` (no tools), returns an empty vec.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list(&self) -> MiseResult<Vec<ToolStatus>> {
-        self.run_json_vec_safe(["ls", "--json"]).await
+        let output: Option<LsOutput> = self.run_json(["ls", "--json"]).await?;
+        Ok(ls_rows(output.unwrap_or_default()))
     }
 
     /// List tools using a full [`ListToolsRequest`].
     ///
     /// Builds the complete `mise ls` command with all filter flags from the
-    /// request struct.
+    /// request struct and parses the tool-name-keyed object into rows. The
+    /// [`ListToolsRequest::prefix`] filter is applied to the parsed rows:
+    /// mise's positional argument is an exact tool lookup, never a prefix.
     ///
     /// # Errors
     ///
@@ -193,7 +237,7 @@ impl Mise {
             args.push("--outdated".into());
         }
         if req.local_only {
-            args.push("--local-only".into());
+            args.push("--local".into());
         }
         if req.all_sources {
             args.push("--all-sources".into());
@@ -204,91 +248,106 @@ impl Mise {
 
         args.push("--json".into());
 
-        // Optional tool name prefix filter.
-        if let Some(ref prefix) = req.prefix {
-            args.push(prefix.clone());
-        }
-
-        self.run_json_vec_safe(args).await
+        let output: Option<LsOutput> = self.run_json(args).await?;
+        let rows = ls_rows(output.unwrap_or_default());
+        Ok(match req.prefix.as_deref() {
+            Some(prefix) => rows
+                .into_iter()
+                .filter(|row| row.name.starts_with(prefix))
+                .collect(),
+            None => rows,
+        })
     }
 
     /// List only installed tool versions.
     ///
-    /// Invokes `mise ls --installed --json`.
+    /// Invokes `mise ls --installed --json` and parses the tool-name-keyed
+    /// object into rows.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_installed(&self) -> MiseResult<Vec<ToolStatus>> {
-        self.run_json_vec_safe(["ls", "--installed", "--json"])
-            .await
+        let output: Option<LsOutput> = self.run_json(["ls", "--installed", "--json"]).await?;
+        Ok(ls_rows(output.unwrap_or_default()))
     }
 
     /// List currently active (resolved) tool versions.
     ///
-    /// Invokes `mise ls --current --json`.
+    /// Invokes `mise ls --current --json` and parses the tool-name-keyed
+    /// object into rows.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_current(&self) -> MiseResult<Vec<ToolStatus>> {
-        self.run_json_vec_safe(["ls", "--current", "--json"]).await
+        let output: Option<LsOutput> = self.run_json(["ls", "--current", "--json"]).await?;
+        Ok(ls_rows(output.unwrap_or_default()))
     }
 
     /// List tools that are referenced in config but not yet installed.
     ///
-    /// Invokes `mise ls --missing --json`.
+    /// Invokes `mise ls --missing --json` and parses the tool-name-keyed
+    /// object into rows.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_missing(&self) -> MiseResult<Vec<ToolStatus>> {
-        self.run_json_vec_safe(["ls", "--missing", "--json"]).await
+        let output: Option<LsOutput> = self.run_json(["ls", "--missing", "--json"]).await?;
+        Ok(ls_rows(output.unwrap_or_default()))
     }
 
     /// List installed tools that have newer versions available.
     ///
-    /// Invokes `mise outdated --json`.
+    /// Invokes `mise outdated --json`, which emits an object keyed by tool
+    /// name, and converts each entry to a row with `outdated` set.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_outdated(&self) -> MiseResult<Vec<ToolStatus>> {
-        self.run_json_vec_safe(["outdated", "--json"]).await
+        let output: Option<OutdatedOutput> = self.run_json(["outdated", "--json"]).await?;
+        Ok(outdated_rows(output.unwrap_or_default()))
     }
 
     /// List tools that are safe to prune (unused or stale installs).
     ///
-    /// Invokes `mise ls --prunable --json`.
+    /// Invokes `mise ls --prunable --json` and parses the tool-name-keyed
+    /// object into rows.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_prunable(&self) -> MiseResult<Vec<ToolStatus>> {
-        self.run_json_vec_safe(["ls", "--prunable", "--json"]).await
+        let output: Option<LsOutput> = self.run_json(["ls", "--prunable", "--json"]).await?;
+        Ok(ls_rows(output.unwrap_or_default()))
     }
 
     /// Return detailed status for a single tool.
     ///
-    /// Invokes `mise ls <tool> --json`.
+    /// Invokes `mise ls <tool> --json`. Unlike the listing methods, real mise
+    /// emits a bare array here, so each entry is labelled with the requested
+    /// tool name.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn tool_info(&self, tool: &str) -> MiseResult<Vec<ToolStatus>> {
-        self.run_json_vec_safe(["ls", tool, "--json"]).await
+        let entries: Option<Vec<LsToolEntry>> = self.run_json(["ls", tool, "--json"]).await?;
+        Ok(entries
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| ls_row(tool.to_owned(), entry))
+            .collect())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -296,6 +355,7 @@ mod tests {
 
     use toride_runner::{CommandOutput, FakeRunner};
 
+    use super::ListToolsRequest;
     use crate::client::Mise;
 
     fn build_mise(fake: Arc<FakeRunner>) -> Mise {
@@ -307,8 +367,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_parses_json() {
-        let json = r#"[{"name":"node","version":"22.1.0","source":{"path":".mise.toml","requested":"22"},"active":true,"install_path":"/home/user/.local/share/mise/installs/node/22.1.0"}]"#;
+    async fn test_list_parses_map_shape() {
+        let json = r#"{"node":[{"version":"22.1.0","install_path":"/home/user/.local/share/mise/installs/node/22.1.0","source":{"type":"mise.toml","path":".mise.toml"},"requested_version":"22","installed":true,"active":true}]}"#;
         let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
         let mise = build_mise(fake.clone());
 
@@ -317,7 +377,8 @@ mod tests {
         assert_eq!(tools[0].name, "node");
         assert_eq!(tools[0].version.as_deref(), Some("22.1.0"));
         assert_eq!(tools[0].active, Some(true));
-        assert!(tools[0].source.is_some());
+        assert_eq!(tools[0].installed, Some(true));
+        assert_eq!(tools[0].requested.as_deref(), Some("22"));
         let src = tools[0].source.as_ref().unwrap();
         assert_eq!(src.path.as_deref(), Some(".mise.toml"));
         assert_eq!(src.requested.as_deref(), Some("22"));
@@ -329,8 +390,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_flattens_multiple_versions_per_tool() {
+        let json =
+            r#"{"node":[{"version":"22.1.0","active":true},{"version":"20.11.0","active":false}]}"#;
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
+        let mise = build_mise(fake);
+
+        let tools = mise.list().await.unwrap();
+        assert_eq!(tools.len(), 2);
+        assert!(tools.iter().all(|t| t.name == "node"));
+        assert_eq!(tools[0].version.as_deref(), Some("22.1.0"));
+        assert_eq!(tools[1].version.as_deref(), Some("20.11.0"));
+    }
+
+    #[tokio::test]
+    async fn test_list_empty_map_yields_no_rows() {
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("{}")));
+        let mise = build_mise(fake);
+
+        let tools = mise.list().await.unwrap();
+        assert!(tools.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_list_missing() {
-        let json = r#"[{"name":"python","version":null,"source":null,"active":false,"install_path":null}]"#;
+        let json = r#"{"python":[{"version":null,"active":false,"install_path":null}]}"#;
         let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
         let mise = build_mise(fake.clone());
 
@@ -342,6 +426,60 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert!(calls[0].args.contains(&"ls".to_string()));
         assert!(calls[0].args.contains(&"--missing".to_string()));
+        assert!(calls[0].args.contains(&"--json".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_with_prefix_filters_rows_without_an_operand() {
+        let json = r#"{"node":[{"version":"22.1.0","active":true}],"python":[{"version":"3.12.5","active":true}]}"#;
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
+        let mise = build_mise(fake.clone());
+
+        let req = ListToolsRequest::new().prefix("py");
+        let tools = mise.list_with(&req).await.unwrap();
+        assert_eq!(tools.len(), 1, "only the matching prefix survives");
+        assert_eq!(tools[0].name, "python");
+        assert_eq!(tools[0].version.as_deref(), Some("3.12.5"));
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].args.last().map(String::as_str),
+            Some("--json"),
+            "no operand may follow --json: mise's operand is an exact tool lookup"
+        );
+        assert!(!calls[0].args.contains(&"py".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_outdated_marks_rows_outdated() {
+        let json =
+            r#"{"uv":{"name":"uv","requested":"latest","current":"0.12.15","latest":"0.13.0"}}"#;
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
+        let mise = build_mise(fake);
+
+        let tools = mise.list_outdated().await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "uv");
+        assert_eq!(tools[0].version.as_deref(), Some("0.12.15"));
+        assert_eq!(tools[0].outdated, Some(true));
+        assert_eq!(tools[0].requested.as_deref(), Some("latest"));
+    }
+
+    #[tokio::test]
+    async fn test_tool_info_labels_array_entries_with_tool_name() {
+        let json = r#"[{"version":"22.23.1","install_path":"/home/user/.local/share/mise/installs/node/22.23.1","installed":true,"active":false}]"#;
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
+        let mise = build_mise(fake.clone());
+
+        let tools = mise.tool_info("node").await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "node");
+        assert_eq!(tools[0].version.as_deref(), Some("22.23.1"));
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].args.contains(&"node".to_string()));
         assert!(calls[0].args.contains(&"--json".to_string()));
     }
 }

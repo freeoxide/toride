@@ -15,20 +15,20 @@ expression: render_findings_markdown(&findings)
 
 ## Critical / Errors
 
-### `🔴 CRITICAL `No SSH allow rule found`
+### 🔴 CRITICAL - No SSH allow rule found
 - **ID:** `ssh:no-rule`
 - **Detail:** UFW is active but no SSH allow rule exists.
 - **Fix:** Add SSH allow rule: ufw allow 22/tcp
 
 ## Warnings
 
-### `🟣 WARNING `Port 5432 (Postgres) is exposed`
+### 🟣 WARNING - Port 5432 (Postgres) is exposed
 - **ID:** `rule:dangerous:5432`
 - **Detail:** Rule exposes port 5432.
 - **Fix:** Restrict access to trusted IPs only.
 
 ## Info / OK
 
-### `✅ OK `UFW binary found`
+### ✅ OK - UFW binary found
 - **ID:** `bin:ufw:exists`
 - **Detail:** The ufw binary is available.

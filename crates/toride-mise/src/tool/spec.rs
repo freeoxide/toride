@@ -8,18 +8,10 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-// ---------------------------------------------------------------------------
-// Known backend prefixes
-// ---------------------------------------------------------------------------
-
 const KNOWN_BACKENDS: &[&str] = &[
     "core", "asdf", "aqua", "cargo", "conda", "dotnet", "forgejo", "gem", "github", "gitlab", "go",
     "http", "npm", "pipx", "spm", "ubi", "vfox",
 ];
-
-// ---------------------------------------------------------------------------
-// VersionRequest
-// ---------------------------------------------------------------------------
 
 /// How a tool version was requested.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -47,10 +39,6 @@ impl fmt::Display for VersionRequest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ToolOptionValue
-// ---------------------------------------------------------------------------
-
 /// A value appearing inside `[key=val,…]` option brackets.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ToolOptionValue {
@@ -75,10 +63,6 @@ impl fmt::Display for ToolOptionValue {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// ToolSpec
-// ---------------------------------------------------------------------------
 
 /// A parsed mise tool specification.
 ///
@@ -119,6 +103,7 @@ impl ToolSpec {
     /// |--------------------------|---------|------------|-------------|-----------------|
     /// | `node@22`                | _none_  | `node`     | `Prefix(22)`| _none_          |
     /// | `npm:prettier@latest`    | `npm`   | `prettier` | `Latest`    | _none_          |
+    /// | `npm:@scope/pkg@3`       | `npm`   | `@scope/pkg` | `Prefix(3)` | _none_        |
     /// | `ubi:Foo/Bar[exe=rg]`   | `ubi`   | `Foo/Bar`  | _none_      | `exe -> "rg"`   |
     /// | `python@3.12.1`          | _none_  | `python`   | `Exact(..)` | _none_          |
     /// | `go:github.com/foo/bar`  | `go`    | `..bar`    | _none_      | _none_          |
@@ -185,10 +170,6 @@ impl AsRef<str> for ToolSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Parsing helpers (private)
-// ---------------------------------------------------------------------------
-
 /// Separate trailing `[key=val,…]` option brackets from the rest.
 ///
 /// Returns `(options_map, remainder_without_options)`.
@@ -210,11 +191,10 @@ fn split_options(raw: &str) -> (BTreeMap<String, ToolOptionValue>, &str) {
     (options, remainder)
 }
 
-/// Parse a comma-separated list of `key=value` pairs.
+/// Split an option string into `key=value` pairs on commas outside quotes.
 fn parse_option_list(s: &str) -> BTreeMap<String, ToolOptionValue> {
     let mut map = BTreeMap::new();
-    // Simple comma split -- does not handle commas inside quoted values.
-    for pair in s.split(',') {
+    for pair in split_pairs_outside_quotes(s) {
         let pair = pair.trim();
         if pair.is_empty() {
             continue;
@@ -229,9 +209,46 @@ fn parse_option_list(s: &str) -> BTreeMap<String, ToolOptionValue> {
     map
 }
 
+fn split_pairs_outside_quotes(s: &str) -> Vec<&str> {
+    let mut pairs = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut start = 0;
+    for (index, ch) in s.char_indices() {
+        match quote {
+            Some(open) if ch == open => quote = None,
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == ',' => {
+                pairs.push(&s[start..index]);
+                start = index + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    pairs.push(&s[start..]);
+    pairs
+}
+
 /// Convert a single option value string into the best-fitting variant.
+///
+/// A value wrapped in matching quotes is the list form: the inner content
+/// splits on commas into a [`ToolOptionValue::StringList`] (one element
+/// stays a single [`ToolOptionValue::String`]). Unquoted commas never reach
+/// this function as one value (the pair splitter consumes them) so an
+/// unquoted `tags=a,b` remains two pairs (`tags="a"` and the bare flag
+/// `b=true`), matching mise's own comma grammar; quote the value to express
+/// a list.
 fn parse_option_value(v: &str) -> ToolOptionValue {
-    // Boolean.
+    let quoted = v.len() >= 2
+        && ((v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')));
+    if quoted {
+        let inner = &v[1..v.len() - 1];
+        let items: Vec<String> = inner.split(',').map(|s| s.trim().to_owned()).collect();
+        if items.len() > 1 {
+            return ToolOptionValue::StringList(items);
+        }
+        return ToolOptionValue::String(inner.to_owned());
+    }
+
     if v.eq_ignore_ascii_case("true") {
         return ToolOptionValue::Bool(true);
     }
@@ -239,21 +256,10 @@ fn parse_option_value(v: &str) -> ToolOptionValue {
         return ToolOptionValue::Bool(false);
     }
 
-    // Integer.
     if let Ok(n) = v.parse::<i64>() {
         return ToolOptionValue::Integer(n);
     }
 
-    // Comma-separated list (only when the value itself is not inside brackets,
-    // which the outer splitter would have already consumed).
-    if v.contains(',') {
-        let items: Vec<String> = v.split(',').map(|s| s.trim().to_owned()).collect();
-        if items.len() > 1 {
-            return ToolOptionValue::StringList(items);
-        }
-    }
-
-    // Fallback: plain string.
     ToolOptionValue::String(v.to_owned())
 }
 
@@ -282,21 +288,28 @@ fn split_backend(s: &str) -> (Option<String>, &str) {
 /// [`VersionRequest::Prefix`], or [`VersionRequest::Exact`].
 ///
 /// Edge cases:
-/// - If the name portion before `@` is empty (e.g. `"@22"`), the leading `@`
-///   is treated as part of the name with no version split.
-/// - If the version portion after `@` is empty (e.g. `"node@"`), the trailing
-///   `@` is treated as part of the name with no version split.
+/// - Scoped names whose first `@` is part of the name (`"@scope/pkg@3"`,
+///   `"npm:@scope/pkg@3.0.0"`) split on the *last* `@`, mirroring mise's
+///   grammar: the empty-before-first-`@` or `/`-bearing name portion means a
+///   later `@` is the real version separator.
+/// - If the version portion after the split is empty (e.g. `"node@"` or a
+///   bare `"@scope/pkg"`), the `@` is treated as part of the name with no
+///   version split.
 fn split_name_version(s: &str) -> (&str, Option<VersionRequest>) {
-    // We split on the *first* `@` so that `go:github.com/foo@v1@bar` (if it
-    // ever appears) keeps the name portion intact.
-    let Some(at) = s.find('@') else {
+    let Some(first_at) = s.find('@') else {
         return (s, None);
+    };
+
+    let name_head = &s[..first_at];
+    let at = if name_head.is_empty() || name_head.contains('/') {
+        s.rfind('@').unwrap_or(first_at)
+    } else {
+        first_at
     };
 
     let name = &s[..at];
     let ver_str = &s[at + 1..];
 
-    // Guard: empty name or empty version means the `@` is not a delimiter.
     if name.is_empty() || ver_str.is_empty() {
         return (s, None);
     }
@@ -306,12 +319,14 @@ fn split_name_version(s: &str) -> (&str, Option<VersionRequest>) {
 }
 
 /// Classify a version string into the appropriate [`VersionRequest`] variant.
+///
+/// `Exact` is reserved for full `X.Y.Z` semver (optionally `v`/`V`-prefixed);
+/// mise resolves shorter forms (`"3.12"`, `"22"`) as version prefixes.
 fn classify_version(s: &str) -> VersionRequest {
     if s.eq_ignore_ascii_case("latest") {
         return VersionRequest::Latest;
     }
 
-    // Known channel / alias keywords.
     let lower = s.to_ascii_lowercase();
     if matches!(
         lower.as_str(),
@@ -326,26 +341,16 @@ fn classify_version(s: &str) -> VersionRequest {
         return VersionRequest::Alias(s.to_owned());
     }
 
-    // If the version looks like an exact semver (contains at least one dot and
-    // starts with a digit or a 'v' followed by a digit) we treat it as exact.
-    // This handles common version formats: "1.2.3", "v1.2.3", "V1.2.3".
-    let digits_start = s.strip_prefix('v').or_else(|| s.strip_prefix('V'));
-    if s.contains('.')
-        && (s.bytes().next().is_some_and(|b| b.is_ascii_digit())
-            || digits_start.is_some_and(|rest| {
-                rest.bytes().next().is_some_and(|b| b.is_ascii_digit()) && rest.contains('.')
-            }))
-    {
+    let trimmed = s
+        .strip_prefix('v')
+        .or_else(|| s.strip_prefix('V'))
+        .unwrap_or(s);
+    if semver::Version::parse(trimmed).is_ok() {
         return VersionRequest::Exact(s.to_owned());
     }
 
-    // Anything else is a prefix (e.g. `"22"` for node, `"3.12"` for python).
     VersionRequest::Prefix(s.to_owned())
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -390,6 +395,83 @@ mod tests {
             spec.version(),
             Some(VersionRequest::Exact(s)) if s == "3.12.1"
         ));
+    }
+
+    #[test]
+    fn exact_requires_full_three_component_semver() {
+        for (raw, expected) in [
+            ("3.12.1", "3.12.1"),
+            ("v1.2.3", "v1.2.3"),
+            ("V2.0.0", "V2.0.0"),
+            ("1.2.3-rc.1", "1.2.3-rc.1"),
+        ] {
+            let spec = ToolSpec::new(format!("tool@{raw}"));
+            assert!(
+                matches!(spec.version(), Some(VersionRequest::Exact(s)) if s == expected),
+                "{raw} must classify as Exact({expected})"
+            );
+        }
+    }
+
+    #[test]
+    fn shorter_version_forms_stay_prefix() {
+        for raw in ["22", "3.12", "3"] {
+            let spec = ToolSpec::new(format!("tool@{raw}"));
+            assert!(
+                matches!(spec.version(), Some(VersionRequest::Prefix(s)) if s == raw),
+                "{raw} must classify as Prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn scoped_npm_spec_splits_on_last_at() {
+        let spec = ToolSpec::new("npm:@scope/pkg@3.0.0");
+        assert_eq!(spec.backend(), Some("npm"));
+        assert_eq!(spec.name(), "@scope/pkg");
+        assert!(matches!(
+            spec.version(),
+            Some(VersionRequest::Exact(s)) if s == "3.0.0"
+        ));
+    }
+
+    #[test]
+    fn quoted_comma_value_builds_a_string_list() {
+        let spec = ToolSpec::new("aqua:foo/bar[tags=\"a,b\",version=2]");
+        assert_eq!(spec.backend(), Some("aqua"));
+        assert_eq!(
+            spec.options().get("tags"),
+            Some(&ToolOptionValue::StringList(vec![
+                "a".to_owned(),
+                "b".to_owned()
+            ])),
+            "the quoted comma form is the list form"
+        );
+        assert_eq!(
+            spec.options().get("version"),
+            Some(&ToolOptionValue::Integer(2))
+        );
+        assert_eq!(
+            spec.options().len(),
+            2,
+            "no phantom flag from the quoted comma"
+        );
+    }
+
+    #[test]
+    fn quoted_single_value_stays_one_string() {
+        let spec = ToolSpec::new("ubi:Foo/Bar[exe=\"rg\"]");
+        assert_eq!(
+            spec.options().get("exe"),
+            Some(&ToolOptionValue::String("rg".to_owned()))
+        );
+    }
+
+    #[test]
+    fn bare_scoped_name_has_no_version() {
+        let spec = ToolSpec::new("@scope/pkg");
+        assert_eq!(spec.name(), "@scope/pkg");
+        assert!(spec.version().is_none());
     }
 
     #[test]

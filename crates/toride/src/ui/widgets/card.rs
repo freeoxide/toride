@@ -6,7 +6,6 @@
 //! module-grid cards.
 
 use ratatui::{
-    Frame,
     layout::Rect,
     style::{Color, Style},
     text::Line,
@@ -48,7 +47,12 @@ impl<'a> Card<'a> {
     }
 
     /// Render the card into `area`.
-    pub fn render(self, frame: &mut Frame, area: Rect, p: Palette) {
+    pub fn render<T: crate::ui::widgets::panel::RenderBuf + ?Sized>(
+        self,
+        frame: &mut T,
+        area: Rect,
+        p: Palette,
+    ) {
         let border_color = if self.focused {
             p.border_hi
         } else {
@@ -62,7 +66,7 @@ impl<'a> Card<'a> {
             .style(Style::new().bg(p.panel))
             .padding(Padding::horizontal(1));
 
-        frame.render_widget(Paragraph::new(self.body).block(block), area);
+        frame.place(Paragraph::new(self.body).block(block), area);
     }
 }
 

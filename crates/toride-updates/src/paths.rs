@@ -32,6 +32,13 @@ pub struct UpdatePaths {
     pub dnf_automatic_conf: PathBuf,
     /// Path to `/etc/dnf/` directory.
     pub dnf_conf_d: PathBuf,
+    /// Path to `apt-check` (Debian/Ubuntu).
+    ///
+    /// Ubuntu ships it at `/usr/lib/update-notifier/apt-check` when the
+    /// `update-notifier-common` package is installed; stock Debian does not.
+    /// [`crate::apt::AptBackend::check_updates`] falls back to
+    /// `apt-get -s upgrade` when this path does not exist.
+    pub apt_check: PathBuf,
     /// Path to the parent directory under which per-unit systemd timer
     /// drop-in directories (`<unit>.d/`) are created.
     ///
@@ -57,6 +64,7 @@ impl UpdatePaths {
             auto_upgrades_enabled: PathBuf::from("/etc/apt/apt.conf.d/20auto-upgrades"),
             dnf_automatic_conf: PathBuf::from("/etc/dnf/automatic.conf"),
             dnf_conf_d: PathBuf::from("/etc/dnf"),
+            apt_check: PathBuf::from("/usr/lib/update-notifier/apt-check"),
             // Parent of per-unit drop-in dirs; the drop-in itself is
             // `<this>/<unit>.d/toride.conf`.
             systemd_timer_d: PathBuf::from("/etc/systemd/system"),

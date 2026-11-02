@@ -21,11 +21,11 @@ for a fake in tests.
 | `tokio-runner`| No      | tokio, async-trait        | The async runner                       |
 | `stream`      | No      | `tokio-runner`            | Streaming output reads                 |
 | `serde`       | No      | serde, serde_json         | Serde on the spec/output types         |
-| `fake`        | No      | —                         | The test fake                          |
+| `fake`        | No      | none                      | The test fake                          |
 
 ```toml
 [dependencies]
-toride-runner = "0.1"
+toride-runner = "0.2"
 ```
 
 [Changelog](CHANGELOG.md) · [Source](https://github.com/freeoxide/toride/tree/master/crates/toride-runner)

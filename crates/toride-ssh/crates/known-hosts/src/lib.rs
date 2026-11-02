@@ -8,7 +8,6 @@
 mod parse;
 mod scan;
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -70,11 +69,11 @@ pub enum KeyChangeKind {
 /// Returned by [`KnownHostsService::verify_host_key_dns_status`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DnsVerifyStatus {
-    /// `VerifyHostKeyDNS yes` — SSHFP records will be used to verify host keys.
+    /// `VerifyHostKeyDNS yes`, SSHFP records will be used to verify host keys.
     Enabled,
-    /// `VerifyHostKeyDNS no` — DNS-based host key verification disabled.
+    /// `VerifyHostKeyDNS no`, DNS-based host key verification disabled.
     Disabled,
-    /// `VerifyHostKeyDNS ask` — verify via SSHFP but still prompt on mismatch.
+    /// `VerifyHostKeyDNS ask`, verify via SSHFP but still prompt on mismatch.
     Ask,
     /// Directive not present in config (uses the OpenSSH default: `no`).
     Unknown,
@@ -173,7 +172,7 @@ impl<'a> KnownHostsService<'a> {
     /// Remove all entries matching the given host from `~/.ssh/known_hosts`.
     ///
     /// Entries whose hostname patterns list contains an exact match for `host`
-    /// are removed — including hashed entries (`|1|...`), which are matched by
+    /// are removed, including hashed entries (`|1|...`), which are matched by
     /// verifying the entry's HMAC against `host`.
     ///
     /// The removal is performed atomically (write to a temp file, then rename)
@@ -242,23 +241,18 @@ impl<'a> KnownHostsService<'a> {
 
         for line in content.lines() {
             let trimmed = line.trim();
-            // Skip comments.
-            if trimmed.starts_with('#') {
+            if trimmed.starts_with('#') || trimmed.is_empty() {
                 continue;
             }
 
-            // Check for "UpdateHostKeys yes" (case-insensitive keyword).
-            let lower = trimmed.to_ascii_lowercase();
-            if lower.starts_with("updatehostkeys") {
-                // Extract the value after the keyword.
-                let value = trimmed["UpdateHostKeys".len()..].trim();
-                if value.eq_ignore_ascii_case("yes") {
-                    tracing::info!(
-                        "UpdateHostKeys yes found in SSH config — \
-                         this feature is not yet supported by toride"
-                    );
-                    return Ok(true);
-                }
+            if let Some(value) = config_directive_value(trimmed, "UpdateHostKeys")
+                && value.eq_ignore_ascii_case("yes")
+            {
+                tracing::info!(
+                    "UpdateHostKeys yes found in SSH config: \
+                     this feature is not yet supported by toride"
+                );
+                return Ok(true);
             }
         }
 
@@ -271,7 +265,7 @@ impl<'a> KnownHostsService<'a> {
     /// for the `VerifyHostKeyDNS` directive and returns the configured mode.
     /// If the directive is not found, returns [`DnsVerifyStatus::Unknown`].
     ///
-    /// This performs a lightweight config scan — it does **not** follow
+    /// This performs a lightweight config scan, it does **not** follow
     /// `Include` chains or evaluate `Match` blocks.
     ///
     /// # Errors
@@ -339,10 +333,6 @@ impl<'a> KnownHostsService<'a> {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // find() — ssh-keygen -F based lookup
-    // -----------------------------------------------------------------------
-
     /// Find all `known_hosts` entries matching the given host.
     ///
     /// Uses `ssh-keygen -F <host>` which can match **hashed** hostnames
@@ -377,9 +367,9 @@ impl<'a> KnownHostsService<'a> {
     /// missing file returns an empty vec (not an error).
     ///
     /// A genuine "host not present" result (ssh-keygen exits with code 1 and
-    /// no matches) also returns an empty vec.  Any *other* failure — the
+    /// no matches) also returns an empty vec.  Any *other* failure, the
     /// `ssh-keygen` binary missing from `PATH`, a permission error, a panic
-    /// in the runner task, or an unexpected non-unit exit code — is
+    /// in the runner task, or an unexpected non-unit exit code, is
     /// propagated as `Err` so callers can distinguish "absent" from
     /// "something went wrong".
     async fn find_in_file(&self, host: &str, path: &Path) -> Result<Vec<KnownHostEntry>> {
@@ -395,21 +385,12 @@ impl<'a> KnownHostsService<'a> {
         let host_owned = host.to_owned();
         let args = vec!["-F".to_owned(), host_owned, "-f".to_owned(), path_str];
 
-        // ssh-keygen -F returns exit code 1 when the host is not found —
-        // that is a normal result, not an error.  Any other failure
-        // (binary missing, permission denied, runner task panic, …) must be
-        // surfaced so the caller can tell an absent host apart from a
-        // broken lookup.
         match self.runner.run("ssh-keygen", args).await {
             Ok(raw) => Ok(parse_ssh_keygen_f_output(host, &raw)),
             Err(e) if is_host_not_found(&e) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
     }
-
-    // -----------------------------------------------------------------------
-    // GlobalKnownHostsFile support
-    // -----------------------------------------------------------------------
 
     /// List entries from the global known hosts file (`/etc/ssh/ssh_known_hosts`).
     ///
@@ -443,10 +424,6 @@ impl<'a> KnownHostsService<'a> {
         Ok(entries)
     }
 
-    // -----------------------------------------------------------------------
-    // Host key change detection
-    // -----------------------------------------------------------------------
-
     /// Scan a host and compare its keys with what is stored in `known_hosts`.
     ///
     /// Returns a [`HostKeyChangeReport`] describing any differences:
@@ -473,10 +450,6 @@ impl<'a> KnownHostsService<'a> {
         })
     }
 
-    // -----------------------------------------------------------------------
-    // UserKnownHostsFile config directive awareness
-    // -----------------------------------------------------------------------
-
     /// Resolve the `UserKnownHostsFile` directive from `~/.ssh/config` for
     /// the given host.
     ///
@@ -484,7 +457,7 @@ impl<'a> KnownHostsService<'a> {
     /// configured path (with `~` expanded).  If set to `"none"`, returns
     /// `None`.  Otherwise returns the default `~/.ssh/known_hosts`.
     ///
-    /// This performs a lightweight config scan — it does **not** follow
+    /// This performs a lightweight config scan, it does **not** follow
     /// `Include` chains or evaluate `Match` blocks.  For full config
     /// resolution use `ConfigService::resolve_host`.
     ///
@@ -501,7 +474,7 @@ impl<'a> KnownHostsService<'a> {
 
         if let Some(raw) = find_user_known_hosts_file_in_config(&content, host) {
             if raw.eq_ignore_ascii_case("none") {
-                // "none" means no user known_hosts file — return a path that
+                // "none" means no user known_hosts file, return a path that
                 // will never exist so callers get an empty result.
                 return Ok(PathBuf::from("/dev/null"));
             }
@@ -522,9 +495,9 @@ impl<'a> KnownHostsService<'a> {
 /// exit code, so the only signal available is the [`Error::CommandFailed`]
 /// message, which the production runner formats as
 /// `` `command `ssh-keygen` failed with exit Some(1): … ``.  We therefore
-/// match exit code 1 inside that message.  Everything else — a missing
+/// match exit code 1 inside that message.  Everything else, a missing
 /// binary (also surfaced as `CommandFailed`), a `TaskFailed`, a
-/// `PermissionDenied`, or a non-unit exit code — is treated as a real error
+/// `PermissionDenied`, or a non-unit exit code, is treated as a real error
 /// and propagated.
 fn is_host_not_found(error: &Error) -> bool {
     let Error::CommandFailed(msg) = error else {
@@ -578,53 +551,58 @@ fn parse_ssh_keygen_f_output(host: &str, raw: &str) -> Vec<KnownHostEntry> {
 }
 
 /// Compare stored and scanned host keys, returning a list of changes.
+///
+/// Entries carrying a marker (`@cert-authority`, `@revoked`) are not host
+/// keys and are excluded from the comparison, so a CA line never triggers
+/// a false change. Multiple entries of one key type are compared
+/// per-entry: a scanned key matches when any stored entry of the same
+/// type carries the same blob.
 fn compare_host_keys(stored: &[KnownHostEntry], scanned: &[ScannedHostKey]) -> Vec<KeyChange> {
     let mut changes = Vec::new();
 
-    // Build maps of key_type -> (public_key, fingerprint_display) for both.
-    let stored_map: HashMap<&str, &str> = stored
-        .iter()
-        .map(|e| (e.key_type.as_str(), e.public_key.as_str()))
-        .collect();
-    let scanned_map: HashMap<&str, &str> = scanned
-        .iter()
-        .map(|e| (e.key_type.as_str(), e.public_key.as_str()))
-        .collect();
+    for scanned_key in scanned {
+        let key_type = scanned_key.key_type.as_str();
+        let same_type: Vec<&KnownHostEntry> = stored
+            .iter()
+            .filter(|e| e.markers.is_empty() && e.key_type == key_type)
+            .collect();
 
-    // Check for new and changed keys.
-    for (&key_type, &scanned_key) in &scanned_map {
-        match stored_map.get(key_type) {
-            Some(&stored_key) => {
-                if stored_key != scanned_key {
-                    let stored_fp = match parse::compute_key_fingerprint(stored_key, key_type) {
-                        Ok(fp) => fp.to_string(),
-                        Err(_) => "(unavailable)".to_owned(),
-                    };
-                    let scanned_fp = match parse::compute_key_fingerprint(scanned_key, key_type) {
-                        Ok(fp) => fp.to_string(),
-                        Err(_) => "(unavailable)".to_owned(),
-                    };
-                    changes.push(KeyChange {
-                        key_type: key_type.to_owned(),
-                        kind: KeyChangeKind::Changed {
-                            stored_fingerprint: stored_fp,
-                            scanned_fingerprint: scanned_fp,
-                        },
-                    });
-                }
-            }
-            None => {
-                changes.push(KeyChange {
-                    key_type: key_type.to_owned(),
-                    kind: KeyChangeKind::New,
-                });
-            }
+        if same_type.is_empty() {
+            changes.push(KeyChange {
+                key_type: key_type.to_owned(),
+                kind: KeyChangeKind::New,
+            });
+            continue;
         }
+
+        if same_type
+            .iter()
+            .any(|e| e.public_key == scanned_key.public_key)
+        {
+            continue;
+        }
+
+        let stored_key = same_type[0];
+        let stored_fp = match parse::compute_key_fingerprint(&stored_key.public_key, key_type) {
+            Ok(fp) => fp.to_string(),
+            Err(_) => "(unavailable)".to_owned(),
+        };
+        let scanned_fp = match parse::compute_key_fingerprint(&scanned_key.public_key, key_type) {
+            Ok(fp) => fp.to_string(),
+            Err(_) => "(unavailable)".to_owned(),
+        };
+        changes.push(KeyChange {
+            key_type: key_type.to_owned(),
+            kind: KeyChangeKind::Changed {
+                stored_fingerprint: stored_fp,
+                scanned_fingerprint: scanned_fp,
+            },
+        });
     }
 
-    // Check for removed keys.
-    for &key_type in stored_map.keys() {
-        if !scanned_map.contains_key(key_type) {
+    for stored_entry in stored.iter().filter(|e| e.markers.is_empty()) {
+        let key_type = stored_entry.key_type.as_str();
+        if !scanned.iter().any(|s| s.key_type == key_type) {
             changes.push(KeyChange {
                 key_type: key_type.to_owned(),
                 kind: KeyChangeKind::Removed,
@@ -635,9 +613,102 @@ fn compare_host_keys(stored: &[KnownHostEntry], scanned: &[ScannedHostKey]) -> V
     changes
 }
 
+/// Key types whose stored blob matched a scan, for callers that also
+/// report healthy entries.
+#[derive(Debug, Clone)]
+pub struct HostKeyLinesComparison {
+    /// Marker-free stored key types whose blob matched a scanned key.
+    pub matched_types: Vec<String>,
+    /// Detected changes (new, removed, changed).
+    pub changes: Vec<KeyChange>,
+}
+
+/// Compare raw `known_hosts` lines (as printed by `ssh-keygen -F`) with
+/// raw `ssh-keyscan` lines.
+///
+/// Both line sets are parsed with the crate's own parsers; unparseable
+/// lines are skipped with a warning. Marker lines (`@cert-authority`,
+/// `@revoked`) are excluded from the stored side, so certificate
+/// authorities never surface as changed or removed host keys.
+#[must_use]
+pub fn compare_host_key_lines(
+    stored_lines: &[String],
+    scanned_lines: &[String],
+) -> HostKeyLinesComparison {
+    let stored: Vec<KnownHostEntry> = stored_lines
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            match parse::parse_line(trimmed, idx + 1) {
+                Ok(entry) => Some(entry),
+                Err(e) => {
+                    tracing::warn!(line_number = idx + 1, error = %e, "skipping unparseable stored host key line");
+                    None
+                }
+            }
+        })
+        .collect();
+    let scanned: Vec<ScannedHostKey> = scanned_lines
+        .iter()
+        .filter_map(|line| match scan::parse_keyscan_line("", line.trim()) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                tracing::warn!(line = %line, error = %e, "skipping unparseable scanned host key line");
+                None
+            }
+        })
+        .collect();
+
+    let changes = compare_host_keys(&stored, &scanned);
+
+    let mut matched_types: Vec<String> = stored
+        .iter()
+        .filter(|e| e.markers.is_empty())
+        .filter(|e| {
+            scanned
+                .iter()
+                .any(|s| s.key_type == e.key_type && s.public_key == e.public_key)
+        })
+        .map(|e| e.key_type.clone())
+        .collect();
+    matched_types.sort();
+    matched_types.dedup();
+
+    HostKeyLinesComparison {
+        matched_types,
+        changes,
+    }
+}
+
+/// Extract the value of `keyword` from a trimmed `ssh_config` line.
+///
+/// Matches the `keyword value`, `keyword<TAB>value`, and `keyword=value`
+/// separators `ssh_config(5)` accepts, comparing the keyword
+/// case-insensitively without allocating.
+fn config_directive_value<'a>(trimmed: &'a str, keyword: &str) -> Option<&'a str> {
+    let bytes = trimmed.as_bytes();
+    if bytes.len() <= keyword.len() {
+        return None;
+    }
+    if !bytes[..keyword.len()].eq_ignore_ascii_case(keyword.as_bytes()) {
+        return None;
+    }
+    let separator = bytes[keyword.len()];
+    if separator != b' ' && separator != b'\t' && separator != b'=' {
+        return None;
+    }
+    let rest = &trimmed[keyword.len() + 1..];
+    let rest = rest.strip_prefix('=').unwrap_or(rest);
+    Some(rest.trim_start_matches([' ', '\t']))
+}
+
 /// Scan SSH config for `UserKnownHostsFile` directive matching the given host.
 ///
-/// Performs a lightweight scan — does not follow `Include` chains or `Match`
+/// Performs a lightweight scan: does not follow `Include` chains or `Match`
 /// blocks.  Returns the raw directive value (may contain `~`).
 fn find_user_known_hosts_file_in_config(config_content: &str, host: &str) -> Option<String> {
     let mut in_matching_block = false;
@@ -648,15 +719,12 @@ fn find_user_known_hosts_file_in_config(config_content: &str, host: &str) -> Opt
     for line in config_content.lines() {
         let trimmed = line.trim();
 
-        // Skip comments and blank lines.
         if trimmed.starts_with('#') || trimmed.is_empty() {
             continue;
         }
 
-        // Detect Host block boundaries.
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("host ") {
-            let patterns: Vec<&str> = trimmed[5..].split_whitespace().collect();
+        if let Some(patterns_str) = config_directive_value(trimmed, "Host") {
+            let patterns: Vec<&str> = patterns_str.split_whitespace().collect();
             in_any_host_block = true;
             in_matching_block = patterns
                 .iter()
@@ -664,13 +732,11 @@ fn find_user_known_hosts_file_in_config(config_content: &str, host: &str) -> Opt
             continue;
         }
 
-        if lower.starts_with("userknownhostsfile ") {
-            let value = trimmed["userknownhostsfile".len()..].trim().to_owned();
+        if let Some(value) = config_directive_value(trimmed, "UserKnownHostsFile") {
             if in_matching_block && host_value.is_none() {
-                host_value = Some(value);
+                host_value = Some(value.to_owned());
             } else if !in_any_host_block && global_value.is_none() {
-                // Only treat as global directive if outside any Host block.
-                global_value = Some(value);
+                global_value = Some(value.to_owned());
             }
         }
     }
@@ -705,21 +771,23 @@ fn expand_known_hosts_path(raw: &str) -> PathBuf {
 
 /// Detect the `VerifyHostKeyDNS` setting from SSH config content.
 ///
-/// Scans for the directive at both the global level and inside `Host` blocks.
-/// The last occurrence wins (matching OpenSSH's first-match-wins for the
-/// *value*, but we scan top-to-bottom so the most specific block takes
-/// precedence if present).
-pub(crate) fn detect_verify_host_key_dns(config_content: &str) -> DnsVerifyStatus {
+/// Scans for the directive at both the global level and inside `Host`
+/// blocks and returns the first recognized value. Accepts the
+/// `keyword value`, `keyword<TAB>value`, and `keyword=value` separators
+/// `ssh_config(5)` allows, comparing case-insensitively without
+/// allocating a lowered copy of the line.
+///
+/// Shared scanner: `toride-ssh-doctor` routes its `VerifyHostKeyDNS`
+/// check through this function instead of keeping a twin.
+#[must_use]
+pub fn detect_verify_host_key_dns(config_content: &str) -> DnsVerifyStatus {
     for line in config_content.lines() {
         let trimmed = line.trim();
-        // Skip comments and blank lines.
         if trimmed.starts_with('#') || trimmed.is_empty() {
             continue;
         }
 
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("verifyhostkeydns") {
-            let value = trimmed["verifyhostkeydns".len()..].trim();
+        if let Some(value) = config_directive_value(trimmed, "VerifyHostKeyDNS") {
             if value.eq_ignore_ascii_case("yes") || value == "true" {
                 return DnsVerifyStatus::Enabled;
             } else if value.eq_ignore_ascii_case("no") || value == "false" {
@@ -794,7 +862,7 @@ fn rand_suffix() -> u64 {
 fn remove_host_sync(path: &Path, host: &str) -> Result<()> {
     let contents = std::fs::read_to_string(path)?;
 
-    let mut kept = String::new();
+    let mut kept = String::with_capacity(contents.len());
     let mut removed_any = false;
 
     for raw_line in contents.lines() {
@@ -866,7 +934,7 @@ fn remove_host_sync(path: &Path, host: &str) -> Result<()> {
 /// given target hostname.
 ///
 /// Handles exact string match and bracketed `[host]:port` forms.
-/// Does **not** expand glob patterns (`*`, `?`) or negations (`!`) — those
+/// Does **not** expand glob patterns (`*`, `?`) or negations (`!`), those
 /// require the full SSH matching algorithm.
 fn host_pattern_matches(pattern: &str, target: &str) -> bool {
     // Hashed form (used by `ssh-keyscan -H` and `HashKnownHosts yes`).
@@ -954,12 +1022,12 @@ fn line_matches_host(line: &str, target: &str) -> bool {
         return false;
     };
 
-    // Hashed entries — match by verifying the HMAC with the entry's salt.
+    // Hashed entries, match by verifying the HMAC with the entry's salt.
     if hosts_field.starts_with("|1|") {
         return hashed_host_matches(hosts_field, target);
     }
 
-    // Comma-separated patterns — try each one.
+    // Comma-separated patterns, try each one.
     hosts_field
         .split_terminator(',')
         .any(|pattern| host_pattern_matches(pattern, target))
@@ -1138,10 +1206,6 @@ mod tests {
         ));
     }
 
-    // -----------------------------------------------------------------------
-    // Known hosts find() — by hostname, by IP, by [host]:port
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn find_entry_by_hostname() {
         let dir = tempfile::tempdir().unwrap();
@@ -1232,10 +1296,6 @@ mod tests {
         assert_eq!(entries[0].hosts, vec!["*.example.com"]);
     }
 
-    // -----------------------------------------------------------------------
-    // Known hosts fingerprint display — SHA-256 format
-    // -----------------------------------------------------------------------
-
     #[test]
     fn fingerprint_display_format() {
         let fp = toride_ssh_core::Fingerprint {
@@ -1263,10 +1323,6 @@ mod tests {
         assert_eq!(format!("{fp}"), "SHA256:nistp256hashvalue");
     }
 
-    // -----------------------------------------------------------------------
-    // Known hosts host key change detection — scanned vs stored
-    // -----------------------------------------------------------------------
-
     #[test]
     fn host_key_change_detection_different_key_types() {
         use super::parse::parse_line;
@@ -1286,7 +1342,7 @@ mod tests {
         )
         .unwrap();
 
-        // Key types differ — host key has changed.
+        // Key types differ, host key has changed.
         assert_ne!(stored.key_type, scanned.key_type);
     }
 
@@ -1394,10 +1450,6 @@ host-b ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         assert!(result.is_err());
     }
 
-    // -----------------------------------------------------------------------
-    // parse_ssh_keygen_f_output
-    // -----------------------------------------------------------------------
-
     #[test]
     fn parse_ssh_keygen_f_output_single_entry() {
         let raw = "\
@@ -1440,10 +1492,6 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         assert!(entries.is_empty());
     }
 
-    // -----------------------------------------------------------------------
-    // find() — ssh-keygen -F based lookup
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn find_returns_matching_entries() {
         let dir = tempfile::tempdir().unwrap();
@@ -1473,7 +1521,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
         let runner = toride_ssh_core::MockCliRunner::new();
-        // ssh-keygen -F returns exit code 1 for not found — mock as error.
+        // ssh-keygen -F returns exit code 1 for not found, mock as error.
         runner.push_run_response(
             "ssh-keygen",
             Err(crate::Error::CommandFailed("exit status: 1".into())),
@@ -1494,7 +1542,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
         let runner = toride_ssh_core::MockCliRunner::new();
-        // First call: user known_hosts — host absent (ssh-keygen exit code 1).
+        // First call: user known_hosts, host absent (ssh-keygen exit code 1).
         runner.push_run_response(
             "ssh-keygen",
             Err(crate::Error::CommandFailed("exit Some(1)".into())),
@@ -1522,7 +1570,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
         let runner = toride_ssh_core::MockCliRunner::new();
-        // ssh-keygen -F returns exit code 1 when the host is absent — both
+        // ssh-keygen -F returns exit code 1 when the host is absent, both
         // the production Debug formatting (`exit Some(1)`) and the
         // conventional shorthand (`exit status: 1`) must be recognised.
         runner.push_run_response(
@@ -1561,7 +1609,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
         let runner = toride_ssh_core::MockCliRunner::new();
-        // The ssh-keygen binary is missing from PATH — a `CommandFailed`
+        // The ssh-keygen binary is missing from PATH, a `CommandFailed`
         // whose message does NOT carry exit code 1.  This must NOT be
         // silently swallowed as an empty result.
         runner.push_run_response(
@@ -1644,10 +1692,6 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         assert!(!is_host_not_found(&Error::PermissionDenied("/x".into())));
     }
 
-    // -----------------------------------------------------------------------
-    // fingerprint() on KnownHostEntry
-    // -----------------------------------------------------------------------
-
     #[test]
     fn known_host_entry_fingerprint_is_sha256() {
         let entry = parse::parse_line(
@@ -1666,24 +1710,16 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
 
     #[test]
     fn known_host_entry_fingerprint_rsa() {
-        // A minimal RSA key blob — not a real key, but structurally valid
-        // for the ssh_key parser (algorithm string + exponent + modulus).
-        // We test that fingerprint computation does not panic on RSA entries
-        // and produces a SHA256: prefix.  Since this is a synthetic blob,
-        // we allow the parse to fail gracefully and just verify the path.
         let entry = parse::parse_line(
-            "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+            "host ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCrIILJHHxYtpVqf2rJdtFQHNlaFHE/7lXqyYoKhf9qTWO0NSDtlbbCZGqqDUsvXR2Q71A5TcyNaPPTCXaUrosEF3NeQ6901lEDnPZVsxUTzgf0DxkJ47TzyqfQbThQ8TKq+H5dV+Vxh2+jNWBo5A1jxNnh22+ZgqJNNlHA6hYdmKSLxwrfgkJMvy1rle8cK1V45EVEqwbbcDALXSOQZEqp8ZeHH0QAKcZ3pNYP8v2ZZh6ljb3jJGBusx0/iPndCovqbbYkaOBag5jDKuAehLQKZiJHAxLWfmmCAqHA54jJOaJ7U6xvuE4f8cFuQhBcstiPOu6dkAX6rOamSH2FUlvR",
             1,
         )
         .unwrap();
         let fp = entry.fingerprint().unwrap();
-        let fp_str = format!("{fp}");
-        assert!(fp_str.starts_with("SHA256:"));
+        assert!(matches!(fp.key_type, toride_ssh_core::KeyType::Rsa { .. }));
+        assert_eq!(fp.hash, "zi9Fig+6FSOyjpL8yWyinPb4DmAJ0k73kumtOpWmJ3k");
+        assert!(format!("{fp}").starts_with("SHA256:"));
     }
-
-    // -----------------------------------------------------------------------
-    // fingerprint() on ScannedHostKey
-    // -----------------------------------------------------------------------
 
     #[test]
     fn scanned_host_key_fingerprint() {
@@ -1729,10 +1765,6 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         assert!(matches!(changes[0].kind, KeyChangeKind::Changed { .. }));
     }
 
-    // -----------------------------------------------------------------------
-    // list_global()
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn list_global_reads_global_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1760,10 +1792,6 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         let entries = svc.list_global().await.unwrap();
         assert!(entries.is_empty());
     }
-
-    // -----------------------------------------------------------------------
-    // list_all()
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn list_all_merges_user_and_global() {
@@ -1794,10 +1822,6 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         assert!(hosts.contains(&"global-host"));
     }
 
-    // -----------------------------------------------------------------------
-    // check_host_key_change()
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn check_host_key_change_detects_changed_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -1811,13 +1835,13 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
         let runner = toride_ssh_core::MockCliRunner::new();
 
-        // Mock ssh-keygen -F for find() — return the stored entry.
+        // Mock ssh-keygen -F for find(), return the stored entry.
         runner.push_run_response(
             "ssh-keygen",
             Ok("# Host example.com found: line 1\nexample.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n".to_owned()),
         );
 
-        // Mock ssh-keyscan for scan() — return a DIFFERENT key.
+        // Mock ssh-keyscan for scan(), return a DIFFERENT key.
         runner.push_run_response(
             "ssh-keyscan",
             Ok("example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDIFFERENTKEY0000000000000000000000000\n".to_owned()),
@@ -1844,14 +1868,14 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
         let runner = toride_ssh_core::MockCliRunner::new();
 
-        // Mock ssh-keygen -F — same key.
+        // Mock ssh-keygen -F, same key.
         runner.push_run_response(
             "ssh-keygen",
             Ok(format!(
                 "# Host example.com found: line 1\nexample.com ssh-ed25519 {key_b64}\n"
             )),
         );
-        // Mock ssh-keyscan — same key.
+        // Mock ssh-keyscan, same key.
         runner.push_run_response(
             "ssh-keyscan",
             Ok(format!("example.com ssh-ed25519 {key_b64}\n")),
@@ -1934,14 +1958,10 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         assert!(matches!(report.changes[0].kind, KeyChangeKind::Removed));
     }
 
-    // -----------------------------------------------------------------------
-    // resolve_user_known_hosts_file()
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn resolve_user_known_hosts_file_default() {
         let dir = tempfile::tempdir().unwrap();
-        // No config file — should return default known_hosts path.
+        // No config file, should return default known_hosts path.
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
         let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
@@ -2010,9 +2030,102 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         assert_eq!(result, PathBuf::from("/global/custom/known_hosts"));
     }
 
-    // -----------------------------------------------------------------------
-    // find_user_known_hosts_file_in_config()
-    // -----------------------------------------------------------------------
+    #[test]
+    fn find_user_known_hosts_file_in_config_equals_and_tab_forms() {
+        let equals = "Host example.com\n\tUserKnownHostsFile=/custom/equal/kh\n";
+        let tabbed = "Host example.com\n\tUserKnownHostsFile\t/custom/tab/kh\n";
+
+        assert_eq!(
+            find_user_known_hosts_file_in_config(equals, "example.com").as_deref(),
+            Some("/custom/equal/kh"),
+            "Keyword=value must parse"
+        );
+        assert_eq!(
+            find_user_known_hosts_file_in_config(tabbed, "example.com").as_deref(),
+            Some("/custom/tab/kh"),
+            "tab-separated keyword must parse"
+        );
+    }
+
+    #[test]
+    fn find_user_known_hosts_file_in_config_host_with_tab_separator() {
+        let config = "Host\texample.com\n    UserKnownHostsFile /custom/kh\n";
+        assert_eq!(
+            find_user_known_hosts_file_in_config(config, "example.com").as_deref(),
+            Some("/custom/kh"),
+            "Host<TAB>patterns must open a block"
+        );
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_equals_form() {
+        assert_eq!(
+            detect_verify_host_key_dns("VerifyHostKeyDNS=yes"),
+            DnsVerifyStatus::Enabled
+        );
+        assert_eq!(
+            detect_verify_host_key_dns("verifyhostkeydns\tno"),
+            DnsVerifyStatus::Disabled
+        );
+        assert_eq!(
+            detect_verify_host_key_dns("VerifyHostKeyDNS = ask"),
+            DnsVerifyStatus::Ask
+        );
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_multibyte_line_does_not_panic() {
+        // Six euros are 18 bytes, so byte 16 (the VerifyHostKeyDNS keyword
+        // length) falls inside the sixth character.
+        let line = format!("{} yes", "€".repeat(6));
+        assert_eq!(
+            detect_verify_host_key_dns(&line),
+            DnsVerifyStatus::Unknown,
+            "a multi-byte line must be skipped, not sliced at a non-boundary"
+        );
+    }
+
+    #[test]
+    fn find_user_known_hosts_file_multibyte_host_line_does_not_panic() {
+        // The emoji occupies bytes 2..6, so byte 4 (the Host keyword
+        // length) falls inside it.
+        let content = "ab😀 x\nUserKnownHostsFile /custom\n";
+        assert_eq!(
+            find_user_known_hosts_file_in_config(content, "web"),
+            Some("/custom".to_owned()),
+            "the global directive must survive a multi-byte Host-ish line"
+        );
+    }
+
+    #[test]
+    fn config_directive_value_rejects_prefix_without_separator() {
+        assert_eq!(config_directive_value("hostname example.com", "host"), None);
+        assert_eq!(config_directive_value("hostexample", "host"), None);
+        assert_eq!(
+            config_directive_value("Host example.com", "host"),
+            Some("example.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn is_update_host_keys_enabled_accepts_equals_and_tab_forms() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, line) in [
+            ("equals", "UpdateHostKeys=yes\n"),
+            ("tab", "UpdateHostKeys\tyes\n"),
+        ] {
+            let case_dir = dir.path().join(name);
+            std::fs::create_dir_all(&case_dir).unwrap();
+            std::fs::write(case_dir.join("config"), line).unwrap();
+            let paths = toride_ssh_core::SshPaths::with_dir(&case_dir);
+            let runner = toride_ssh_core::MockCliRunner::new();
+            let svc = KnownHostsService::new(&paths, &runner);
+            assert!(
+                svc.is_update_host_keys_enabled().await.unwrap(),
+                "{name} form must be detected"
+            );
+        }
+    }
 
     #[test]
     fn find_user_known_hosts_file_in_config_host_specific() {
@@ -2062,10 +2175,6 @@ Host *
         assert_eq!(result, Some("/wildcard/known_hosts".to_owned()));
     }
 
-    // -----------------------------------------------------------------------
-    // expand_known_hosts_path()
-    // -----------------------------------------------------------------------
-
     #[test]
     fn expand_known_hosts_path_absolute() {
         assert_eq!(
@@ -2073,10 +2182,6 @@ Host *
             PathBuf::from("/absolute/path/known_hosts")
         );
     }
-
-    // -----------------------------------------------------------------------
-    // compare_host_keys()
-    // -----------------------------------------------------------------------
 
     #[test]
     fn compare_host_keys_detects_new() {
@@ -2134,9 +2239,69 @@ Host *
         assert!(changes.is_empty());
     }
 
-    // -----------------------------------------------------------------------
-    // HostKeyChangeReport / KeyChange / KeyChangeKind types
-    // -----------------------------------------------------------------------
+    #[test]
+    fn compare_host_keys_skips_cert_authority_marker_entries() {
+        let stored = vec![parse::parse_line(
+            "@cert-authority *.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICERTAUTHORITYKEYNOTOFFEREDBYHOST0000",
+            1,
+        )
+        .unwrap()];
+        let scanned = vec![
+            scan::parse_keyscan_line(
+                "example.com",
+                "example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDaDifferentHostKey",
+            )
+            .unwrap(),
+        ];
+        let changes = compare_host_keys(&stored, &scanned);
+        assert!(
+            changes.iter().all(|c| c.key_type != "ssh-ed25519"
+                || !matches!(
+                    c.kind,
+                    KeyChangeKind::Removed | KeyChangeKind::Changed { .. }
+                )),
+            "a @cert-authority line must not surface as a host-key change: {changes:?}"
+        );
+        assert_eq!(changes.len(), 1, "only the scanned ssh-rsa New remains");
+        assert!(matches!(changes[0].kind, KeyChangeKind::New));
+    }
+
+    #[test]
+    fn compare_host_keys_matches_per_entry_for_duplicate_types() {
+        let key_a = "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+        let key_b = "AAAAC3NzaC1lZDI1NTE5AAAAIDifferentButAlsoStored0000000000000000000";
+        let stored = vec![
+            parse::parse_line(&format!("host ssh-ed25519 {key_a}"), 1).unwrap(),
+            parse::parse_line(&format!("host ssh-ed25519 {key_b}"), 2).unwrap(),
+        ];
+        let scanned = vec![
+            scan::parse_keyscan_line("host", &format!("host ssh-ed25519 {key_a}")).unwrap(),
+            scan::parse_keyscan_line("host", &format!("host ssh-ed25519 {key_b}")).unwrap(),
+        ];
+        let changes = compare_host_keys(&stored, &scanned);
+        assert!(
+            changes.is_empty(),
+            "both stored entries of the duplicated type match: {changes:?}"
+        );
+    }
+
+    #[test]
+    fn compare_host_key_lines_reports_matched_and_changes() {
+        let key = "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+        let stored = vec![
+            format!("host ssh-ed25519 {key}"),
+            "@revoked host ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDRevokedKeyNotOffered".to_owned(),
+        ];
+        let scanned = vec![format!("host ssh-ed25519 {key}")];
+
+        let comparison = compare_host_key_lines(&stored, &scanned);
+        assert_eq!(comparison.matched_types, vec!["ssh-ed25519".to_owned()]);
+        assert!(
+            comparison.changes.is_empty(),
+            "the @revoked entry must not count as removed: {:?}",
+            comparison.changes
+        );
+    }
 
     #[test]
     fn host_key_change_report_debug() {
@@ -2175,10 +2340,6 @@ Host *
         assert!(debug.contains("SHA256:def"));
     }
 
-    // -----------------------------------------------------------------------
-    // SshPaths global_known_hosts_path
-    // -----------------------------------------------------------------------
-
     #[test]
     fn ssh_paths_global_known_hosts_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -2188,10 +2349,6 @@ Host *
             dir.path().join("ssh_known_hosts")
         );
     }
-
-    // -----------------------------------------------------------------------
-    // DnsVerifyStatus display and detection
-    // -----------------------------------------------------------------------
 
     #[test]
     fn dns_verify_status_display() {
@@ -2250,10 +2407,6 @@ Host *
     fn detect_verify_host_key_dns_empty_config() {
         assert_eq!(detect_verify_host_key_dns(""), DnsVerifyStatus::Unknown);
     }
-
-    // -----------------------------------------------------------------------
-    // parse_sshfp_output
-    // -----------------------------------------------------------------------
 
     #[test]
     fn parse_sshfp_output_single_record() {
@@ -2318,10 +2471,6 @@ random noise
         assert_eq!(records, [] as [SshfpRecord; 0]);
     }
 
-    // -----------------------------------------------------------------------
-    // verify_host_key_dns_status() — integration with KnownHostsService
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn verify_host_key_dns_status_unknown_when_no_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -2358,10 +2507,6 @@ random noise
         assert_eq!(status, DnsVerifyStatus::Ask);
     }
 
-    // -----------------------------------------------------------------------
-    // generate_sshfp_records() — integration with KnownHostsService
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn generate_sshfp_records_parses_output() {
         let dir = tempfile::tempdir().unwrap();
@@ -2381,10 +2526,6 @@ random noise
         assert_eq!(records[1].algorithm, "4");
         assert_eq!(records[1].key_type, "2");
     }
-
-    // -----------------------------------------------------------------------
-    // SshfpRecord debug / serialize
-    // -----------------------------------------------------------------------
 
     #[test]
     fn sshfp_record_debug() {

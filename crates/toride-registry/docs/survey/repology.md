@@ -3,7 +3,7 @@
 Surveyed 2026-09-28. **Repology was NOT reachable from this sandbox.** Verified
 with `curl -s -m 10 -o /dev/null -w "%{http_code}" https://repology.org/api/v1/project/brave-browser`
 → `HTTP 000`, curl exit 7 ("Connection refused"); `getent hosts repology.org`
-→ `127.0.0.1` — the sandbox pins repology.org's DNS to localhost, so no live
+→ `127.0.0.1`: the sandbox pins repology.org's DNS to localhost, so no live
 payload could be fetched by any in-sandbox channel. Everything below was
 therefore reconstructed from **documented/primary sources on reachable hosts**:
 the `repology.org/api` docs page text (captured twice, consistently, via the
@@ -37,12 +37,12 @@ Legacy naming: the 2017-era API exposed `GET /api/v1/metapackage/<name>` and
 `/api/v1/metapackages/...` (see `views/api.py` at commit `74bab7f2`, routes at
 lines 58-148); commit `3b999fb1` (2019-02-21, "Rename metapackages->projects in
 API endpoints") renamed them to the `/project(s)/` forms above. Current master
-has **no** JSON `/api/v1/metapackage` route — only HTML `/metapackage/<name>`
+has **no** JSON `/api/v1/metapackage` route: only HTML `/metapackage/<name>`
 301-redirects to the project pages (`views/legacy.py:30-32`). A client should
 speak only `/api/v1/project/...`.
 
 **Repository listing: there is no JSON endpoint for it.** Verified against the
-full route set in `views/api.py` — the only `/api/v1/repository/...` route is
+full route set in `views/api.py`: the only `/api/v1/repository/...` route is
 `/<repo>/problems`. Repo identifiers and metadata (family, descriptions) are
 served as HTML pages (`/repositories/statistics`, `views/repositories.py:28-102`)
 and, machine-readable, as per-repo YAML in the `repology-updater` repo
@@ -99,15 +99,15 @@ equal to `version`), plus conditionally `summary` (from the DB `comment`
 column), `categories` (single category wrapped in a list), and `vulnerable:
 true` when the package carries the VULNERABLE flag (`api.py:53-61`).
 
-Era drift (relevant because third-party examples mix eras) — from the
+Era drift (relevant because third-party examples mix eras): from the
 `api.py` commit history:
 
 - ≤2023-03: also serialized **`name`** (removed by `7efb88cb`, 2023-03-29,
   "Remove uses of `name` package field"); ≤2020-01 also `keyname`
   (`10868329`, "Drop deprecated keyname support"); ≤2021-02 also
   `homepage`→`www` and `downloads` (removed by `90011eef`).
-- The assignment's expected per-entry set — `repo, srcname, name, version,
-  status, families` — matches the 2019-2023 payloads (`name` verified in the
+- The assignment's expected per-entry set: `repo, srcname, name, version,
+  status, families`: matches the 2019-2023 payloads (`name` verified in the
   serializer at commits `4e43a802`/`fb7867b`) **except `families`**: across
   every serializer revision checked (2017 `74bab7f2`, 2019 `4e43a802`, 2022
   `fb7867b`, master), **`families` is never serialized into an entry**. It is
@@ -125,14 +125,14 @@ Era drift (relevant because third-party examples mix eras) — from the
 
 Envelope details (`api.py:66-70`): `Content-Type: application/json`;
 pretty-printed **and key-sorted** when the server enables `PRETTY_JSON`,
-compact otherwise — don't rely on key order or whitespace. A real-world
+compact otherwise: don't rely on key order or whitespace. A real-world
 fedora_rawhide entry (Renovate discussion #26619) matches the master
 serializer field-for-field, e.g. `"repo": "fedora_rawhide", "subrepo":
 "development", "srcname": "ncurses", ... "status": "newest", "origversion":
-"6.4-9.20240113.fc40"` with `licenses`, `summary`, `categories` — good model
+"6.4-9.20240113.fc40"` with `licenses`, `summary`, `categories`: good model
 for the fixture.
 
-## 3. Name canonicalization — the alias-oracle role
+## 3. Name canonicalization: the alias-oracle role
 
 Repology's core value for a registry client: many per-repo package names are
 coalesced into one canonical **project** name.
@@ -167,7 +167,7 @@ Directions a client can use:
     (`templates/tools/project-by.html:43-44`); which of the two a repo
     provides varies per repo (see `/repositories/fields`).
   - With `target_page=api_v1_project` the redirect lands on
-    `/api/v1/project/<effname>` — i.e. a two-step alias resolution with no
+    `/api/v1/project/<effname>`: i.e. a two-step alias resolution with no
     HTML scraping (`tools.py:65` declares it as an allowed JSON target).
 - **Repo → repo name map** (bulk alternative to project-by):
   `GET /api/experimental/distromap?fromrepo=A&torepo=B` returns pairs of
@@ -177,7 +177,7 @@ Directions a client can use:
 Client guidance for the fixture shape: project entries from one repo share
 `name`/`srcname` but may differ in `binname` (e.g. `brave-browser` vs
 `brave`), `origversion` carries the repo-native version suffix
-(`1.79.126-1`), and `status` per entry — pick entries by `repo` first, then
+(`1.79.126-1`), and `status` per entry: pick entries by `repo` first, then
 prefer `srcname` for source-based repos and `binname` for binary-install
 lookup.
 
@@ -195,7 +195,7 @@ Verbatim from the docs template (`api.html`, "Terms of use"):
 The live page (via server-side reader; text partially truncated in capture)
 matches: *"Allowed request rate to the API is no more than 1 request per
 second. Bulk (more than 1000 requests per day) requests to the API are
-disco[uraged]…"* — same 1 rps allowance, quantified bulk threshold.
+disco[uraged]…"*: same 1 rps allowance, quantified bulk threshold.
 
 The same page also warns, verbatim: *"Note that API stability is currently not
 guaranteed - it may change at any moment."*
@@ -203,9 +203,9 @@ guaranteed - it may change at any moment."*
 Practical policy for the toride client:
 
 1. ≤ 1 request/second sustained; treat 403/429 as "you were blocked, back off
-   hard" (no documented retry-after semantics — the docs threaten blocking,
+   hard" (no documented retry-after semantics: the docs threaten blocking,
    not throttling).
-2. Set a descriptive `User-Agent` (project + contact URL) — mandatory posture
+2. Set a descriptive `User-Agent` (project + contact URL): mandatory posture
    for anything resembling batch use.
 3. Cache aggressively; single-project lookups (`/api/v1/project/<name>`) are
    the cheap path. For bulk sweeps use the dump at
@@ -213,13 +213,13 @@ Practical policy for the toride client:
 4. Parse tolerantly: no stability guarantee; optional fields come and go
    across eras (`name`, `keyname`, `www`, `downloads` history above);
    `families` never guaranteed.
-5. `/tools/project-by` redirects are the sanctioned reverse lookup — but it is
+5. `/tools/project-by` redirects are the sanctioned reverse lookup: but it is
    a redirect endpoint, so follow redirects and expect 300/302/404 rather than
    a plain 200 JSON body.
 
 ## 5. Fixture
 
-`crates/toride-registry/tests/fixtures/repology/project-brave-browser.json` —
+`crates/toride-registry/tests/fixtures/repology/project-brave-browser.json`:
 synthetic `/api/v1/project/brave-browser` response: JSON array of 5 entries
 (`homebrew`, `debian_13`, `fedora_rawhide`, `arch`, `alpine_edge`), covering
 statuses `newest`/`outdated`/`devel`, optional fields present and absent
@@ -227,18 +227,18 @@ statuses `newest`/`outdated`/`devel`, optional fields present and absent
 ≠ `version` (Debian/Fedora/Alpine suffixes). `project-brave-browser_meta.json`
 records `{"synthetic": true, "reason": ...}` plus per-field provenance.
 All repo IDs verified real (see §1); all values (versions, maintainers,
-families count) are invented — in particular, official Debian/Fedora/Arch do
+families count) are invented: in particular, official Debian/Fedora/Arch do
 not actually ship brave-browser.
 
 ## 6. Sources
 
-- `https://repology.org/api` — docs page text (captured via server-side web
+- `https://repology.org/api`: docs page text (captured via server-side web
   reader; sandbox itself blocked by DNS pinning to 127.0.0.1)
-- `https://github.com/repology/repology-webapp/blob/master/repologyapp/templates/api.html` — docs template (mirrors the live page; quoted verbatim above)
-- `https://github.com/repology/repology-webapp/blob/master/repologyapp/views/api.py` — routes + serializer (master; history at commits `74bab7f2` 2017, `4e43a802` 2019, `fb7867bc` 2022, `7efb88cb` 2023)
-- `https://github.com/repology/repology-webapp/blob/master/repologyapp/views/tools.py` — `/tools/project-by`
-- `https://github.com/repology/repology-webapp/blob/master/repologyapp/package.py` — `PackageStatus`/`PackageDataDetailed`
-- `https://github.com/repology/repology-webapp/blob/master/repologyapp/views/legacy.py` — HTML `/metapackage/*` redirects
-- `https://github.com/repology/repology-updater` — `repos.d/**` repo-ID configs; `https://github.com/repology/repology-rules` — name rules
-- `https://github.com/renovatebot/renovate/discussions/26619` — real-world fedora_rawhide payload snippet (cross-check)
-- `https://dumps.repology.org/README.txt` — bulk-dump alternative (link target quoted from docs; host not probed)
+- `https://github.com/repology/repology-webapp/blob/master/repologyapp/templates/api.html`: docs template (mirrors the live page; quoted verbatim above)
+- `https://github.com/repology/repology-webapp/blob/master/repologyapp/views/api.py`: routes + serializer (master; history at commits `74bab7f2` 2017, `4e43a802` 2019, `fb7867bc` 2022, `7efb88cb` 2023)
+- `https://github.com/repology/repology-webapp/blob/master/repologyapp/views/tools.py`: `/tools/project-by`
+- `https://github.com/repology/repology-webapp/blob/master/repologyapp/package.py`: `PackageStatus`/`PackageDataDetailed`
+- `https://github.com/repology/repology-webapp/blob/master/repologyapp/views/legacy.py`: HTML `/metapackage/*` redirects
+- `https://github.com/repology/repology-updater` (`repos.d/**` repo-ID configs; `https://github.com/repology/repology-rules`) name rules
+- `https://github.com/renovatebot/renovate/discussions/26619`: real-world fedora_rawhide payload snippet (cross-check)
+- `https://dumps.repology.org/README.txt`: bulk-dump alternative (link target quoted from docs; host not probed)

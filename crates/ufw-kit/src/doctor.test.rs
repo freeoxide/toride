@@ -26,10 +26,6 @@ fn make_ufw_for_doctor(status_output: &str) -> Ufw {
     Ufw::with_runner(runner)
 }
 
-// ---------------------------------------------------------------------------
-// Binary checks
-// ---------------------------------------------------------------------------
-
 #[test]
 fn check_binaries_should_find_ufw() {
     let ufw = make_ufw_for_doctor("Status: active\n");
@@ -64,7 +60,7 @@ fn check_binaries_should_check_ip6tables() {
 fn check_binaries_should_check_nft() {
     let ufw = make_ufw_for_doctor("Status: active\n");
     let findings = check_binaries(&ufw);
-    // FakeRunner says nft exists — should be Info severity
+    // FakeRunner says nft exists: should be Info severity
     let nft_finding = findings.iter().find(|f| f.id == "bin:nft:exists");
     assert!(nft_finding.is_some());
     assert_eq!(nft_finding.unwrap().severity, Severity::Info);
@@ -77,10 +73,6 @@ fn check_binaries_should_check_systemctl() {
     // FakeRunner says systemctl exists
     assert!(findings.iter().any(|f| f.id == "bin:systemctl:exists"));
 }
-
-// ---------------------------------------------------------------------------
-// Service checks
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_service_should_detect_active() {
@@ -95,10 +87,6 @@ fn check_service_should_detect_inactive() {
     let findings = check_service(&ufw);
     assert!(findings.iter().any(|f| f.id == "svc:ufw:inactive"));
 }
-
-// ---------------------------------------------------------------------------
-// Policy checks
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_policy_should_warn_on_incoming_allow() {
@@ -155,10 +143,6 @@ fn check_policy_should_warn_on_missing_outgoing_dns() {
     assert!(findings.iter().any(|f| f.id == "pol:outgoing:no-https"));
 }
 
-// ---------------------------------------------------------------------------
-// SSH checks
-// ---------------------------------------------------------------------------
-
 #[test]
 fn check_ssh_should_warn_when_no_ssh_rule() {
     let ufw = make_ufw_for_doctor(
@@ -196,20 +180,12 @@ fn check_ssh_should_detect_limit_action() {
     assert!(findings.iter().any(|f| f.id == "ssh:limit"));
 }
 
-// ---------------------------------------------------------------------------
-// App profile checks
-// ---------------------------------------------------------------------------
-
 #[test]
 fn check_app_profiles_should_report_installed() {
     let ufw = make_ufw_for_doctor("Status: active\n");
     let findings = check_app_profiles(&ufw);
     assert!(findings.iter().any(|f| f.id == "app:exists"));
 }
-
-// ---------------------------------------------------------------------------
-// Logging checks
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_logging_should_warn_on_off() {
@@ -240,10 +216,6 @@ fn check_logging_should_report_ok_on_low() {
     assert!(findings.iter().any(|f| f.id == "log:ok"));
 }
 
-// ---------------------------------------------------------------------------
-// Rules checks
-// ---------------------------------------------------------------------------
-
 #[test]
 fn check_rules_should_warn_on_dangerous_ports() {
     let ufw = make_ufw_for_doctor(
@@ -272,10 +244,6 @@ fn check_rules_should_detect_no_comment() {
     assert!(findings.iter().any(|f| f.id == "rule:no-comment"));
 }
 
-// ---------------------------------------------------------------------------
-// Doctor scope
-// ---------------------------------------------------------------------------
-
 #[test]
 fn doctor_all_should_run_all_checks() {
     let ufw = make_ufw_for_doctor(
@@ -284,10 +252,6 @@ fn doctor_all_should_run_all_checks() {
     let findings = doctor(&ufw, DoctorScope::All).unwrap();
     assert!(findings.len() > 5);
 }
-
-// ---------------------------------------------------------------------------
-// Edge-case tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_binaries_should_handle_missing_ufw() {
@@ -308,10 +272,6 @@ fn check_binaries_should_handle_missing_ufw() {
     assert!(!findings.iter().any(|f| f.id == "bin:ufw:version"));
 }
 
-// ---------------------------------------------------------------------------
-// Weird edge-case tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn check_rules_should_warn_on_dangerous_ports_alt() {
     let ufw = make_ufw_for_doctor(
@@ -323,6 +283,135 @@ fn check_rules_should_warn_on_dangerous_ports_alt() {
 }
 
 #[test]
+fn check_rules_should_not_flag_prefix_ports_as_dangerous() {
+    // Regression: 8022 matched port 22 and 19000 matched port 9000 via raw
+    // substring matching.
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n8022/tcp                   ALLOW IN    Anywhere\n19000/tcp                  ALLOW IN    Anywhere\n",
+    );
+    let findings = check_rules(&ufw);
+    assert!(
+        !findings.iter().any(|f| f.id == "rule:dangerous:22"),
+        "8022/tcp must not be flagged as exposing port 22"
+    );
+    assert!(
+        !findings.iter().any(|f| f.id == "rule:dangerous:9000"),
+        "19000/tcp must not be flagged as exposing port 9000"
+    );
+}
+
+#[test]
+fn check_rules_should_not_flag_outbound_or_restricted_rules() {
+    // Regression: 'allow out 22/tcp' was flagged as exposing SSH inbound.
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW OUT   Anywhere\n5432/tcp                   ALLOW IN    10.0.0.5\n",
+    );
+    let findings = check_rules(&ufw);
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.id == "rule:dangerous:22" && f.severity > Severity::Info),
+        "an outbound 22 rule must not be flagged as exposing SSH inbound"
+    );
+    assert!(
+        !findings.iter().any(|f| f.id == "rule:dangerous:5432"),
+        "a 5432 rule restricted to 10.0.0.5 is not exposed to any source"
+    );
+}
+
+#[test]
+fn check_rules_should_report_port_22_as_info() {
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n",
+    );
+    let findings = check_rules(&ufw);
+    let ssh = findings
+        .iter()
+        .find(|f| f.id == "rule:dangerous:22")
+        .expect("port 22 still reported, at Info severity");
+    assert_eq!(ssh.severity, Severity::Info);
+}
+
+#[test]
+fn check_policy_should_not_be_silenced_by_mdns_rule() {
+    // Regression: 'allow out 5353/udp' used to suppress the no-DNS warning
+    // because "5353" contains "53".
+    let output = "Status: active\nDefault: deny (incoming), deny (outgoing)\nLogging: on\n";
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n5353/udp                   ALLOW OUT   Anywhere\n")
+        .respond_ok("ufw", &["status", "verbose"], output)
+        .respond_ok("ufw", &["app", "list"], "");
+    let ufw = Ufw::with_runner(runner);
+    let findings = check_policy(&ufw);
+    assert!(
+        findings.iter().any(|f| f.id == "pol:outgoing:no-dns"),
+        "an mDNS (5353/udp) rule must not satisfy the DNS check"
+    );
+}
+
+#[test]
+fn check_policy_should_accept_dns_rule_by_token() {
+    let output = "Status: active\nDefault: deny (incoming), deny (outgoing)\nLogging: on\n";
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n53/udp                     ALLOW OUT   Anywhere\n123/udp                    ALLOW OUT   Anywhere\n443/tcp                    ALLOW OUT   Anywhere\n")
+        .respond_ok("ufw", &["status", "verbose"], output)
+        .respond_ok("ufw", &["app", "list"], "");
+    let ufw = Ufw::with_runner(runner);
+    let findings = check_policy(&ufw);
+    assert!(!findings.iter().any(|f| f.id == "pol:outgoing:no-dns"));
+    assert!(!findings.iter().any(|f| f.id == "pol:outgoing:no-ntp"));
+    assert!(!findings.iter().any(|f| f.id == "pol:outgoing:no-https"));
+}
+
+#[test]
+fn check_app_profile_references_should_not_flood_port_rules() {
+    // Regression: the skip guard tested "22/tcp".parse::<u16>(), which never
+    // parses, so every plain port rule was reported as an unknown profile.
+    // The rig's installed profile is OpenSSH.
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n80/tcp                     ALLOW IN    Anywhere\nOpenSSH                    ALLOW IN    Anywhere\n",
+    );
+    let findings = doctor(&ufw, DoctorScope::AppProfiles).unwrap();
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.id == "app:rule:unknown-profile-ref"),
+        "port targets and the installed 'OpenSSH' profile must not be reported unknown: {findings:?}"
+    );
+}
+
+#[test]
+fn check_app_profile_references_should_flag_unknown_profile_name() {
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\nGhostApp                   ALLOW IN    Anywhere\n",
+    );
+    let findings = doctor(&ufw, DoctorScope::AppProfiles).unwrap();
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.id == "app:rule:unknown-profile-ref"),
+        "a non-numeric, non-keyword To column absent from the profile list must be reported"
+    );
+}
+
+#[test]
+fn check_permissions_should_not_emit_duplicate_findings() {
+    let ufw = make_ufw_for_doctor("Status: active\n");
+    let findings = check_permissions(&ufw);
+    let mut ids: Vec<&str> = findings.iter().map(|f| f.id).collect();
+    let total = ids.len();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(
+        ids.len(),
+        total,
+        "permission findings must be unique: {findings:?}"
+    );
+}
+
+#[test]
 fn doctor_should_handle_empty_rules() {
     let ufw = make_ufw_for_doctor(
         "Status: active\n\nTo                         Action      From\n--                         ------      ----\n",
@@ -330,10 +419,6 @@ fn doctor_should_handle_empty_rules() {
     let findings = doctor(&ufw, DoctorScope::Rules).unwrap();
     assert!(findings.is_empty() || findings.iter().all(|f| f.severity <= Severity::Info));
 }
-
-// ---------------------------------------------------------------------------
-// check_ipv6 with tempdir config fixture
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_ipv6_should_report_enabled_when_config_says_yes() {
@@ -385,14 +470,10 @@ fn check_ipv6_without_config_file_should_be_graceful() {
         .ok()
         .map(|c| crate::config::parse_default_ufw(&c))
         .unwrap_or_default();
-    // On macOS/CI this file likely doesn't exist — should return default (ipv6 = None)
+    // On macOS/CI this file likely doesn't exist: should return default (ipv6 = None)
     // On Linux with ufw installed it may return Some(true/false)
     assert!(config.ipv6.is_none() || config.ipv6 == Some(true) || config.ipv6 == Some(false));
 }
-
-// ---------------------------------------------------------------------------
-// check_logging with mocked status_verbose
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_logging_should_warn_on_high() {
@@ -459,10 +540,6 @@ fn check_logging_should_report_unknown_when_no_level() {
     assert!(findings.iter().any(|f| f.id == "log:unknown"));
 }
 
-// ---------------------------------------------------------------------------
-// check_config with tempdir fixtures
-// ---------------------------------------------------------------------------
-
 #[test]
 fn check_config_should_parse_enabled_consistency() {
     // When /etc/default/ufw has ENABLED=yes and /etc/ufw/ufw.conf has ENABLED=no,
@@ -476,7 +553,7 @@ fn check_config_should_parse_enabled_consistency() {
 
     assert_eq!(default_config.enabled, Some(true));
     assert_eq!(conf.enabled, Some(false));
-    // They differ — doctor would emit cfg:enabled:inconsistent
+    // They differ: doctor would emit cfg:enabled:inconsistent
 }
 
 #[test]
@@ -487,13 +564,9 @@ fn check_config_should_parse_loglevel_validity() {
     // Doctor would emit cfg:loglevel:invalid for this
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case: shadowed rules
-// ---------------------------------------------------------------------------
-
 #[test]
 fn check_rules_should_detect_shadowed_deny() {
-    // allow 22, then deny 22 — the deny is shadowed
+    // allow 22, then deny 22: the deny is shadowed
     let ufw = make_ufw_for_doctor(
         "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n22/tcp                     DENY        Anywhere\n",
     );
@@ -503,17 +576,13 @@ fn check_rules_should_detect_shadowed_deny() {
 
 #[test]
 fn check_rules_should_not_flag_non_shadowed() {
-    // deny 22, then allow 22 — not shadowed (deny first, allow after — normal)
+    // deny 22, then allow 22: not shadowed (deny first, allow after: normal)
     let ufw = make_ufw_for_doctor(
         "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     DENY        Anywhere\n22/tcp                     ALLOW       Anywhere\n",
     );
     let findings = check_rules(&ufw);
     assert!(!findings.iter().any(|f| f.id == "rule:shadowed"));
 }
-
-// ---------------------------------------------------------------------------
-// Edge-case: dual-stack coverage
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_rules_should_flag_ipv4_only() {
@@ -523,10 +592,6 @@ fn check_rules_should_flag_ipv4_only() {
     let findings = check_rules(&ufw);
     assert!(findings.iter().any(|f| f.id == "rule:ipv4-only"));
 }
-
-// ---------------------------------------------------------------------------
-// Edge-case: policy severity for incoming allow
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_policy_should_use_critical_for_incoming_allow() {
@@ -545,10 +610,6 @@ fn check_policy_should_use_critical_for_incoming_allow() {
     assert_eq!(incoming.severity, Severity::Critical);
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case: SSH VPN interface detection
-// ---------------------------------------------------------------------------
-
 #[test]
 fn check_ssh_should_detect_vpn_interface() {
     let ufw = make_ufw_for_doctor(
@@ -566,10 +627,6 @@ fn check_ssh_should_detect_wireguard_interface() {
     let findings = check_ssh(&ufw);
     assert!(findings.iter().any(|f| f.id == "ssh:vpn-interface"));
 }
-
-// ---------------------------------------------------------------------------
-// Edge-case: secrets in comments
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_permissions_should_detect_secret_in_comment() {
@@ -596,10 +653,6 @@ fn check_permissions_should_detect_secret_in_comment() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case: comment secret detection helper
-// ---------------------------------------------------------------------------
-
 #[test]
 fn validate_comment_for_secrets_doctor_should_detect_key_value() {
     assert!(crate::spec::validate_comment_for_secrets_doctor(
@@ -616,10 +669,6 @@ fn validate_comment_for_secrets_doctor_should_detect_key_value() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// Framework: NAT-table COMMIT detection (regression for operator-precedence bug)
-// ---------------------------------------------------------------------------
-
 /// Write `content` to a temp file and run `check_framework_file` against it,
 /// returning the produced findings.
 #[cfg(feature = "framework")]
@@ -628,7 +677,8 @@ fn framework_findings(content: &str) -> Vec<Finding> {
     let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
     write!(tmp, "{content}").expect("write temp file");
     let mut findings = Vec::new();
-    check_framework_file(tmp.path(), "test.rules", false, &mut findings);
+    let runner = FakeRunner::new();
+    check_framework_file(&runner, tmp.path(), "test.rules", false, &mut findings);
     findings
 }
 
@@ -636,7 +686,7 @@ fn framework_findings(content: &str) -> Vec<Finding> {
 #[test]
 fn framework_should_flag_nat_table_missing_commit() {
     // A *nat table present but only a single COMMIT line (the filter table's)
-    // must be flagged — the NAT table needs its own COMMIT. Previously this was
+    // must be flagged: the NAT table needs its own COMMIT. Previously this was
     // masked by `!content.matches("COMMIT").count() >= 2`, where the `!` bound
     // to the usize count (bitwise NOT) before `>=`, making the guard always
     // true whenever a *nat table existed.
@@ -660,7 +710,7 @@ COMMIT
 #[cfg(feature = "framework")]
 #[test]
 fn framework_should_not_flag_nat_table_with_both_commits() {
-    // Both tables have their own COMMIT line — no NAT finding should appear.
+    // Both tables have their own COMMIT line: no NAT finding should appear.
     let content = "\
 *filter
 :INPUT ACCEPT [0:0]
@@ -699,5 +749,181 @@ COMMIT
             .iter()
             .any(|f| f.id == "fw:test.rules:no-commit-nat"),
         "two COMMITs must satisfy the count guard: {findings:?}"
+    );
+}
+
+#[test]
+fn check_config_reads_files_through_the_runner() {
+    let ufw = Ufw::with_runner(
+        FakeRunner::new()
+            .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+            .respond_ok("ufw", &["status"], "Status: active\n")
+            .respond_ok("ufw", &["status", "verbose"], "Status: active\n")
+            .respond_ok("ufw", &["app", "list"], "")
+            .respond_file("/etc/default/ufw", "IPV6=no\nENABLED=yes\n")
+            .respond_file("/etc/ufw/ufw.conf", "ENABLED=no\nLOGLEVEL=bogus\n"),
+    );
+
+    let findings = check_config(&ufw);
+    assert!(
+        findings.iter().any(|f| f.id == "cfg:enabled:inconsistent"),
+        "scripted ENABLED disagreement must surface: {findings:?}"
+    );
+    assert!(
+        findings.iter().any(|f| f.id == "cfg:loglevel:invalid"),
+        "scripted LOGLEVEL must surface: {findings:?}"
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.id.starts_with("cfg:app:") && f.id.ends_with(":no-managed-header")),
+        "the unscripted applications.d listing must read as empty"
+    );
+}
+
+#[test]
+fn check_config_lists_application_profiles_through_the_runner() {
+    let ufw = Ufw::with_runner(
+        FakeRunner::new()
+            .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+            .respond_ok("ufw", &["status"], "Status: active\n")
+            .respond_ok("ufw", &["status", "verbose"], "Status: active\n")
+            .respond_ok("ufw", &["app", "list"], "")
+            .respond_dir("/etc/ufw/applications.d", &["localsuite"])
+            .respond_file(
+                "/etc/ufw/applications.d/localsuite",
+                "[localsuite]\ntitle=Local\nports=8080/tcp\n",
+            ),
+    );
+
+    let findings = check_config(&ufw);
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.id == "cfg:app:localsuite:no-managed-header"),
+        "a profile INI without the managed header must be reported: {findings:?}"
+    );
+}
+
+#[test]
+fn check_permissions_uses_scripted_stat_facts() {
+    let ufw = Ufw::with_runner(
+        FakeRunner::new()
+            .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+            .respond_ok("ufw", &["status"], "Status: active\n")
+            .respond_ok("ufw", &["status", "verbose"], "Status: active\n")
+            .respond_ok("ufw", &["app", "list"], "")
+            .respond_stat(
+                "/etc/ufw/user.rules",
+                crate::command::FileMetadata {
+                    len: 1024,
+                    mode: Some(0o666),
+                    uid: Some(0),
+                },
+            ),
+    );
+
+    let findings = check_permissions(&ufw);
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.id.ends_with("user.rules:world-writable")),
+        "a scripted 0o666 mode must be flagged: {findings:?}"
+    );
+    assert!(
+        findings.iter().any(|f| f.id.ends_with("etc:ufw:missing")),
+        "unscripted stat paths must read as missing, not hit the local fs: {findings:?}"
+    );
+}
+
+#[test]
+fn check_file_ownership_uses_scripted_uid() {
+    let ufw = Ufw::with_runner(
+        FakeRunner::new()
+            .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+            .respond_ok("ufw", &["status"], "Status: active\n")
+            .respond_ok("ufw", &["status", "verbose"], "Status: active\n")
+            .respond_ok("ufw", &["app", "list"], "")
+            .respond_stat(
+                "/etc/ufw/ufw.conf",
+                crate::command::FileMetadata {
+                    len: 24,
+                    mode: Some(0o644),
+                    uid: Some(1000),
+                },
+            ),
+    );
+
+    let findings = check_permissions(&ufw);
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.id.ends_with("ufw.conf:not-root-owned")),
+        "a scripted non-root uid must be flagged: {findings:?}"
+    );
+}
+
+#[test]
+fn doctor_all_is_deterministic_under_a_fully_scripted_filesystem() {
+    fn rigged() -> Ufw {
+        Ufw::with_runner(
+            FakeRunner::new()
+                .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+                .respond_ok("ufw", &["status"], "Status: active\n")
+                .respond_ok(
+                    "ufw",
+                    &["status", "verbose"],
+                    "Status: active\nDefault: deny (incoming), allow (outgoing)\nLogging: on (low)\n",
+                )
+                .respond_ok("ufw", &["app", "list"], "")
+                .respond_file("/etc/default/ufw", "IPV6=yes\nENABLED=yes\n")
+                .respond_file("/etc/ufw/ufw.conf", "ENABLED=no\nLOGLEVEL=low\n"),
+        )
+    }
+
+    let first = doctor(&rigged(), DoctorScope::All).expect("doctor answers");
+    let second = doctor(&rigged(), DoctorScope::All).expect("doctor answers");
+
+    let ids = |findings: &[Finding]| findings.iter().map(|f| f.id).collect::<Vec<_>>();
+    assert_eq!(ids(&first), ids(&second), "two identical rigs must agree");
+    assert!(
+        first.iter().any(|f| f.id == "cfg:enabled:inconsistent"),
+        "the scripted ENABLED disagreement must surface: {first:?}"
+    );
+    assert!(
+        first
+            .iter()
+            .any(|f| f.id == "ipv6:enabled" || f.id == "ipv6:disabled"),
+        "the ipv6 check must answer from the scripted config: {first:?}"
+    );
+}
+
+#[test]
+fn check_routing_reads_forwarding_state_through_the_runner() {
+    let runner = FakeRunner::new()
+        .respond_file("/proc/sys/net/ipv4/ip_forward", "1\n")
+        .respond_file(
+            "/etc/default/ufw",
+            "IPV6=no\nDEFAULT_FORWARD_POLICY=\"ACCEPT\"\n",
+        );
+
+    let findings = crate::docker::check_routing(&runner);
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.id == "routing:ipv4:forwarding-on"),
+        "the scripted /proc read must drive the forwarding finding: {findings:?}"
+    );
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.id == "routing:forward-policy:accept"),
+        "the scripted DEFAULT_FORWARD_POLICY must drive the policy finding: {findings:?}"
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.id == "routing:ipv6:forwarding-on"),
+        "an unscripted ipv6 sysctl must read as absent"
     );
 }

@@ -9,10 +9,6 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// GenericHelper
-// ---------------------------------------------------------------------------
-
 /// Typed helper for interacting with an arbitrary mise tool.
 ///
 /// Unlike the language-specific helpers, [`GenericHelper`] carries a `tool`

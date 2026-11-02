@@ -100,8 +100,37 @@ fn bench_rule_line_parse(c: &mut Criterion) {
     let rule_lines: Vec<&str> = numbered.lines().filter(|l| l.starts_with('[')).collect();
     assert_eq!(rule_lines.len(), EXPECTED_STATUS_RULES);
 
+    let plain = fixture("status_plain_400.txt");
+    let plain_rule_lines: Vec<&str> = plain
+        .lines()
+        .filter(|l| {
+            let trimmed = l.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with("Status:")
+                && !trimmed.starts_with("To")
+                && !trimmed.starts_with("--")
+        })
+        .collect();
+    assert_eq!(plain_rule_lines.len(), EXPECTED_STATUS_RULES);
+
+    let verbose = fixture("status_verbose_400.txt");
+    let verbose_rule_lines: Vec<&str> = verbose
+        .lines()
+        .filter(|l| {
+            let trimmed = l.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with("Status:")
+                && !trimmed.starts_with("Logging:")
+                && !trimmed.starts_with("Default:")
+                && !trimmed.starts_with("New profiles:")
+                && !trimmed.starts_with("To")
+                && !trimmed.starts_with("--")
+        })
+        .collect();
+    assert_eq!(verbose_rule_lines.len(), EXPECTED_STATUS_RULES);
+
     let mut group = c.benchmark_group("status_parse");
-    group.throughput(Throughput::Elements(rule_lines.len() as u64));
+    group.throughput(Throughput::Elements(EXPECTED_STATUS_RULES as u64));
 
     group.bench_function("parse_status_numbered/per_line_400", |b| {
         b.iter(|| {
@@ -109,6 +138,30 @@ fn bench_rule_line_parse(c: &mut Criterion) {
             for line in &rule_lines {
                 if status::parse_status_numbered(black_box(line)).is_ok() {
                     count += 1;
+                }
+            }
+            black_box(count)
+        });
+    });
+
+    group.bench_function("parse_status/plain_per_line_400", |b| {
+        b.iter(|| {
+            let mut count = 0usize;
+            for line in &plain_rule_lines {
+                if let Ok(parsed) = status::parse_status(black_box(line)) {
+                    count += parsed.rules.len();
+                }
+            }
+            black_box(count)
+        });
+    });
+
+    group.bench_function("parse_status/verbose_per_line_400", |b| {
+        b.iter(|| {
+            let mut count = 0usize;
+            for line in &verbose_rule_lines {
+                if let Ok(parsed) = status::parse_status_verbose(black_box(line)) {
+                    count += parsed.rules.len();
                 }
             }
             black_box(count)

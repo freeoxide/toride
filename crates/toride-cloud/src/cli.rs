@@ -208,10 +208,6 @@ pub enum Commands {
     },
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,8 +248,6 @@ mod tests {
         ]
     }"#;
 
-    // -- resolve_provider -----------------------------------------------------
-
     #[test]
     fn resolve_provider_uses_explicit_override() {
         let cli = Cli::parse_from(["toride-cloud", "--provider", "aws", "detect"]);
@@ -275,8 +269,6 @@ mod tests {
         assert_eq!(client.provider, CloudProvider::Aws);
     }
 
-    // -- dispatch: Detect -----------------------------------------------------
-
     #[test]
     fn detect_dispatches_and_prints_resolved_provider() {
         // `Detect` honours an explicit --provider override and reports it. We
@@ -292,8 +284,6 @@ mod tests {
         // Detect performs no command execution, so the runner is untouched.
         assert!(runner.calls().is_empty(), "detect must not shell out");
     }
-
-    // -- dispatch: List -> AwsClient::list_security_groups --------------------
 
     #[test]
     fn list_dispatches_to_aws_list_security_groups() {
@@ -314,14 +304,11 @@ mod tests {
 
         let calls = runner.calls();
         assert_eq!(calls.len(), 1, "expected exactly one aws CLI call");
-        let expected = CommandSpec::new("aws").args([
-            "ec2",
-            "describe-security-groups",
-            "--region",
-            "us-east-1",
-            "--output",
-            "json",
-        ]);
+        // No --region: the facade no longer hardcodes us-east-1. With no
+        // AWS_REGION/AWS_DEFAULT_REGION in the test environment and no
+        // with_region pin, the aws CLI resolves its own region.
+        let expected =
+            CommandSpec::new("aws").args(["ec2", "describe-security-groups", "--output", "json"]);
         assert_eq!(calls[0].program, expected.program, "program mismatch");
         assert_eq!(calls[0].args, expected.args, "args mismatch");
     }
@@ -348,8 +335,6 @@ mod tests {
             "must not shell out for unknown provider"
         );
     }
-
-    // -- DoctorScope parsing --------------------------------------------------
 
     #[test]
     fn doctor_scope_parses_known_values() {

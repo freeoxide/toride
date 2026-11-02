@@ -7,8 +7,11 @@ use crate::check::{Check, CheckFuture};
 use toride_ssh_config::ast::{self, ConfigNode};
 use toride_ssh_config::cache::{load_cached_ast, load_cached_content};
 use toride_ssh_core::Result;
+use toride_ssh_core::fanout::join_all_bounded;
 use toride_ssh_core::paths::SshPaths;
-use toride_ssh_core::{Diagnostic, Severity};
+use toride_ssh_core::{Diagnostic, DiagnosticSeverity as Severity};
+use toride_ssh_known_hosts::DnsVerifyStatus;
+use toride_ssh_known_hosts::detect_verify_host_key_dns;
 
 async fn cached_config_ast(
     config_path: std::path::PathBuf,
@@ -24,35 +27,6 @@ async fn cached_config_content(
     tokio::task::spawn_blocking(move || load_cached_content(&config_path))
         .await
         .map_err(|e| std::io::Error::other(e.to_string()))?
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DnsVerifyStatus {
-    Unknown,
-    Disabled,
-    Enabled,
-    Ask,
-}
-
-fn detect_verify_host_key_dns(config_content: &str) -> DnsVerifyStatus {
-    for line in config_content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') || trimmed.is_empty() {
-            continue;
-        }
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("verifyhostkeydns") {
-            let value = trimmed["verifyhostkeydns".len()..].trim();
-            if value.eq_ignore_ascii_case("yes") || value == "true" {
-                return DnsVerifyStatus::Enabled;
-            } else if value.eq_ignore_ascii_case("no") || value == "false" {
-                return DnsVerifyStatus::Disabled;
-            } else if value.eq_ignore_ascii_case("ask") {
-                return DnsVerifyStatus::Ask;
-            }
-        }
-    }
-    DnsVerifyStatus::Unknown
 }
 
 const PRIVATE_KEY_HEADER_READ_SIZE: usize = 4096;
@@ -156,7 +130,7 @@ impl Check for SshDirExists<'_> {
                 }]),
                 Ok(_) => Ok(vec![Diagnostic {
                     id: "ssh_dir_exists",
-                    severity: Severity::Error,
+                    severity: Severity::Critical,
                     message: format!("{} exists but is not a directory", ssh_dir.display()),
                     hint: Some("Remove the file and run `mkdir -p ~/.ssh`".into()),
                     module: "local",
@@ -203,7 +177,7 @@ impl Check for SshDirPermissions<'_> {
                     } else {
                         Ok(vec![Diagnostic {
                             id: "ssh_dir_permissions",
-                            severity: Severity::Error,
+                            severity: Severity::Critical,
                             message: format!(
                                 "{} has overly permissive permissions ({:o}), expected 700",
                                 ssh_dir.display(),
@@ -367,7 +341,7 @@ impl Check for PrivateKeyPermissions<'_> {
                 } else {
                     diagnostics.push(Diagnostic {
                         id: "private_key_permissions",
-                        severity: Severity::Error,
+                        severity: Severity::Critical,
                         message: format!(
                             "{} has overly permissive permissions ({:o}), expected 600",
                             path.display(),
@@ -428,7 +402,7 @@ impl Check for AgentAvailable {
                 _ => Ok(vec![Diagnostic {
                     id: "agent_available",
                     severity: Severity::Warning,
-                    message: "$SSH_AUTH_SOCK is not set — SSH agent may not be running".into(),
+                    message: "$SSH_AUTH_SOCK is not set, SSH agent may not be running".into(),
                     hint: Some("Start the SSH agent: `eval $(ssh-agent -s)`".into()),
                     module: "local",
                 }]),
@@ -457,7 +431,7 @@ impl Check for KeygenAvailable<'_> {
             } else {
                 Ok(vec![Diagnostic {
                     id: "keygen_available",
-                    severity: Severity::Error,
+                    severity: Severity::Critical,
                     message: "ssh-keygen is not found in PATH".into(),
                     hint: Some(
                         "Install OpenSSH: `brew install openssh` (macOS) or `sudo apt install openssh-client` (Linux)".into(),
@@ -541,7 +515,7 @@ impl Check for OwnerCheck<'_> {
                     } else {
                         Ok(vec![Diagnostic {
                             id: "owner_check",
-                            severity: Severity::Error,
+                            severity: Severity::Critical,
                             message: format!(
                                 "{} is owned by uid {} but current user is uid {}",
                                 ssh_dir.display(),
@@ -598,7 +572,7 @@ impl Check for ConfigPermissionsCheck<'_> {
                     } else {
                         Ok(vec![Diagnostic {
                             id: "config_permissions",
-                            severity: Severity::Error,
+                            severity: Severity::Critical,
                             message: format!(
                                 "{} is group/world writable ({:o}), expected no group/world write bits",
                                 config_path.display(),
@@ -654,7 +628,7 @@ impl Check for AuthorizedKeysPermissionsCheck<'_> {
                     } else {
                         Ok(vec![Diagnostic {
                             id: "authorized_keys_permissions",
-                            severity: Severity::Error,
+                            severity: Severity::Critical,
                             message: format!(
                                 "{} has permissions {:o}, expected 600 or 644",
                                 ak_path.display(),
@@ -1460,7 +1434,7 @@ impl Check for UseKeychainPlatformCheck<'_> {
                         id: "use_keychain_platform",
                         severity: Severity::Warning,
                         message: format!(
-                            "UseKeychain is set in {ctx} but this is not macOS — \
+                            "UseKeychain is set in {ctx} but this is not macOS, \
                              UseKeychain is a macOS-specific directive and will be ignored"
                         ),
                         hint: Some(
@@ -1505,12 +1479,17 @@ impl Check for IdentityFilePubCheck<'_> {
                 if is_pub || is_cert {
                     diags.push(Diagnostic {
                         id: "identity_file_pub",
-                        severity: Severity::Warning,
+                        severity: Severity::Info,
                         message: format!(
-                            "IdentityFile {raw} points to a public key file; \
-                             IdentityFile should reference the private key"
+                            "IdentityFile {raw} points to a public key file; ssh_config(5) \
+                             allows this to select the agent-held private key"
                         ),
-                        hint: Some("Change to the private key path (remove .pub suffix)".into()),
+                        hint: Some(
+                            "This only works when the matching private key is loaded in the \
+                             agent (hardware keys, shared agents); otherwise point IdentityFile \
+                             at the private key"
+                                .into(),
+                        ),
                         module: "local",
                     });
                 }
@@ -1756,7 +1735,7 @@ impl Check for GssapiConfigCheck<'_> {
                     id: "gssapi_config",
                     severity: Severity::Warning,
                     message: "GSSAPIAuthentication is enabled and PreferredAuthentications \
-                              is set to gssapi-with-mic only — publickey authentication is \
+                              is set to gssapi-with-mic only, publickey authentication is \
                               excluded, which may reduce security"
                         .into(),
                     hint: Some(
@@ -1821,7 +1800,7 @@ impl Check for VerifyHostKeyDnsCheck<'_> {
                 DnsVerifyStatus::Ask => Ok(vec![Diagnostic {
                     id: "verify_host_key_dns",
                     severity: Severity::Info,
-                    message: "VerifyHostKeyDNS is set to 'ask' — \
+                    message: "VerifyHostKeyDNS is set to 'ask', \
                                   host keys will be verified via SSHFP but you will \
                                   be prompted on mismatch"
                         .into(),
@@ -1834,21 +1813,14 @@ impl Check for VerifyHostKeyDnsCheck<'_> {
                     diagnostics.push(Diagnostic {
                         id: "verify_host_key_dns",
                         severity: Severity::Ok,
-                        message: "VerifyHostKeyDNS is set to 'yes' — \
+                        message: "VerifyHostKeyDNS is set to 'yes', \
                                   host keys will be verified via SSHFP DNS records"
                             .into(),
                         hint: None,
                         module: "local",
                     });
 
-                    let dns_available = tokio::task::spawn_blocking(|| {
-                        duct::cmd("host", ["localhost"])
-                            .stderr_null()
-                            .read()
-                            .is_ok()
-                    })
-                    .await
-                    .unwrap_or(false);
+                    let dns_available = tokio::net::lookup_host("localhost:22").await.is_ok();
 
                     if dns_available {
                         diagnostics.push(Diagnostic {
@@ -1862,12 +1834,12 @@ impl Check for VerifyHostKeyDnsCheck<'_> {
                         diagnostics.push(Diagnostic {
                             id: "verify_host_key_dns",
                             severity: Severity::Warning,
-                            message: "VerifyHostKeyDNS is enabled but DNS resolution may \
-                                      not be available — SSHFP verification will fail"
+                            message: "VerifyHostKeyDNS is enabled but name resolution \
+                                      failed for 'localhost', SSHFP verification will fail"
                                 .into(),
                             hint: Some(
-                                "Ensure DNS is configured correctly, or install bind-utils \
-                                 / dnsutils for the 'host' command"
+                                "Check the resolver configuration (/etc/resolv.conf, \
+                                 /etc/nsswitch.conf) on this machine"
                                     .into(),
                             ),
                             module: "local",
@@ -1943,7 +1915,7 @@ impl Check for HomeDirPermissionsCheck {
                     id: "home_dir_permissions",
                     severity: Severity::Warning,
                     message: format!(
-                        "Home directory {} is {} writable — \
+                        "Home directory {} is {} writable, \
                          sshd StrictModes may reject authorized_keys",
                         home.display(),
                         who,
@@ -1974,7 +1946,7 @@ impl MaxAuthTriesExhaustionCheck {
             return Ok(vec![Diagnostic {
                 id: "max_auth_tries_exhaustion",
                 severity: Severity::Info,
-                message: "SSH agent is not running — cannot count loaded keys".into(),
+                message: "SSH agent is not running, cannot count loaded keys".into(),
                 hint: None,
                 module: "local",
             }]);
@@ -2008,7 +1980,7 @@ impl MaxAuthTriesExhaustionCheck {
             return Ok(vec![Diagnostic {
                 id: "max_auth_tries_exhaustion",
                 severity: Severity::Ok,
-                message: "No keys loaded in agent — MaxAuthTries exhaustion not a concern".into(),
+                message: "No keys loaded in agent, MaxAuthTries exhaustion not a concern".into(),
                 hint: None,
                 module: "local",
             }]);
@@ -2322,7 +2294,7 @@ impl Check for AgentIdentityCheck<'_> {
                 return Ok(vec![Diagnostic {
                     id: "agent_identity",
                     severity: Severity::Info,
-                    message: "SSH agent is not running — cannot verify agent holds expected keys"
+                    message: "SSH agent is not running, cannot verify agent holds expected keys"
                         .into(),
                     hint: None,
                     module: "local",
@@ -2353,7 +2325,7 @@ impl Check for AgentIdentityCheck<'_> {
                 return Ok(vec![Diagnostic {
                     id: "agent_identity",
                     severity: Severity::Info,
-                    message: "No keys loaded in agent — cannot verify agent identity".into(),
+                    message: "No keys loaded in agent, cannot verify agent identity".into(),
                     hint: Some("Load keys with `ssh-add ~/.ssh/id_ed25519`".into()),
                     module: "local",
                 }]);
@@ -2395,41 +2367,42 @@ impl Check for AgentIdentityCheck<'_> {
                 return Ok(vec![Diagnostic {
                     id: "agent_identity",
                     severity: Severity::Ok,
-                    message: "No IdentityFile directives in config — agent will offer all keys"
+                    message: "No IdentityFile directives in config, agent will offer all keys"
                         .into(),
                     hint: None,
                     module: "local",
                 }]);
             }
 
-            let mut diagnostics = Vec::new();
-            for raw_path in &identity_files {
-                let expanded = toride_ssh_core::paths::expand_path(raw_path, self.paths.ssh_dir());
-
-                let pub_path = expanded.with_file_name(format!(
-                    "{}.pub",
-                    expanded.file_name().unwrap_or_default().to_string_lossy()
-                ));
-
-                let fp_output = tokio::task::spawn_blocking({
-                    let pub_path = pub_path.clone();
-                    move || {
-                        duct::cmd("ssh-keygen", ["-lf", pub_path.to_str().unwrap_or("")])
-                            .stderr_null()
-                            .read()
-                            .ok()
-                    }
+            // Fan the per-key `ssh-keygen -lf` probes out under the same
+            // bound as the other checks.
+            let targets: Vec<(String, std::path::PathBuf, std::path::PathBuf)> = identity_files
+                .iter()
+                .map(|raw_path| {
+                    let expanded =
+                        toride_ssh_core::paths::expand_path(raw_path, self.paths.ssh_dir());
+                    let pub_path = expanded.with_file_name(format!(
+                        "{}.pub",
+                        expanded.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                    (raw_path.clone(), expanded, pub_path)
                 })
-                .await
-                .ok()
-                .flatten();
+                .collect();
 
+            let pub_paths: Vec<std::path::PathBuf> = targets
+                .iter()
+                .map(|(_, _, pub_path)| pub_path.clone())
+                .collect();
+            let fp_outputs = probe_identity_fingerprints(&pub_paths, &ssh_keygen_lf_probe).await;
+
+            let mut diagnostics = Vec::new();
+            for ((raw_path, expanded, _pub_path), fp_output) in targets.iter().zip(fp_outputs) {
                 let Some(fp_output) = fp_output else {
                     diagnostics.push(Diagnostic {
                         id: "agent_identity",
                         severity: Severity::Info,
                         message: format!(
-                            "Cannot read public key for {raw_path} — \
+                            "Cannot read public key for {raw_path}, \
                              skipping agent identity check for this key"
                         ),
                         hint: None,
@@ -2445,7 +2418,7 @@ impl Check for AgentIdentityCheck<'_> {
                         id: "agent_identity",
                         severity: Severity::Info,
                         message: format!(
-                            "Could not parse fingerprint for {raw_path} — \
+                            "Could not parse fingerprint for {raw_path}, \
                              skipping agent identity check"
                         ),
                         hint: None,
@@ -2799,20 +2772,41 @@ const MAX_CONCURRENT_CHECKS: usize = 8;
 type BoxedCheckFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + 'a>>;
 
-async fn join_all_bounded<I, T>(limit: usize, futs: I) -> Vec<T>
-where
-    I: IntoIterator,
-    I::Item: std::future::Future<Output = T>,
-{
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
-    let guarded = futs.into_iter().map(|fut| {
-        let semaphore = std::sync::Arc::clone(&semaphore);
-        async move {
-            let _permit = semaphore.acquire_owned().await.ok();
-            fut.await
-        }
-    });
-    futures::future::join_all(guarded).await
+/// One probe future: the raw `ssh-keygen -lf` stdout when the command ran.
+pub type KeygenProbeFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send>>;
+
+/// Probe injected into [`probe_identity_fingerprints`], standing in for one
+/// `ssh-keygen -lf` invocation.
+pub type KeygenProbe<'a> = &'a (dyn Fn(&std::path::Path) -> KeygenProbeFuture + Send + Sync);
+
+/// Real probe: spawn `ssh-keygen -lf <pub_path>` and return its stdout.
+fn ssh_keygen_lf_probe(pub_path: &std::path::Path) -> KeygenProbeFuture {
+    let pub_path = pub_path.to_path_buf();
+    Box::pin(async move {
+        tokio::task::spawn_blocking(move || {
+            duct::cmd("ssh-keygen", ["-lf", pub_path.to_str().unwrap_or("")])
+                .stderr_null()
+                .read()
+                .ok()
+        })
+        .await
+        .ok()
+        .flatten()
+    })
+}
+
+/// Run one probe per public-key path under the doctor-wide concurrency
+/// bound, returning each probe's raw output in input order.
+///
+/// `probe` replaces the `ssh-keygen -lf` spawn so tests and benches can
+/// measure the fan-out without the binary.
+pub async fn probe_identity_fingerprints(
+    pub_paths: &[std::path::PathBuf],
+    probe: KeygenProbe<'_>,
+) -> Vec<Option<String>> {
+    let futs: Vec<KeygenProbeFuture> = pub_paths.iter().map(|path| probe(path)).collect();
+    join_all_bounded(MAX_CONCURRENT_CHECKS, futs).await
 }
 
 pub async fn run_all<'a>(
@@ -2877,7 +2871,7 @@ pub async fn run_all<'a>(
             Ok(diagnostics) => all_diagnostics.extend(diagnostics),
             Err(e) => all_diagnostics.push(Diagnostic {
                 id: check.id(),
-                severity: Severity::Error,
+                severity: Severity::Critical,
                 message: format!("Check failed: {e}"),
                 hint: None,
                 module: check.module(),

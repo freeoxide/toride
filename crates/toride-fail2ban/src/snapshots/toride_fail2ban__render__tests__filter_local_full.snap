@@ -1,12 +1,12 @@
 ---
 source: crates/toride-fail2ban/src/render.test.rs
-assertion_line: 769
+assertion_line: 802
 expression: out
 ---
 # Managed by fail2ban-kit.
 # Do not edit manually unless you also disable this manager.
 
-[full-filter]
+[Definition]
 prefregex = ^<F-MLFID>.*</F-MLFID>
 failregex = ^Authentication failure from <HOST>$
             ^Invalid user .* from <HOST>$

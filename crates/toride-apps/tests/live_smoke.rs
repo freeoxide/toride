@@ -1,9 +1,9 @@
-//! Mutating live smoke for the language/distro facade wiring — real
+//! Mutating live smoke for the language/distro facade wiring: real
 //! managers, real network, throwaway state only.
 //!
 //! Gated behind `TORIDE_APPS_INTEGRATION=1` (the `tests/live.rs` env-gate
-//! precedent), and every manager leg self-skips when its manager — or,
-//! for the linuxbrew leg, `git` — is absent from the PATH, so the plain
+//! precedent), and every manager leg self-skips when its manager, or,
+//! for the linuxbrew leg, `git`: is absent from the PATH, so the plain
 //! gate run stays side-effect-free (the direct leg has no manager: it
 //! needs the network and fails without it):
 //!
@@ -11,9 +11,9 @@
 //! TORIDE_APPS_INTEGRATION=1 cargo test -p toride-apps --all-features --all-targets
 //! ```
 //!
-//! Each test drives the NEW facade path end to end — resolve (async
+//! Each test drives the NEW facade path end to end: resolve (async
 //! facade) or the resolved app (blocking facade), `ensure_installed` ->
-//! installed-version probe -> `update` -> re-probe -> `uninstall` —
+//! installed-version probe -> `update` -> re-probe -> `uninstall`:
 //! asserting the outcome taxonomy (`Installed`/`AlreadyPresent`/
 //! `Updated`/`UpToDate`/`Removed`/`NotInstalled`) and that each probe
 //! read the real manager's own output shape.
@@ -29,12 +29,12 @@
 //! under `HOMEBREW_NO_AUTO_UPDATE=1` and remove them again, self-skipping
 //! when the token is already installed (cask legs additionally require
 //! macOS, since `brew install --cask` refuses elsewhere); on Linux the
-//! formula leg pours into a scratch-prefix Homebrew — a shallow `git
+//! formula leg pours into a scratch-prefix Homebrew: a shallow `git
 //! clone` whose `HOMEBREW_CACHE`/`TEMP`/`LOGS`, `HOME`, and
 //! `XDG_CONFIG_HOME` all point into the scratch dir, never the host's
 //! brew state.
-//! pacman/apk/apt mutate the host's package database — never throwaway
-//! on a real machine — so they demand a second explicit opt-in,
+//! pacman/apk/apt mutate the host's package database: never throwaway
+//! on a real machine, so they demand a second explicit opt-in,
 //! `TORIDE_APPS_DISTRO_SMOKE=1`, that only the ephemeral CI venues set
 //! (the archlinux/alpine container jobs, the ubuntu dispatch runner);
 //! apt additionally self-skips without root, and on any long-lived host
@@ -347,7 +347,7 @@ async fn npm_facade_installs_probes_updates_and_uninstalls_a_real_global_package
         scratch.path().join("apps-manifest.json"),
         app,
     )
-    .npm(NpmBackend::detect(runner).expect("npm was just found on PATH"))
+    .npm(NpmBackend::detect(runner).expect("npm is on PATH"))
     .build()
     .expect("facade builds over the scratch manifest");
 
@@ -441,7 +441,7 @@ async fn cargo_facade_installs_probes_updates_and_uninstalls_a_real_crate() {
         scratch.path().join("apps-manifest.json"),
         app,
     )
-    .cargo(CargoBackend::detect(runner.clone()).expect("cargo was just found on PATH"))
+    .cargo(CargoBackend::detect(runner.clone()).expect("cargo is on PATH"))
     .build()
     .expect("facade builds over the scratch manifest");
 
@@ -483,7 +483,7 @@ async fn cargo_facade_installs_probes_updates_and_uninstalls_a_real_crate() {
     );
 
     let offered = CargoBackend::detect(runner.clone())
-        .expect("cargo was just found on PATH")
+        .expect("cargo is on PATH")
         .available_version("ripgrep")
         .await
         .expect("the keyworded leading row of `cargo info --color never ripgrep` parses");
@@ -538,7 +538,7 @@ fn mise_facade_installs_probes_updates_and_uninstalls_a_real_tool() {
         scratch.path().join("apps-manifest.json"),
         app.clone(),
     )
-    .mise(MiseBackend::detect(runner).expect("mise was just found on PATH"))
+    .mise(MiseBackend::detect(runner).expect("mise is on PATH"))
     .build()
     .expect("facade builds over the scratch manifest")
     .blocking();
@@ -618,7 +618,7 @@ async fn uv_facade_installs_probes_updates_and_uninstalls_a_real_tool() {
         scratch.path().join("apps-manifest.json"),
         app,
     )
-    .uv(UvBackend::detect(runner).expect("uv was just found on PATH"))
+    .uv(UvBackend::detect(runner).expect("uv is on PATH"))
     .build()
     .expect("facade builds over the scratch manifest");
 
@@ -691,7 +691,7 @@ async fn pipx_facade_installs_probes_updates_and_uninstalls_a_real_tool() {
         scratch.path().join("apps-manifest.json"),
         app,
     )
-    .pipx(PipxBackend::detect(runner).expect("pipx was just found on PATH"))
+    .pipx(PipxBackend::detect(runner).expect("pipx is on PATH"))
     .build()
     .expect("facade builds over the scratch manifest");
 
@@ -884,7 +884,7 @@ async fn pacman_facade_installs_probes_updates_and_uninstalls_a_real_package() {
         scratch.path().join("apps-manifest.json"),
         app,
     )
-    .distro(DistroBackend::detect(runner).expect("pacman was just found on PATH"))
+    .distro(DistroBackend::detect(runner).expect("pacman is on PATH"))
     .build()
     .expect("facade builds over the scratch manifest");
 
@@ -980,7 +980,7 @@ async fn apk_facade_installs_probes_updates_and_uninstalls_a_real_package() {
         scratch.path().join("apps-manifest.json"),
         app,
     )
-    .distro(DistroBackend::detect(runner).expect("apk was just found on PATH"))
+    .distro(DistroBackend::detect(runner).expect("apk is on PATH"))
     .build()
     .expect("facade builds over the scratch manifest");
 
@@ -997,7 +997,7 @@ async fn apk_facade_installs_probes_updates_and_uninstalls_a_real_package() {
     );
     assert_eq!(
         version, None,
-        "apk's quiet listing reports presence without a version — the documented row shape"
+        "apk's quiet listing reports presence without a version: the documented row shape"
     );
 
     assert_reensure_at(
@@ -1053,7 +1053,7 @@ async fn apt_facade_installs_probes_and_uninstalls_a_real_package() {
         return;
     }
     let runner = CommandRunner::builder().build();
-    let backend = DistroBackend::detect(runner.clone()).expect("apt-get was just found on PATH");
+    let backend = DistroBackend::detect(runner.clone()).expect("apt-get is on PATH");
     if backend
         .installed_version("sl")
         .await
@@ -1133,7 +1133,7 @@ async fn flatpak_facade_installs_probes_and_uninstalls_a_real_app() {
     }
     let scratch = ScratchDir::new("flatpak");
     let runner = CommandRunner::builder().build();
-    let backend = FlatpakBackend::detect(runner.clone()).expect("flatpak was just found on PATH");
+    let backend = FlatpakBackend::detect(runner.clone()).expect("flatpak is on PATH");
     if backend
         .installed_version(APP_ID, FlatpakInstallation::User)
         .await
@@ -1288,7 +1288,7 @@ async fn brew_cask_facade_installs_probes_updates_and_uninstalls_a_real_cask() {
     }
     let scratch = ScratchDir::new("brew-cask");
     let runner = brew_runner();
-    let backend = HomebrewBackend::detect(runner.clone()).expect("brew was just found on PATH");
+    let backend = HomebrewBackend::detect(runner.clone()).expect("brew is on PATH");
     if backend
         .installed_version(BrewKind::Cask, "stats")
         .await
@@ -1485,7 +1485,7 @@ async fn brew_cask_requesting_the_offering_over_a_foreign_pour_dispatches_an_arg
     }
     let scratch = ScratchDir::new("brew-foreign");
     let runner = brew_runner();
-    let backend = HomebrewBackend::detect(runner.clone()).expect("brew was just found on PATH");
+    let backend = HomebrewBackend::detect(runner.clone()).expect("brew is on PATH");
     let offered = backend
         .available_version(BrewKind::Cask, "rectangle")
         .await
@@ -1541,7 +1541,7 @@ async fn brew_cask_requesting_the_offering_over_a_foreign_pour_dispatches_an_arg
     assert_eq!(
         version.as_deref(),
         Some(offered.as_str()),
-        "the recorded identity is the unversioned token — the pre-fix code dispatched \
+        "the recorded identity is the unversioned token: the pre-fix code dispatched \
          `rectangle@{offered}`, the spelling brew refuses for unversioned cask tokens"
     );
 

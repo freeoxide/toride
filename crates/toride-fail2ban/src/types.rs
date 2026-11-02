@@ -7,6 +7,8 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::{Error, Result};
+
 /// Ban entry representing a banned IP address.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BanEntry {
@@ -149,6 +151,102 @@ pub const fn default_prefix(ip: std::net::IpAddr) -> u8 {
     match ip {
         std::net::IpAddr::V4(_) => 32,
         std::net::IpAddr::V6(_) => 128,
+    }
+}
+
+/// Canonicalize an IP for ban comparisons: IPv4-mapped IPv6 addresses
+/// (`::ffff:203.0.113.5`) become their IPv4 form (`203.0.113.5`).
+///
+/// Applied at every parse boundary (detector extraction, ban insertion,
+/// CIDR lookups) so a client flipping between literal and mapped spellings
+/// of the same address cannot evade a ban.
+#[must_use]
+pub fn normalize_ip(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => std::net::IpAddr::V4(v4),
+            None => std::net::IpAddr::V6(v6),
+        },
+        v4 @ std::net::IpAddr::V4(_) => v4,
+    }
+}
+
+/// Characters forbidden in jail, filter, and action names: path separators,
+/// newlines, and shell metacharacters.
+pub(crate) const FORBIDDEN_NAME_CHARS: &[char] = &[
+    '/', '\n', '\r', ';', '|', '&', '$', '`', '\\', '\'', '"', '(', ')', '<', '>', '{', '}',
+];
+
+/// The one rule set every name boundary enforces: non-empty after trimming,
+/// no leading `-` (fail2ban-client would parse it as an option), no
+/// whitespace (breaks argv tokens and INI section headers), no `..`, and no
+/// [`FORBIDDEN_NAME_CHARS`].
+pub(crate) fn name_rejection(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Some("must not be empty".to_string());
+    }
+    if trimmed.starts_with('-') {
+        return Some("must not start with '-'".to_string());
+    }
+    if let Some(ch) = trimmed.chars().find(|c| c.is_whitespace()) {
+        return Some(format!("must not contain whitespace ({ch:?})"));
+    }
+    if trimmed.contains("..") {
+        return Some("must not contain \"..\"".to_string());
+    }
+    if let Some(ch) = trimmed.chars().find(|c| FORBIDDEN_NAME_CHARS.contains(c)) {
+        return Some(format!("must not contain forbidden character {ch:?}"));
+    }
+    None
+}
+
+/// Reject a jail name before it reaches `fail2ban-client` argv, an INI
+/// section header, or a managed config file name.
+///
+/// # Errors
+///
+/// Returns [`Error::Validation`] when the name breaks any rule of
+/// [`name_rejection`].
+pub(crate) fn ensure_jail_operand(name: &str) -> Result<()> {
+    name_rejection(name).map_or(Ok(()), |reason| {
+        Err(Error::Validation(format!("jail name {reason}: {name:?}")))
+    })
+}
+
+/// Reject an `ip` operand (`fail2ban-client ... banip <ip>`) before it
+/// reaches argv.
+///
+/// # Errors
+///
+/// Returns [`Error::Validation`] when the operand does not parse as an
+/// [`IpAddr`].
+pub(crate) fn ensure_ip_operand(ip: &str) -> Result<()> {
+    ip.parse::<IpAddr>()
+        .map_err(|_| Error::Validation(format!("not a valid IP address operand: {ip:?}")))?;
+    Ok(())
+}
+
+/// Reject an `ip`-or-CIDR operand (`addignoreip`/`delignoreip` accept both)
+/// before it reaches argv.
+///
+/// # Errors
+///
+/// Returns [`Error::Validation`] when the operand is neither a valid IP
+/// address nor `address/prefix` with a prefix within the address family's
+/// range.
+pub(crate) fn ensure_ip_or_cidr_operand(operand: &str) -> Result<()> {
+    let invalid = || Error::Validation(format!("not a valid IP or CIDR operand: {operand:?}"));
+    match operand.split_once('/') {
+        Some((addr, prefix)) => {
+            let addr: IpAddr = addr.parse().map_err(|_| invalid())?;
+            let prefix: u8 = prefix.parse().map_err(|_| invalid())?;
+            if prefix > default_prefix(addr) {
+                return Err(invalid());
+            }
+            Ok(())
+        }
+        None => ensure_ip_operand(operand),
     }
 }
 

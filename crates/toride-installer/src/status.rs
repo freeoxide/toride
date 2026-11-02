@@ -2,11 +2,11 @@
 //!
 //! Answers, for a [`Tool`], three questions without ever touching the
 //! network: is it installed ([`ToolStatus`]), where did the running copy
-//! come from — the system `$PATH` or the installer's managed location
-//! ([`ToolSource`]) — and what version does it report ([`ToolVersion`])?
+//! come from: the system `$PATH` or the installer's managed location
+//! ([`ToolSource`]), and what version does it report ([`ToolVersion`])?
 //!
 //! [`Detector::detect`] probes the real `$PATH` first (that is the binary a
-//! shell would actually execute), then the managed install location — the
+//! shell would actually execute), then the managed install location: the
 //! exact directory `resolve_install_dir` installs into, so "where we
 //! look" cannot drift from "where we install". A `$PATH` hit that
 //! canonicalizes to the managed path (or a managed file found with no
@@ -18,22 +18,22 @@
 //! and a binary that refuses both `--version` and `-V` (or exits non-zero,
 //! or times out) keeps its presence with `version: None`. Presence is the
 //! path probe's verdict, never the version probe's. Staleness is
-//! deliberately not a [`ToolStatus`] variant — comparing against the newest
+//! deliberately not a [`ToolStatus`] variant: comparing against the newest
 //! release needs a network fetch, so it is a derived [`Freshness`] computed
 //! by callers that explicitly have a `latest` in hand.
 //!
 //! The one network-touching piece lives here too, kept behind an explicit
 //! opt-in: [`latest`] is a single [`ReleaseResolver::resolve`] call for the
 //! host [`Target`] with `"latest"`, and [`LatestCache`] is an in-memory TTL
-//! cache of that lookup. Release-API failures — rate limiting above all —
+//! cache of that lookup. Release-API failures: rate limiting above all:
 //! surface there as ordinary errors; callers must treat them as non-fatal,
 //! because an unreachable release API says nothing about the health of an
 //! installed tool.
 //!
 //! On top of detection sits the install-on-missing front door,
 //! `ensure_installed` (feature `http`): detect first; keep an installed
-//! copy that already satisfies the request — `"latest"`, or a pinned
-//! semver the detected version meets — with zero network, and only on a
+//! copy that already satisfies the request: `"latest"`, or a pinned
+//! semver the detected version meets: with zero network, and only on a
 //! true miss run the install pipeline, re-detecting afterwards for the
 //! freshly installed version ([`EnsureOutcome`]).
 //!
@@ -72,7 +72,7 @@ pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// compare them without special cases.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolVersion {
-    /// The trimmed first non-empty `--version`/`-V` stdout line — exactly
+    /// The trimmed first non-empty `--version`/`-V` stdout line: exactly
     /// what the host UI displays today, so UI parity survives adoption.
     pub line: String,
 
@@ -93,7 +93,9 @@ impl ToolVersion {
     /// under an `.exe`-suffixed `bin_name` the bare stem is tried too
     /// (Windows binaries self-report without the loader extension);
     /// bare output passes through; takes the first whitespace token as
-    /// `raw`; best-effort semver-parses. Never fails.
+    /// `raw` (kept verbatim, `v` prefix included); strips one leading `v`/`V`
+    /// before the best-effort semver parse so `v22.0.0` self-reports (node,
+    /// goreleaser tools) parse. Never fails.
     #[must_use]
     pub fn parse(output: &str, bin_name: &str) -> Self {
         let line = output
@@ -108,7 +110,11 @@ impl ToolVersion {
             .next()
             .unwrap_or_default()
             .to_owned();
-        let parsed = semver::Version::parse(&raw).ok();
+        let parse_target = raw
+            .strip_prefix('v')
+            .or_else(|| raw.strip_prefix('V'))
+            .unwrap_or(&raw);
+        let parsed = semver::Version::parse(parse_target).ok();
         Self { line, raw, parsed }
     }
 
@@ -162,7 +168,7 @@ fn strip_named_prefix<'line>(line: &'line str, name: &str) -> Option<&'line str>
 /// Where a detected tool came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSource {
-    /// The `$PATH` resolved to a copy that is NOT the managed install path —
+    /// The `$PATH` resolved to a copy that is NOT the managed install path:
     /// the shadow case (e.g. a package-manager copy ahead of `~/.local/bin`).
     Path,
 
@@ -242,7 +248,7 @@ impl ToolStatus {
     }
 }
 
-/// Derived staleness — computed only when the caller explicitly has a
+/// Derived staleness: computed only when the caller explicitly has a
 /// `latest` in hand (a network concern; `detect` itself never fetches).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Freshness {
@@ -258,7 +264,7 @@ pub enum Freshness {
     },
 
     /// The installed version is missing or unparseable (or the tool is not
-    /// installed, or `latest` itself is unparseable) — cannot compare.
+    /// installed, or `latest` itself is unparseable): cannot compare.
     /// Never `Stale` on a guess.
     Unknown,
 }
@@ -308,7 +314,7 @@ impl Detector {
         Self::with_runner(Arc::new(DuctRunner))
     }
 
-    /// Inject a runner — tests pass `Arc::new(FakeRunner::new().strict())`.
+    /// Inject a runner: tests pass `Arc::new(FakeRunner::new().strict())`.
     #[must_use]
     pub fn with_runner(runner: Arc<dyn Runner>) -> Self {
         Self {
@@ -328,16 +334,16 @@ impl Detector {
     ///
     /// Precedence (see module docs):
     ///
-    /// 1. [`find_binary`](&tool.bin_name) over the real `$PATH` — the PATH
+    /// 1. [`find_binary`](&tool.bin_name) over the real `$PATH`: the PATH
     ///    hit is what a shell would actually execute;
     /// 2. managed path = `resolve_install_dir(tool, self.install_dir)
-    ///    .join(&tool.bin_name)` — the same fn installs use, so "where we
+    ///    .join(&tool.bin_name)`: the same fn installs use, so "where we
     ///    look" cannot drift from "where we install";
     /// 3. classify: a PATH hit canonicalizing equal to the managed path ->
     ///    `Managed`; a PATH hit elsewhere -> `OnPath`; no PATH hit but the
     ///    managed file exists -> `Managed`; neither -> `NotInstalled`. If
     ///    `resolve_install_dir` errors (no home dir, no default), the
-    ///    managed arm is simply absent and classification is PATH-only.
+    ///    managed arm is absent and classification is PATH-only.
     ///
     /// Then the classified path's version is probed through the injected
     /// runner as
@@ -345,7 +351,7 @@ impl Detector {
     /// (capture output is the default; stdin is the null device so a probe
     /// can neither block on nor consume the caller's stdin), falling back to
     /// `-V`. A failed / timed-out / non-zero / empty-stdout probe degrades to
-    /// `version: None` — presence is the path probe's verdict, never the
+    /// `version: None`: presence is the path probe's verdict, never the
     /// version's. Never errors, never touches the network.
     #[must_use]
     pub fn detect(&self, tool: &Tool) -> ToolStatus {
@@ -355,7 +361,7 @@ impl Detector {
 
         // `find_binary` returns `std::path::PathBuf`; a non-UTF-8 hit cannot
         // be represented in `ToolStatus` (paths are `Utf8PathBuf` by
-        // construction) and is treated as absent — detect then falls through
+        // construction) and is treated as absent: detect then falls through
         // to the managed arm or `NotInstalled`. Executable paths are
         // effectively always UTF-8 on the platforms this crate supports.
         let path_hit = find_binary(&tool.bin_name)
@@ -371,7 +377,7 @@ impl Detector {
         }
     }
 
-    /// `spawn_blocking` wrapper over [`Detector::detect`] — the crate is
+    /// `spawn_blocking` wrapper over [`Detector::detect`]: the crate is
     /// async-native but the probe is sync subprocess work, so it must not
     /// run on an async runtime worker.
     ///
@@ -386,7 +392,49 @@ impl Detector {
             .unwrap_or(ToolStatus::NotInstalled)
     }
 
-    /// The managed install path for `tool` without detecting — exposes the
+    /// Offline availability of many tools in one sweep, for the catalogue
+    /// sweeps the module docs name as this detector's workload.
+    ///
+    /// Classification and probing match [`Detector::detect`] per tool; the
+    /// shared work happens once per sweep instead of once per tool: every
+    /// `$PATH` directory is read once into a name-to-path map (replacing a
+    /// full `which` walk per tool), and each distinct managed install dir
+    /// is canonicalized once (`canonicalize(dir).join(bin_name)`; a managed
+    /// binary that is itself a symlink therefore compares by its link path,
+    /// unlike `detect`'s per-file canonicalization). Never errors, never
+    /// touches the network.
+    #[must_use]
+    pub fn detect_many(&self, tools: &[Tool]) -> Vec<ToolStatus> {
+        let path_index = scan_path_index();
+        let mut dir_canon: std::collections::BTreeMap<Utf8PathBuf, Option<std::path::PathBuf>> =
+            std::collections::BTreeMap::new();
+
+        tools
+            .iter()
+            .map(|tool| {
+                let managed_dir = resolve_install_dir(tool, self.install_dir.as_ref()).ok();
+                let managed = managed_dir.as_ref().map(|dir| dir.join(&tool.bin_name));
+                let managed_canon = managed_dir.as_ref().map(|dir| {
+                    dir_canon
+                        .entry(dir.clone())
+                        .or_insert_with(|| std::fs::canonicalize(dir.as_std_path()).ok())
+                        .clone()
+                        .map(|canon| canon.join(&tool.bin_name))
+                });
+                let path_hit = path_index.get(tool.bin_name.as_str()).cloned();
+                let managed_canon_ref = managed_canon.as_ref().and_then(|canon| canon.as_deref());
+                match classify_indexed(path_hit, managed, managed_canon_ref) {
+                    Some((path, source)) => {
+                        let version = self.probe_version(&path, &tool.bin_name);
+                        ToolStatus::new(source, path, version)
+                    }
+                    None => ToolStatus::NotInstalled,
+                }
+            })
+            .collect()
+    }
+
+    /// The managed install path for `tool` without detecting: exposes the
     /// full `resolve_install_dir` precedence (explicit `install_dir` >
     /// `tool.default_install_dir` > `~/.local/bin`) for callers that want
     /// shadow warnings.
@@ -399,8 +447,8 @@ impl Detector {
     }
 
     /// Probe the classified binary's version: `--version` first, falling
-    /// back to `-V`. Any failure — spawn error, timeout, non-zero exit,
-    /// whitespace-only stdout — degrades to `None`; presence is never
+    /// back to `-V`. Any failure: spawn error, timeout, non-zero exit,
+    /// whitespace-only stdout: degrades to `None`; presence is never
     /// inferred from the probe.
     fn probe_version(&self, path: &Utf8Path, bin_name: &str) -> Option<ToolVersion> {
         for arg in ["--version", "-V"] {
@@ -493,10 +541,10 @@ impl Default for DetectorBuilder {
 /// `"latest"`.
 ///
 /// The concrete version the resolver returns (per the trait's contract a
-/// bare version like `"2026.6.14"` — no tag prefix, never the string
+/// bare version like `"2026.6.14"`: no tag prefix, never the string
 /// `"latest"`) becomes the [`ToolVersion`]: `line`/`raw` carry the version
 /// text and `parsed` is a best-effort semver parse. The download URL is
-/// discarded — a staleness verdict via [`Freshness::evaluate`] needs only
+/// discarded: a staleness verdict via [`Freshness::evaluate`] needs only
 /// the version, and this function must not invite a download.
 ///
 /// Only errors the pieces already produce can escape; there are no new
@@ -504,7 +552,7 @@ impl Default for DetectorBuilder {
 ///
 /// - [`Error::UnsupportedTarget`](crate::Error::UnsupportedTarget) when
 ///   [`Target::host`] cannot classify this platform;
-/// - whatever the resolver's contract allows — typically
+/// - whatever the resolver's contract allows: typically
 ///   [`Error::Resolve`](crate::Error::Resolve),
 ///   `Error::Download` (feature `http`) or
 ///   [`Error::HttpStatus`](crate::Error::HttpStatus).
@@ -517,7 +565,7 @@ impl Default for DetectorBuilder {
 ///
 /// # Errors
 ///
-/// See above: host-target detection and the resolver itself — nothing
+/// See above: host-target detection and the resolver itself: nothing
 /// else.
 pub async fn latest(resolver: &dyn ReleaseResolver) -> Result<ToolVersion> {
     let target = Target::host()?;
@@ -531,7 +579,7 @@ pub async fn latest(resolver: &dyn ReleaseResolver) -> Result<ToolVersion> {
 /// In-memory TTL cache for [`latest`], keyed by [`Tool::name`].
 ///
 /// Deliberately minimal: `&mut self` access only (no interior mutability,
-/// no shared handle) and no persistence — a `dirs::cache_dir()`-backed
+/// no shared handle) and no persistence: a `dirs::cache_dir()`-backed
 /// cache adds fs-layout and staleness-semantics decisions with no
 /// consumer yet. Repeats within the TTL (a doctor check plus a run in one
 /// invocation, say) cost a single release-API lookup; a rate-limited miss
@@ -591,8 +639,8 @@ pub enum EnsureOutcome {
 
     /// Installed now. `path` is the install pipeline's destination (the
     /// authority on what was written); `version` comes from a post-install
-    /// [`Detector`] re-probe — the pipeline returns only the path, its
-    /// internally resolved concrete version is discarded — and is `None`
+    /// [`Detector`] re-probe: the pipeline returns only the path, its
+    /// internally resolved concrete version is discarded, and is `None`
     /// in the rare case the fresh binary refuses both version flags. The
     /// install itself succeeded either way.
     Installed {
@@ -607,18 +655,18 @@ pub enum EnsureOutcome {
 /// Whether an already-detected copy satisfies the requested `version`.
 ///
 /// - `"latest"`: always satisfied. Deciding whether a newer release exists
-///   needs a network lookup by definition, so an existing copy is kept —
+///   needs a network lookup by definition, so an existing copy is kept:
 ///   callers wanting upgrade-if-stale compose `detect` + `latest` +
 ///   [`Freshness`] and install explicitly.
 /// - A pinned semver: satisfied when the detected version parses and is
 ///   `>=` the request. A `v`-prefixed request (`v1.2.3`) is accepted,
 ///   matching the resolvers' tag-prefix normalization. An unprobeable
-///   detected version is never satisfied — the install runs rather than
+///   detected version is never satisfied: the install runs rather than
 ///   guessing the copy is fine.
 /// - Anything else (no semver in the request): never satisfied; the install
 ///   is attempted and the resolver's verdict surfaces.
 ///
-/// Precondition: `status.is_installed()` — `ensure_installed` checks that
+/// Precondition: `status.is_installed()`: `ensure_installed` checks that
 /// before consulting this.
 ///
 /// `pub(crate)`: the per-tool ensure paths (`ensure_mise`) replicate the
@@ -650,7 +698,7 @@ async fn ensure_with_detector(
     install_dir: Option<&Utf8PathBuf>,
     resolver: &(dyn ReleaseResolver + Send + Sync),
 ) -> Result<EnsureOutcome> {
-    // 1. detect first — offline, never errors, and via `detect_async`: the
+    // 1. detect first: offline, never errors, and via `detect_async`: the
     //    version probe spawns subprocesses and must not run on an async
     //    runtime worker.
     let status = detector.detect_async(tool).await;
@@ -675,13 +723,13 @@ async fn ensure_with_detector(
 /// Detect-first install: install-on-missing with
 /// version-check-before-install.
 ///
-/// 1. A [`Detector`] honoring `install_dir` classifies `tool` — offline,
+/// 1. A [`Detector`] honoring `install_dir` classifies `tool`: offline,
 ///    never errors.
-/// 2. If a copy is installed and the request is satisfied by it —
+/// 2. If a copy is installed and the request is satisfied by it:
 ///    `version == "latest"` (comparing against the newest release needs
 ///    network by definition, so an existing copy is kept), or a pinned
 ///    semver the detected version parses and meets (`>=`; a `v` tag prefix
-///    is accepted) — return [`EnsureOutcome::AlreadyPresent`] with **zero
+///    is accepted): return [`EnsureOutcome::AlreadyPresent`] with **zero
 ///    network**: the resolver is never consulted.
 /// 3. Otherwise run the install pipeline with the caller's `resolver`,
 ///    then re-detect for the installed version (hence
@@ -694,7 +742,7 @@ async fn ensure_with_detector(
 ///
 /// # Errors
 ///
-/// Everything the install pipeline can return — the full
+/// Everything the install pipeline can return: the full
 /// [`Error`](crate::Error) surface: `MissingConfig` (descriptor
 /// validation), `Resolve`, `Download`, `DownloadStalled`, `HttpStatus`,
 /// `TooLarge`, `TooSmall`, `ChecksumMismatch`, `NoChecksumEntry`,
@@ -745,6 +793,87 @@ fn classify(
     }
 }
 
+/// [`classify`] for the sweep path, taking the caller's pre-canonicalized
+/// managed path (canonicalized install dir joined with the bin name) so a
+/// sweep canonicalizes each directory once instead of per tool.
+fn classify_indexed(
+    path_hit: Option<Utf8PathBuf>,
+    managed: Option<Utf8PathBuf>,
+    managed_canon: Option<&std::path::Path>,
+) -> Option<(Utf8PathBuf, ToolSource)> {
+    match (path_hit, managed) {
+        (Some(hit), Some(managed))
+            if hit.as_std_path() == managed.as_std_path()
+                || managed_canon.is_some_and(|canon| {
+                    std::fs::canonicalize(hit.as_std_path())
+                        .is_ok_and(|hit_canon| hit_canon == canon)
+                }) =>
+        {
+            Some((managed, ToolSource::Managed))
+        }
+        (Some(hit), _) => Some((hit, ToolSource::Path)),
+        (None, Some(managed)) if managed.is_file() => Some((managed, ToolSource::Managed)),
+        _ => None,
+    }
+}
+
+/// Scan every `$PATH` directory once, mapping executable file name to its
+/// full path (first directory in `$PATH` order wins, matching `which`'s
+/// precedence). Under `cfg(windows)` an executable with a `PATHEXT`
+/// extension is additionally registered under its bare stem, mirroring
+/// `which`'s `tool` -> `tool.exe` resolution.
+fn scan_path_index() -> std::collections::BTreeMap<String, Utf8PathBuf> {
+    let mut index = std::collections::BTreeMap::new();
+    let Some(path) = std::env::var_os("PATH") else {
+        return index;
+    };
+    for dir in std::env::split_paths(&path) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let Ok(dir) = Utf8PathBuf::from_path_buf(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            // `fs::metadata` (unlike `DirEntry::metadata`/`file_type`)
+            // follows symlinks, matching `which`, which happily resolves
+            // symlinked executables like `/usr/bin/sh -> dash`.
+            let Ok(meta) = std::fs::metadata(entry.path()) else {
+                continue;
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                if meta.permissions().mode() & 0o111 == 0 {
+                    continue;
+                }
+            }
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let full = dir.join(&name);
+            index.entry(name.clone()).or_insert_with(|| full.clone());
+            #[cfg(windows)]
+            if let Some(stem) = std::path::Path::new(&name)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+            {
+                let lower = name.to_ascii_lowercase();
+                if [".exe", ".cmd", ".bat", ".com"]
+                    .iter()
+                    .any(|ext| lower.ends_with(ext))
+                {
+                    index.entry(stem.to_owned()).or_insert(full);
+                }
+            }
+        }
+    }
+    index
+}
+
 /// Whether `a` and `b` refer to the same directory entry, compared by
 /// canonicalized path with a literal-equality fallback.
 ///
@@ -752,7 +881,7 @@ fn classify(
 /// installer writes binaries via temp-file + rename, so an upgrade replaces
 /// the inode and silently orphans any hard link. A hard-linked `$PATH` copy
 /// of the managed binary is therefore a *stale shadow* (`OnPath`), not the
-/// managed copy — inode equality would misreport it as `Managed`. When
+/// managed copy: inode equality would misreport it as `Managed`. When
 /// either side cannot be canonicalized (typically: the file does not
 /// exist), literal path equality decides so classification stays total.
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -771,7 +900,7 @@ mod tests {
     use toride_runner::error::Error as RunnerError;
     use toride_runner::{CommandOutput, FakeRunner};
 
-    /// A bin name no real `$PATH` carries — the hermetic tests rely on
+    /// A bin name no real `$PATH` carries: the hermetic tests rely on
     /// `find_binary` missing it.
     const BIN: &str = "toride-test-demotool";
 
@@ -781,7 +910,7 @@ mod tests {
     }
 
     /// A `Tool` managed at `<dir>/toride-test-demotool` plus a real dummy
-    /// executable file there — the managed arm exists on disk, off `$PATH`.
+    /// executable file there: the managed arm exists on disk, off `$PATH`.
     fn managed_tool(dir: &TempDir) -> Tool {
         let root = utf8_dir(dir);
         let bin = root.join(BIN);
@@ -800,7 +929,7 @@ mod tests {
             .expect("valid tool descriptor")
     }
 
-    /// The exact version-probe spec `Detector` issues — used both to
+    /// The exact version-probe spec `Detector` issues: used both to
     /// register `FakeRunner` responses (which ignore `timeout` when
     /// matching) and to assert on recorded calls. Must mirror
     /// `probe_version`: exact matching compares the null-stdin wiring too,
@@ -817,7 +946,7 @@ mod tests {
         ToolVersion::parse(output, "tool")
     }
 
-    /// A `Tool` with a distinctive `name` — the key [`LatestCache`] uses.
+    /// A `Tool` with a distinctive `name`: the key [`LatestCache`] uses.
     fn named_tool(name: &str) -> Tool {
         Tool::builder()
             .name(name)
@@ -950,7 +1079,7 @@ mod tests {
     #[test]
     fn detect_not_installed_skips_probe() {
         // Strict runner with NO responses: any version probe would error and
-        // fail the test — so reaching NotInstalled proves no probe fired.
+        // fail the test: so reaching NotInstalled proves no probe fired.
         let fake = FakeRunner::new().strict();
         let detector = Detector::with_runner(Arc::new(fake.clone()));
         let tool = Tool::builder()
@@ -1065,7 +1194,7 @@ mod tests {
     #[test]
     fn classify_managed_when_path_hit_equals_managed() {
         // Neither side exists, so canonicalization fails and the literal
-        // equality fallback decides — the arm still classifies as Managed.
+        // equality fallback decides: the arm still classifies as Managed.
         let missing = Utf8PathBuf::from("/nonexistent-toride-test/tool");
         assert_eq!(
             classify(Some(missing.clone()), Some(missing.clone())),
@@ -1183,7 +1312,7 @@ mod tests {
 
         let stdout = "1.2.3";
         // Exact responses are consumed once per match, and this test detects
-        // twice (async + sync) — register the response for both probes.
+        // twice (async + sync): register the response for both probes.
         let fake = FakeRunner::new()
             .strict()
             .respond(
@@ -1202,7 +1331,7 @@ mod tests {
     /// ENVIRONMENTAL smoke test: hits the real `$PATH` (never mutated here)
     /// and runs a real `--version` probe on the host's `ls`, mirroring the
     /// discovery module's own `ls`-exists test. The version is deliberately
-    /// unasserted — GNU `ls` answers `--version` while BSD `ls` may refuse
+    /// unasserted: GNU `ls` answers `--version` while BSD `ls` may refuse
     /// both flags, and presence must not depend on the probe.
     #[cfg(unix)]
     #[test]
@@ -1216,8 +1345,56 @@ mod tests {
         assert!(path.as_str().ends_with("ls"), "unexpected path: {path}");
     }
 
+    /// ENVIRONMENTAL: `detect_many` must classify exactly what `detect`
+    /// classifies per tool, over both arms the host environment can serve
+    /// (real `$PATH` hits, a managed file off `$PATH`, and honest misses).
+    /// The empty `FakeRunner` leaves every version probe unanswered, which
+    /// degrades `version` to `None` on both paths equally.
+    #[cfg(unix)]
+    #[test]
+    fn detect_many_matches_detect_per_tool_environmental() {
+        let tmp = TempDir::new().unwrap();
+        let managed = managed_tool(&tmp);
+        let make = |name: &str| {
+            Tool::builder()
+                .name(name)
+                .bin_name(name)
+                .build()
+                .expect("valid tool descriptor")
+        };
+        let tools = vec![make("ls"), make("sh"), make(BIN), managed];
+
+        let detector = Detector::with_runner(Arc::new(FakeRunner::new()));
+        let sweep = detector.detect_many(&tools);
+        for (tool, status) in tools.iter().zip(sweep) {
+            assert_eq!(
+                status,
+                detector.detect(tool),
+                "detect_many must agree with detect for {}",
+                tool.bin_name
+            );
+        }
+    }
+
+    #[test]
+    fn detect_many_reports_not_installed_for_unknown_names() {
+        let detector = Detector::with_runner(Arc::new(FakeRunner::new()));
+        let tools: Vec<Tool> = (0..4)
+            .map(|n| {
+                Tool::builder()
+                    .name(format!("toride-no-such-tool-{n}"))
+                    .bin_name(format!("toride-no-such-tool-{n}"))
+                    .build()
+                    .unwrap()
+            })
+            .collect();
+        for status in detector.detect_many(&tools) {
+            assert_eq!(status, ToolStatus::NotInstalled);
+        }
+    }
+
     // -----------------------------------------------------------------------
-    // Detector::managed_path — the resolve_install_dir precedence
+    // Detector::managed_path: the resolve_install_dir precedence
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1325,7 +1502,7 @@ mod tests {
 
     #[test]
     fn parse_does_not_strip_partial_name_prefix() {
-        // "mystery" merely extends bin_name "mist" — no separator, no strip.
+        // "mystery" merely extends bin_name "mist": no separator, no strip.
         let v = ToolVersion::parse("mystery 1.2.3", "mist");
         assert_eq!(v.raw, "mystery");
         assert!(v.parsed.is_none());
@@ -1342,6 +1519,27 @@ mod tests {
         assert_eq!(v.line, "mise 2026.9.1 linux-x64");
         assert_eq!(v.raw, "2026.9.1");
         assert_eq!(v.parsed, Some(semver::Version::new(2026, 9, 1)));
+    }
+
+    #[test]
+    fn parse_strips_leading_v_for_semver_but_keeps_raw_verbatim() {
+        // node and goreleaser-built tools self-report `v22.0.0`; the semver
+        // half must parse while `raw` keeps the prefix.
+        let v = ToolVersion::parse("v22.0.0", "node");
+        assert_eq!(v.raw, "v22.0.0");
+        assert_eq!(v.parsed, Some(semver::Version::new(22, 0, 0)));
+
+        let upper = ToolVersion::parse("V3.1.4", "tool");
+        assert_eq!(upper.raw, "V3.1.4");
+        assert_eq!(upper.parsed, Some(semver::Version::new(3, 1, 4)));
+
+        let prefixed = ToolVersion::parse("node v22.1.0", "node");
+        assert_eq!(prefixed.raw, "v22.1.0");
+        assert_eq!(prefixed.parsed, Some(semver::Version::new(22, 1, 0)));
+
+        // `v` alone or a non-semver tail stays unparsed.
+        assert!(ToolVersion::parse("v", "tool").parsed.is_none());
+        assert!(ToolVersion::parse("version", "tool").parsed.is_none());
     }
 
     #[test]
@@ -1473,12 +1671,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // latest() + LatestCache — local stub resolver, zero network
+    // latest() + LatestCache: local stub resolver, zero network
     // -----------------------------------------------------------------------
 
     /// Canned [`ReleaseResolver`] for the `latest`/cache/ensure tests: each
-    /// call pops the next outcome — `Some(version)` resolves, `None`
-    /// errors — and the last outcome repeats on any extra call. Counts
+    /// call pops the next outcome: `Some(version)` resolves, `None`
+    /// errors, and the last outcome repeats on any extra call. Counts
     /// invocations and records every requested version; no HTTP, no TCP.
     struct StubResolver {
         outcomes: Mutex<Vec<Option<String>>>,
@@ -1665,7 +1863,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // ensure_installed — the detect-first decision table
+    // ensure_installed: the detect-first decision table
     //
     // The ensure path runs the install pipeline on a miss, so these tests
     // need the `http` engine and ride behind the same feature.
@@ -1808,7 +2006,7 @@ mod tests {
             );
             let detector = Detector::with_runner(Arc::new(fake));
             // The stub fails at resolve: enough to prove the install path was
-            // entered and handed the caller's resolver — the download itself is
+            // entered and handed the caller's resolver: the download itself is
             // exercised only by the gated integration tests (it needs network).
             let resolver = StubResolver::always_failing();
 
@@ -1834,7 +2032,7 @@ mod tests {
             let tool = managed_tool(&tmp);
             // Lenient runner: unmatched probes return empty success output, so
             // the copy's version is unknown. A pinned request cannot be
-            // confirmed — the conservative verdict is to reinstall.
+            // confirmed: the conservative verdict is to reinstall.
             let detector = Detector::with_runner(Arc::new(FakeRunner::new()));
             let resolver = StubResolver::always_failing();
 
@@ -1854,7 +2052,7 @@ mod tests {
         async fn ensure_not_installed_runs_the_installer_even_for_latest() {
             // Strict runner with NO responses: any version probe would error and
             // fail the test, so a resolver consultation proves detection
-            // returned NotInstalled without probing — and that `latest` does
+            // returned NotInstalled without probing, and that `latest` does
             // not short-circuit a true miss.
             let detector = Detector::with_runner(Arc::new(FakeRunner::new().strict()));
             let tool = Tool::builder()
@@ -1933,9 +2131,6 @@ mod tests {
         #[cfg(unix)]
         #[tokio::test]
         async fn ensure_public_detects_against_the_install_dir_override() {
-            // The tool's default dir stays empty; the override dir carries the
-            // script. ensure must build its Detector with that override —
-            // proving install_dir flows into detection, not just into install.
             let tool_dir = TempDir::new().unwrap();
             let override_tmp = TempDir::new().unwrap();
             let override_dir = utf8_dir(&override_tmp);

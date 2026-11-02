@@ -54,7 +54,7 @@ fn main() -> Result<()> {
             Some(guard)
         }
         None => {
-            // No cache dir / env override — fall back to stderr (rare). This can
+            // No cache dir / env override: fall back to stderr (rare). This can
             // still corrupt the TUI, but only when there's nowhere else to write.
             tracing_subscriber::fmt()
                 .with_writer(std::io::stderr)
@@ -81,8 +81,7 @@ fn main() -> Result<()> {
         original_hook(panic_info);
     }));
 
-    terminal::enable_raw_mode()
-        .wrap_err("Failed to enable raw mode — are you running in a TTY?")?;
+    terminal::enable_raw_mode().wrap_err("Failed to enable raw mode: are you running in a TTY?")?;
     execute!(stdout(), terminal::EnterAlternateScreen, EnableMouseCapture)
         .wrap_err("Failed to enter alternate screen")?;
 

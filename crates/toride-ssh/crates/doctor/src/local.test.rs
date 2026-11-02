@@ -29,7 +29,7 @@ async fn ssh_dir_exists_as_file_errors() {
     let diags = run_checks_with_dir(file.path()).await;
     let matches = find(&diags, "ssh_dir_exists");
     assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0].severity, Severity::Error);
+    assert_eq!(matches[0].severity, Severity::Critical);
     assert!(
         matches[0].message.contains("is not a directory"),
         "expected 'is not a directory' in message, got: {}",
@@ -70,7 +70,7 @@ async fn ssh_dir_permissions_too_permissive() {
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "ssh_dir_permissions");
     assert!(!matches.is_empty());
-    assert!(matches.iter().all(|d| d.severity == Severity::Error));
+    assert!(matches.iter().all(|d| d.severity == Severity::Critical));
 }
 
 #[tokio::test]
@@ -149,7 +149,7 @@ async fn private_key_wrong_permissions() {
     assert!(
         matches
             .iter()
-            .any(|d| d.severity == Severity::Error && d.message.contains("id_ed25519"))
+            .any(|d| d.severity == Severity::Critical && d.message.contains("id_ed25519"))
     );
 }
 
@@ -212,7 +212,7 @@ async fn owner_check_errors_for_wrong_owner() {
 
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].id, "owner_check");
-    assert_eq!(diags[0].severity, Severity::Error);
+    assert_eq!(diags[0].severity, Severity::Critical);
     assert!(
         diags[0].message.contains("is owned by uid"),
         "error message should mention the file owner uid, got: {}",
@@ -254,7 +254,7 @@ async fn config_permissions_error_when_world_writable() {
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "config_permissions");
     assert!(!matches.is_empty());
-    assert!(matches.iter().all(|d| d.severity == Severity::Error));
+    assert!(matches.iter().all(|d| d.severity == Severity::Critical));
 }
 
 #[cfg(unix)]
@@ -282,7 +282,7 @@ async fn authorized_keys_permissions_error_when_world_writable() {
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "authorized_keys_permissions");
     assert!(!matches.is_empty());
-    assert!(matches.iter().all(|d| d.severity == Severity::Error));
+    assert!(matches.iter().all(|d| d.severity == Severity::Critical));
 }
 
 #[tokio::test]
@@ -490,7 +490,7 @@ async fn keygen_available_returns_valid_diagnostic() {
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "keygen_available");
     assert_eq!(matches.len(), 1);
-    assert!(matches[0].severity == Severity::Ok || matches[0].severity == Severity::Error);
+    assert!(matches[0].severity == Severity::Ok || matches[0].severity == Severity::Critical);
 }
 
 #[tokio::test]
@@ -504,7 +504,11 @@ async fn identity_file_pub_detected() {
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "identity_file_pub");
-    assert!(matches.iter().any(|d| d.severity == Severity::Warning));
+    assert!(
+        matches
+            .iter()
+            .any(|d| d.severity == Severity::Info && d.message.contains("agent-held private key"))
+    );
 }
 
 #[tokio::test]
@@ -1003,7 +1007,7 @@ async fn max_auth_tries_classifies_key_count() {
                 "hint should suggest reducing keys, got: {hint}",
             );
         }
-        other @ Severity::Error => panic!("unexpected severity: {other:?}"),
+        other => panic!("unexpected severity: {other:?}"),
     }
 }
 
@@ -1280,7 +1284,7 @@ async fn rsa_weak_key_ok_for_4096_bits() {
     assert_eq!(
         diags[0].severity,
         Severity::Ok,
-        "4096-bit RSA key should be Ok, got: {:?} — {}",
+        "4096-bit RSA key should be Ok, got: {:?}, {}",
         diags[0].severity,
         diags[0].message,
     );
@@ -1308,7 +1312,7 @@ async fn rsa_weak_key_warns_for_2048_bits() {
     assert_eq!(
         diags[0].severity,
         Severity::Warning,
-        "2048-bit RSA key should warn, got: {:?} — {}",
+        "2048-bit RSA key should warn, got: {:?}, {}",
         diags[0].severity,
         diags[0].message,
     );
@@ -1344,7 +1348,7 @@ async fn rsa_weak_key_warns_for_1024_bits() {
     assert_eq!(
         diags[0].severity,
         Severity::Warning,
-        "1024-bit RSA key should warn, got: {:?} — {}",
+        "1024-bit RSA key should warn, got: {:?}, {}",
         diags[0].severity,
         diags[0].message,
     );
@@ -1375,7 +1379,7 @@ async fn rsa_weak_key_skips_ed25519_key() {
     assert_eq!(
         diags[0].severity,
         Severity::Ok,
-        "Ed25519 key should not trigger RSA warning, got: {:?} — {}",
+        "Ed25519 key should not trigger RSA warning, got: {:?}, {}",
         diags[0].severity,
         diags[0].message,
     );
@@ -1700,7 +1704,7 @@ async fn nfs_home_returns_valid_diagnostic() {
         assert_eq!(
             diags[0].severity,
             Severity::Info,
-            "expected Info on non-Linux, got: {:?} — {}",
+            "expected Info on non-Linux, got: {:?}, {}",
             diags[0].severity,
             diags[0].message,
         );
@@ -1835,7 +1839,7 @@ async fn selinux_context_returns_valid_severity_on_linux() {
                 "hint should suggest restorecon -Rv, got: {hint}",
             );
         }
-        other @ Severity::Error => panic!("unexpected severity: {other:?}"),
+        other => panic!("unexpected severity: {other:?}"),
     }
 }
 
@@ -1884,6 +1888,18 @@ async fn verify_host_key_dns_enabled() {
     assert!(
         matches.iter().any(|d| d.message.contains("set to 'yes'")),
         "expected 'set to yes' in diagnostics, got: {matches:?}"
+    );
+}
+
+#[tokio::test]
+async fn verify_host_key_dns_enabled_equals_form() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config"), "VerifyHostKeyDNS=yes\n").unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "verify_host_key_dns");
+    assert!(
+        matches.iter().any(|d| d.message.contains("set to 'yes'")),
+        "the shared scanner must accept Keyword=value, got: {matches:?}"
     );
 }
 

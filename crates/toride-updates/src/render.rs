@@ -33,18 +33,20 @@ pub fn render_auto_upgrades_conf(spec: &UpdateSpec) -> String {
         let _ = writeln!(out, "\t\t\"{origin}\";");
     }
     if spec.origins.is_empty() && spec.security_only {
-        // Default security-only origins.
-        out.push_str("\t\t\"origin=Debian,codename=${distro_codename},label=Debian-Security\";\n");
-        out.push_str(
-            "\t\t\"origin=Debian,codename=${distro_codename}-security,label=Debian-Security\";\n",
-        );
+        // Default security-only origins; the ${distro_id} shorthand expands
+        // per-distro inside unattended-upgrades itself.
+        for origin in crate::spec::default_security_origins() {
+            let _ = writeln!(out, "\t\t\"{origin}\";");
+        }
     }
     out.push_str("\t};\n");
 
     // Auto-fix interrupted dpkg.
     out.push_str("\tAutoFixInterruptedDpkg \"true\";\n");
 
-    // Reboot configuration.
+    // Reboot configuration. `Automatic-Reboot` is boolean in
+    // unattended-upgrades, so `Always` renders as true plus a fixed time
+    // (apt has no reboot-unconditionally knob).
     match spec.reboot {
         RebootPolicy::Never => {
             out.push_str("\tAutomatic-Reboot \"false\";\n");
@@ -54,7 +56,8 @@ pub fn render_auto_upgrades_conf(spec: &UpdateSpec) -> String {
             out.push_str("\tAutomatic-Reboot-WithUsers \"true\";\n");
         }
         RebootPolicy::Always => {
-            out.push_str("\tAutomatic-Reboot \"always\";\n");
+            out.push_str("\tAutomatic-Reboot \"true\";\n");
+            out.push_str("\tAutomatic-Reboot-WithUsers \"true\";\n");
             out.push_str("\tAutomatic-Reboot-Time \"04:00\";\n");
         }
     }
@@ -145,7 +148,7 @@ pub fn render_dnf_automatic_conf(spec: &UpdateSpec) -> String {
 
 /// Render the content of `/etc/apt/apt.conf.d/20auto-upgrades`.
 ///
-/// This small config file simply enables or disables the automatic update
+/// This small config file enables or disables the automatic update
 /// machinery:
 ///
 /// ```text
@@ -208,6 +211,35 @@ mod tests {
         let conf = render_auto_upgrades_conf(&spec);
         assert!(conf.contains("Allowed-Origins"));
         assert!(conf.contains("Debian-Security"));
+    }
+
+    /// The empty-origins fallback must match archives on both Debian and
+    /// Ubuntu: the `${distro_id}` shorthand expands per-distro inside
+    /// unattended-upgrades, while a literal Debian-only origin matches no
+    /// Ubuntu archive.
+    #[test]
+    fn render_auto_upgrades_conf_fallback_uses_distro_shorthand() {
+        let spec = UpdateSpec {
+            origins: vec![],
+            ..test_spec()
+        };
+        let conf = render_auto_upgrades_conf(&spec);
+        assert!(conf.contains("\"${distro_id}:${distro_codename}-security\";"));
+        assert!(!conf.contains("origin=Debian,"));
+    }
+
+    /// `Automatic-Reboot` is a boolean apt knob; a non-boolean value such as
+    /// "always" parses as false-with-warning and the host never reboots.
+    #[test]
+    fn render_always_policy_uses_boolean_reboot_knob() {
+        let spec = UpdateSpec {
+            reboot: RebootPolicy::Always,
+            ..test_spec()
+        };
+        let conf = render_auto_upgrades_conf(&spec);
+        assert!(conf.contains("\tAutomatic-Reboot \"true\";\n"));
+        assert!(conf.contains("\tAutomatic-Reboot-Time \"04:00\";\n"));
+        assert!(!conf.contains("\"always\""));
     }
 
     #[test]

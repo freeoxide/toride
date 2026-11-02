@@ -3,9 +3,9 @@
 //! [`InstallManifest`] is the durable record of **what toride installed on
 //! this host**: one [`InstallRecord`] per app, keyed by [`TorideId`],
 //! carrying the backend that installed it, the backend-native identifiers
-//! **as actually installed** (never re-planned — see [`NativeIds`]), the
+//! **as actually installed** (never re-planned: see [`NativeIds`]), the
 //! version the backend reported after the install, a wall-clock epoch
-//! stamp, and — for installs toride executed — the plan that ran (the
+//! stamp, and (for installs toride executed) the plan that ran (the
 //! source note the record is answerable to; adopted records carry none).
 //! The whole ledger exchanges as a portable [`RecordSnapshot`], the
 //! import/export unit of the [`RecordStore`] seam.
@@ -22,13 +22,13 @@
 //!
 //! ## Storage
 //!
-//! A JSON document at a [`dirs`]-resolved path —
+//! A JSON document at a [`dirs`]-resolved path:
 //! [`InstallManifest::default_path`] is `dirs::data_dir()`
 //! (`$XDG_DATA_HOME` or `~/.local/share` on Linux,
 //! `~/Library/Application Support` on macOS) joined with
 //! `toride/apps-manifest.json`. The path is injectable
 //! ([`InstallManifest::at`]) so every operation is testable offline; a
-//! host with no resolvable data directory (or a non-UTF-8 one — paths are
+//! host with no resolvable data directory (or a non-UTF-8 one: paths are
 //! [`camino`] UTF-8 paths per house convention) yields `None` from
 //! [`InstallManifest::default_path`] and callers decide how to surface that.
 //!
@@ -37,11 +37,11 @@
 //! Writes are atomic: serialize, create parent directories, write a unique
 //! temp file **in the manifest's own directory**, then `rename` over the
 //! target (same-directory rename is atomic, so a crash mid-save leaves
-//! either the previous document or the complete new one — never a torn
+//! either the previous document or the complete new one, never a torn
 //! file). The temp name carries the pid plus a process-local counter, so
 //! two toride processes never share a temp file; a failed write removes
 //! its temp file instead of littering. Concurrent *writers* are still
-//! last-rename-wins (no file locking) — acceptable for a single-user CLI
+//! last-rename-wins (no file locking), acceptable for a single-user CLI
 //! tool, and the atomic rename means the losing write never corrupts the
 //! winner's document. In-process, `record`/`remove` need `&mut self`, so
 //! no aliasing hazards exist there.
@@ -51,19 +51,19 @@
 //! Loading a **missing** file is an empty manifest (fresh hosts are the
 //! normal case, not an error). A file that *exists* is held to the
 //! documented shape: it must carry exactly the supported schema version
-//! (enforced **before** the payload's shape is trusted — a newer toride's
+//! (enforced **before** the payload's shape is trusted: a newer toride's
 //! document is rejected by version, even when its body would happen to
 //! parse) plus a well-formed body, so neither a version-skewed nor a
 //! hand-mangled document can load as a silent empty manifest whose next
 //! save would clobber the real data. Everything uninterpretable is
-//! [`ManifestError::Corrupt`] — typed, never a panic. The empty manifest
+//! [`ManifestError::Corrupt`]: typed, never a panic. The empty manifest
 //! `save` writes is the explicit `{"version":1,"apps":{}}` document.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use toride_registry::{DistroFamily, TorideId};
 
@@ -76,7 +76,7 @@ pub const MANIFEST_DIR: &str = "toride";
 /// File name of the install manifest inside [`MANIFEST_DIR`].
 pub const MANIFEST_FILE: &str = "apps-manifest.json";
 
-/// Schema version written into the document — and **enforced on load**:
+/// Schema version written into the document, and **enforced on load**:
 /// [`InstallManifest::load`] reads the version first and rejects any
 /// document whose version differs from this constant as
 /// [`ManifestError::Corrupt`] ("written by a newer toride" for higher, a
@@ -85,7 +85,7 @@ pub const MANIFEST_FILE: &str = "apps-manifest.json";
 /// the `apps` key from loading as a silent empty manifest whose next save
 /// would clobber the real data (downgrade, rollback, two toride versions
 /// on one host). Unknown fields *inside* a matching-version document stay
-/// tolerated — additive same-version changes remain readable. When the
+/// tolerated: additive same-version changes remain readable. When the
 /// schema grows, this constant, the reader, and an explicit migrate step
 /// move together.
 ///
@@ -106,7 +106,7 @@ pub type ManifestResult<T> = std::result::Result<T, ManifestError>;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ManifestError {
-    /// Reading or writing the manifest file failed — missing permissions,
+    /// Reading or writing the manifest file failed: missing permissions,
     /// a path that is a directory, or a failed temp-then-rename step.
     /// A *missing* file is not this: [`InstallManifest::load`] treats it
     /// as an empty manifest.
@@ -116,8 +116,8 @@ pub enum ManifestError {
     /// The manifest document exists but cannot be interpreted: corrupt
     /// JSON, a hand-mangled body, or a schema version this reader does
     /// not support (newer toride, or older with no migration). Raised by
-    /// loading, and — theoretical only, these types serialize
-    /// unconditionally — by saving.
+    /// loading, and: theoretical only, these types serialize
+    /// unconditionally: by saving.
     #[error("manifest file is corrupt: {0}")]
     Corrupt(#[from] serde_json::Error),
 }
@@ -128,7 +128,7 @@ pub enum ManifestError {
 
 /// The backend-native identifiers of **what was actually installed**, one
 /// variant per backend family. Recorded verbatim at install time and
-/// replayed verbatim from the manifest — never re-derived by re-planning,
+/// replayed verbatim from the manifest, never re-derived by re-planning,
 /// which is the whole point of the manifest (A1 round-1 finding: a
 /// re-planned flatpak ref guesses the planning target's arch, not the
 /// installed one).
@@ -152,13 +152,13 @@ pub enum NativeIds {
     Homebrew {
         /// Cask token or formula name as installed.
         token: String,
-        /// `true` when a cask was installed, `false` for a formula — the
+        /// `true` when a cask was installed, `false` for a formula: the
         /// kind scopes the backend's version probes.
         cask: bool,
     },
     /// A flatpak app, by app id and the ref that landed.
     Flatpak {
-        /// Dotted reverse-DNS app id (`com.brave.Browser`) — the id the
+        /// Dotted reverse-DNS app id (`com.brave.Browser`), the id the
         /// scoped listings report.
         app_id: String,
         /// The ref flatpak actually installed (`app/<id>/<arch>/stable`)
@@ -166,12 +166,12 @@ pub enum NativeIds {
         /// a caller knows the app id but not the installed ref (status
         /// probes from registry data).
         app_ref: Option<String>,
-        /// Installation the app lives in — scopes every probe.
+        /// Installation the app lives in: scopes every probe.
         installation: FlatpakInstallation,
     },
     /// A snap package, by snap name.
     Snap {
-        /// Snap name as installed (`firefox`) — the join key against plan
+        /// Snap name as installed (`firefox`), the join key against plan
         /// operations and the listing rows; the channel a plan pinned lives
         /// in the record's own plan, like npm's version does.
         name: String,
@@ -180,12 +180,12 @@ pub enum NativeIds {
     Distro {
         /// Package name the manager knows.
         package: String,
-        /// Family whose manager installed it — selects the manager and
+        /// Family whose manager installed it: selects the manager and
         /// gates probing to a matching backend.
         family: DistroFamily,
     },
     /// A direct-download install's provenance: the URL it came from, the
-    /// sha256 it verified against, and the path the binary landed at —
+    /// sha256 it verified against, and the path the binary landed at:
     /// the last one is both the presence probe and the uninstall target
     /// (gated with the `direct` feature).
     #[cfg(feature = "direct")]
@@ -200,7 +200,7 @@ pub enum NativeIds {
     },
     /// A globally-installed npm package, by package name.
     Npm {
-        /// npm package name as installed (never the `@`-joined spec — the
+        /// npm package name as installed (never the `@`-joined spec: the
         /// version lives in the record's own version slot).
         package: String,
     },
@@ -229,7 +229,7 @@ pub enum NativeIds {
 }
 
 impl NativeIds {
-    /// The backend these identifiers belong to — the same value the
+    /// The backend these identifiers belong to, the same value the
     /// owning record carries in [`InstallRecord::backend`].
     #[must_use]
     pub fn backend(&self) -> BackendId {
@@ -267,7 +267,7 @@ pub struct InstallRecord {
     /// [`InstallRecord::ids`]'s own backend mapping; stored explicitly so
     /// the record reads without dereferencing the ids.
     pub backend: BackendId,
-    /// The actually-installed identifiers — see [`NativeIds`].
+    /// The actually-installed identifiers: see [`NativeIds`].
     pub ids: NativeIds,
     /// Version the backend reported after the install, when it reported
     /// one (`None` = no version observable, not "unknown app").
@@ -275,7 +275,7 @@ pub struct InstallRecord {
     /// Install time as Unix epoch seconds (`SystemTime::now` since
     /// `UNIX_EPOCH`; a clock before 1970 records `0`).
     pub installed_at: u64,
-    /// The executed plan, verbatim — the record's source note; `None` on
+    /// The executed plan, verbatim: the record's source note; `None` on
     /// adopted records (a claimed detection executed nothing). Persists
     /// through the plan's serde round-trip the A1 interface notes
     /// sanctioned for the manifest layer.
@@ -313,14 +313,14 @@ impl InstallRecord {
     }
 
     /// Override the epoch stamp (deterministic tests, imports from other
-    /// tooling) — consume-and-return.
+    /// tooling), consume-and-return.
     #[must_use]
     pub const fn with_installed_at(mut self, installed_at: u64) -> Self {
         self.installed_at = installed_at;
         self
     }
 
-    /// Replace the recorded version — consume-and-return; the update path
+    /// Replace the recorded version: consume-and-return; the update path
     /// rewrites what the backend reports after an upgrade.
     #[must_use]
     pub fn with_version(mut self, version: Option<String>) -> Self {
@@ -373,7 +373,7 @@ pub struct InstallManifest {
 }
 
 impl InstallManifest {
-    /// An empty manifest bound to `path` — no I/O. Use
+    /// An empty manifest bound to `path`: no I/O. Use
     /// [`InstallManifest::load`] to read an existing document.
     #[must_use]
     pub fn at(path: impl Into<Utf8PathBuf>) -> Self {
@@ -388,7 +388,7 @@ impl InstallManifest {
     /// data directory resolves, or it is not valid UTF-8).
     ///
     /// `dirs::data_dir()` resolves `$XDG_DATA_HOME` else `~/.local/share`
-    /// on Linux, `~/Library/Application Support` on macOS — the correct
+    /// on Linux, `~/Library/Application Support` on macOS: the correct
     /// per-platform state location for a durable, user-scoped record.
     #[must_use]
     pub fn default_path() -> Option<Utf8PathBuf> {
@@ -400,9 +400,9 @@ impl InstallManifest {
     /// Read the manifest at `path`. A missing file is an **empty**
     /// manifest (fresh hosts are normal). A file that exists is held to
     /// the documented shape: its schema version must equal the supported
-    /// one (checked *before* the body is trusted — a newer toride's
+    /// one (checked *before* the body is trusted: a newer toride's
     /// document is rejected by version, not by whatever field its schema
-    /// happens to rename), and the body must be well-formed — a missing
+    /// happens to rename), and the body must be well-formed: a missing
     /// `version` or `apps` field, an unknown version, or unparseable
     /// content is [`ManifestError::Corrupt`], never a silent empty
     /// manifest whose next save would clobber the real document. The
@@ -418,25 +418,25 @@ impl InstallManifest {
         let path = path.into();
         let contents = match std::fs::read_to_string(&path) {
             Ok(contents) => contents,
-            // Absent file: the honest empty manifest, not an error — a
+            // Absent file: the honest empty manifest, not an error: a
             // host where toride never installed anything has no file.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Self::at(path));
             }
             Err(error) => return Err(ManifestError::Io(error)),
         };
-        // Stage 1 — schema gate: read and enforce the version before the
+        // Stage 1: schema gate: read and enforce the version before the
         // payload's shape is trusted, so version skew is diagnosed BY
         // version ("a newer toride wrote this") instead of by whatever
         // field the other schema happens to rename. A document without a
-        // version field fails here too — it is not interpretable.
+        // version field fails here too: it is not interpretable.
         let probe: ManifestVersion =
             serde_json::from_str(&contents).map_err(ManifestError::Corrupt)?;
         let probe_version = probe.version;
         if probe_version > SCHEMA_VERSION {
             return Err(corrupt(format!(
                 "schema version {probe_version} is newer than the supported version {SCHEMA_VERSION} \
-                 (written by a newer toride — upgrade toride, or move the file aside)"
+                 (written by a newer toride: upgrade toride, or move the file aside)"
             )));
         }
         if probe_version < SCHEMA_VERSION {
@@ -445,7 +445,7 @@ impl InstallManifest {
                  and this toride has no migration for it"
             )));
         }
-        // Stage 2 — full parse with required fields: a versioned document
+        // Stage 2: full parse with required fields: a versioned document
         // without an `apps` map is malformed, never a silent empty
         // manifest.
         let document: ManifestFile =
@@ -462,7 +462,7 @@ impl InstallManifest {
         &self.path
     }
 
-    /// Record (insert or replace) `record` under `id` — the explicit key,
+    /// Record (insert or replace) `record` under `id`: the explicit key,
     /// not `record.plan.app`, is the identity (adopted records carry no
     /// plan). Returns the displaced record when one existed for the same
     /// app: a re-install replaces its own earlier record.
@@ -508,52 +508,45 @@ impl InstallManifest {
     /// # Errors
     ///
     /// [`ManifestError::Io`] when any filesystem step fails (including a
-    /// path with no file name — nothing to rename onto);
+    /// path with no file name: nothing to rename onto);
     /// [`ManifestError::Corrupt`] only in the unreachable-in-practice case
     /// these guaranteed-serializable types fail to serialize.
     pub fn save(&self) -> ManifestResult<()> {
-        let document = ManifestFile {
-            version: SCHEMA_VERSION,
-            apps: self.entries.clone(),
-        };
-        // These types have no non-string map keys and no floats, so this
-        // cannot fail in practice — mapped, never panicked on.
-        let json = serde_json::to_string_pretty(&document).map_err(ManifestError::Corrupt)?;
-
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(ManifestError::Io)?;
-        }
-        let temp = self.temp_path()?;
-        let write_and_rename = || -> std::io::Result<()> {
-            std::fs::write(&temp, json.as_bytes()).and_then(|()| std::fs::rename(&temp, &self.path))
-        };
-        let result = write_and_rename();
-        if result.is_err() {
-            // Best-effort cleanup so a failed save leaves no temp litter;
-            // the original error is the one worth reporting.
-            let _ = std::fs::remove_file(&temp);
-        }
-        result.map_err(ManifestError::Io)
+        write_document(&self.path, &self.entries)
     }
 
-    /// The temp-file path for this save: hidden, in the manifest's own
-    /// directory (same-filesystem rename is atomic), unique per process
-    /// and per save so concurrent writers never share one.
-    fn temp_path(&self) -> ManifestResult<Utf8PathBuf> {
+    /// Write `records` as the entire document at `path`, atomically,
+    /// serializing straight from the borrowed records (no ledger clone):
+    /// the store seam's save direction.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`InstallManifest::save`].
+    pub(crate) fn write_records(
+        path: &Utf8Path,
+        records: &BTreeMap<TorideId, InstallRecord>,
+    ) -> ManifestResult<()> {
+        write_document(path, records)
+    }
+
+    /// The temp-file path for a save to `path`: hidden, in the manifest's
+    /// own directory (same-filesystem rename is atomic), unique per
+    /// process and per save so concurrent writers never share one.
+    fn temp_path(path: &Utf8Path) -> ManifestResult<Utf8PathBuf> {
         /// Distinguishes concurrent saves within one process.
         static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
-        let Some(name) = self.path.file_name() else {
+        let Some(name) = path.file_name() else {
             return Err(ManifestError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("manifest path `{}` has no file name", self.path),
+                format!("manifest path `{path}` has no file name"),
             )));
         };
         let unique = SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temp_name = format!(".{name}.tmp-{}-{unique}", std::process::id());
-        Ok(self.path.with_file_name(temp_name))
+        Ok(path.with_file_name(temp_name))
     }
 
-    /// The manifest's whole ledger as one portable [`RecordSnapshot`] —
+    /// The manifest's whole ledger as one portable [`RecordSnapshot`]:
     /// the export direction of the store seam.
     #[must_use]
     pub fn snapshot(&self) -> RecordSnapshot {
@@ -563,7 +556,7 @@ impl InstallManifest {
     }
 
     /// Rebuild a manifest bound to `path` holding exactly `snapshot`'s
-    /// records — the import direction of the store seam (no I/O;
+    /// records: the import direction of the store seam (no I/O;
     /// [`InstallManifest::save`] persists it).
     #[must_use]
     pub fn from_snapshot(path: impl Into<Utf8PathBuf>, snapshot: RecordSnapshot) -> Self {
@@ -574,19 +567,19 @@ impl InstallManifest {
     }
 }
 
-/// The whole ledger as one portable, serde document — the import/export
+/// The whole ledger as one portable, serde document: the import/export
 /// unit exchanged through the [`RecordStore`] seam between toride
 /// instances and embedders that mirror their own receipts.
 ///
 /// [`RecordStore`]: crate::store::RecordStore
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordSnapshot {
-    /// The records, keyed by app id — id-ordered in the serialized form.
+    /// The records, keyed by app id: id-ordered in the serialized form.
     pub records: BTreeMap<TorideId, InstallRecord>,
 }
 
 impl RecordSnapshot {
-    /// The empty snapshot — no records.
+    /// The empty snapshot: no records.
     #[must_use]
     pub fn empty() -> Self {
         Self {
@@ -608,23 +601,63 @@ impl From<BTreeMap<TorideId, InstallRecord>> for RecordSnapshot {
 }
 
 /// The on-disk document: schema version plus the id-keyed records. A raw
-/// shadow of [`InstallManifest`] (which also carries the path) — the house
+/// shadow of [`InstallManifest`] (which also carries the path), the house
 /// raw-shape pattern from the backend parsers.
 #[derive(Serialize, Deserialize)]
 struct ManifestFile {
     /// Schema version of the writer; see [`SCHEMA_VERSION`]. Required on
-    /// read — the gate in [`InstallManifest::load`] has already enforced
+    /// read: the gate in [`InstallManifest::load`] has already enforced
     /// it (and rejected everything else) by the time this parses.
     version: u32,
     /// The records, keyed by app id. Required on read: an empty manifest
     /// is written as an explicit empty map, and a versioned document
-    /// missing the field is malformed — never a silently-empty manifest.
+    /// missing the field is malformed, never a silently-empty manifest.
     apps: BTreeMap<TorideId, InstallRecord>,
 }
 
-/// Stage-1 probe of the on-disk document: just the schema version, so
+/// Serialize `entries` as the document at `path`: the one atomically-safe
+/// writer both [`InstallManifest::save`] and the store's snapshot save
+/// ride, built over a borrowed view so no save clones the ledger.
+///
+/// # Errors
+///
+/// Same contract as [`InstallManifest::save`].
+fn write_document(
+    path: &Utf8Path,
+    entries: &BTreeMap<TorideId, InstallRecord>,
+) -> ManifestResult<()> {
+    #[derive(Serialize)]
+    struct DocumentRef<'a> {
+        version: u32,
+        apps: &'a BTreeMap<TorideId, InstallRecord>,
+    }
+    let document = DocumentRef {
+        version: SCHEMA_VERSION,
+        apps: entries,
+    };
+    // These types have no non-string map keys and no floats, so this
+    // cannot fail in practice: mapped, never panicked on.
+    let json = serde_json::to_string_pretty(&document).map_err(ManifestError::Corrupt)?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(ManifestError::Io)?;
+    }
+    let temp = InstallManifest::temp_path(path)?;
+    let write_and_rename = || -> std::io::Result<()> {
+        std::fs::write(&temp, json.as_bytes()).and_then(|()| std::fs::rename(&temp, path))
+    };
+    let result = write_and_rename();
+    if result.is_err() {
+        // Best-effort cleanup so a failed save leaves no temp litter;
+        // the original error is the one worth reporting.
+        let _ = std::fs::remove_file(&temp);
+    }
+    result.map_err(ManifestError::Io)
+}
+
+/// Stage-1 probe of the on-disk document: only the schema version, so
 /// [`InstallManifest::load`] can diagnose version skew by version, before
-/// trusting (or mis-trusting) the payload's shape. `version` is required —
+/// trusting (or mis-trusting) the payload's shape. `version` is required:
 /// a document without one is not interpretable.
 #[derive(Deserialize)]
 struct ManifestVersion {
@@ -632,7 +665,7 @@ struct ManifestVersion {
     version: u32,
 }
 
-/// Build a [`ManifestError::Corrupt`] from a free-form message — for the
+/// Build a [`ManifestError::Corrupt`] from a free-form message: for the
 /// schema-gate rejections no serde parse failure would phrase (version
 /// found vs supported).
 pub(crate) fn corrupt(message: impl std::fmt::Display) -> ManifestError {
@@ -672,7 +705,7 @@ mod tests {
     }
 
     /// A minimal executable-looking install plan for `slug` over the given
-    /// operation (hand-built — the manifest must not care how the plan was
+    /// operation (hand-built: the manifest must not care how the plan was
     /// derived, only that it round-trips).
     fn plan_for(slug: &str, operation: Operation) -> InstallPlan {
         InstallPlan {
@@ -727,7 +760,7 @@ mod tests {
 
     #[test]
     fn load_maps_a_wellformed_json_document_of_the_wrong_shape_to_corrupt() {
-        // Valid JSON, not a manifest document: still corrupt — a
+        // Valid JSON, not a manifest document: still corrupt; a
         // hand-mangled file must fail loudly, not silently reset.
         let path = temp_manifest_path("wrong-shape");
         std::fs::write(path.as_std_path(), r#"["not", "a", "manifest"]"#).unwrap();
@@ -738,7 +771,7 @@ mod tests {
     #[test]
     fn load_maps_an_unreadable_path_to_the_io_error() {
         // A directory: exists, so not "missing", but cannot be read as a
-        // file — surfaces as Io, not as a panic or an empty manifest.
+        // file: surfaces as Io, not as a panic or an empty manifest.
         let dir = temp_manifest_path("unreadable-dir");
         std::fs::create_dir_all(dir.as_std_path()).unwrap();
         let error = InstallManifest::load(&dir).unwrap_err();
@@ -747,7 +780,7 @@ mod tests {
 
     #[test]
     fn load_rejects_a_document_without_a_schema_version_as_corrupt() {
-        // A `{}` document carries no version — not interpretable, and the
+        // A `{}` document carries no version: not interpretable, and the
         // only thing its absence could ever mean in practice is a
         // hand-mangled file. It must NOT load as an empty manifest whose
         // next save would clobber the real document (the round-1 `{}` pin
@@ -797,7 +830,7 @@ mod tests {
     fn load_rejects_a_future_document_that_renames_the_apps_key() {
         // The judge's exact scenario: a future schema renames `apps` to
         // `entries`. Without the version gate this would parse as an
-        // unknown-field document with `apps` defaulted to empty — and the
+        // unknown-field document with `apps` defaulted to empty, and the
         // next save would clobber the real records. The gate refuses it
         // by version, before the shape is ever consulted.
         let path = temp_manifest_path("future-renamed");
@@ -1079,7 +1112,7 @@ mod tests {
         assert_eq!(
             entries,
             [MANIFEST_FILE.to_owned()],
-            "only the (pre-existing) target directory remains — the failed temp was removed"
+            "only the (pre-existing) target directory remains: the failed temp was removed"
         );
     }
 
@@ -1124,11 +1157,11 @@ mod tests {
 
     #[test]
     fn temp_paths_are_unique_across_saves_of_one_manifest() {
-        // Two saves from one manifest must not target the same temp file —
+        // Two saves from one manifest must not target the same temp file:
         // the uniqueness counter is what concurrent in-process saves rely on.
         let manifest = InstallManifest::at(temp_manifest_path("temp-uniqueness"));
-        let first = manifest.temp_path().unwrap();
-        let second = manifest.temp_path().unwrap();
+        let first = InstallManifest::temp_path(manifest.path()).unwrap();
+        let second = InstallManifest::temp_path(manifest.path()).unwrap();
         assert_ne!(first, second);
         assert_eq!(
             first.parent(),

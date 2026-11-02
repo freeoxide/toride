@@ -15,7 +15,7 @@ use crate::ui::theme::Palette;
 
 /// Lightweight help modal content renderer.
 ///
-/// No longer a navigable screen — rendered as an overlay on top of the active
+/// No longer a navigable screen: rendered as an overlay on top of the active
 /// screen when `App::help_visible` is `true`.
 pub struct HelpScreen;
 
@@ -44,6 +44,7 @@ impl HelpScreen {
     /// Render help content into the given area (inside the modal border).
     pub fn render(frame: &mut Frame, content_area: Rect, p: Palette, viewport: Viewport) {
         // Vertical layout within content area
+        let bindings_rows = if viewport >= Viewport::Compact { 9 } else { 5 };
         let [
             _top,
             title_area,
@@ -56,7 +57,7 @@ impl HelpScreen {
             Constraint::Fill(1),
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(7),
+            Constraint::Length(bindings_rows),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Fill(1),
@@ -82,8 +83,15 @@ impl HelpScreen {
                 keybinding_line("Tab", "Cycle focus region", key_style, lbl_style),
                 keybinding_line("j / k", "Move / scroll", key_style, lbl_style),
                 keybinding_line("Enter", "Open / select", key_style, lbl_style),
-                keybinding_line("1–9", "Jump to section", key_style, lbl_style),
+                keybinding_line("1-9", "Jump to section", key_style, lbl_style),
                 keybinding_line("\\", "Collapse sidebar", key_style, lbl_style),
+                keybinding_line("Ctrl+T", "Cycle theme", key_style, lbl_style),
+                keybinding_line(
+                    "Ctrl+Shift+A",
+                    "Animations auto / on / off",
+                    key_style,
+                    lbl_style,
+                ),
                 keybinding_line("? / Esc", "Toggle help / back", key_style, lbl_style),
                 keybinding_line("q", "Quit", key_style, lbl_style),
             ]
@@ -91,8 +99,8 @@ impl HelpScreen {
             vec![
                 keybinding_line("Tab", "Focus", key_style, lbl_style),
                 keybinding_line("j/k", "Move", key_style, lbl_style),
-                keybinding_line("Enter", "Open", key_style, lbl_style),
-                keybinding_line("\\", "Collapse", key_style, lbl_style),
+                keybinding_line("Ctrl+T", "Theme", key_style, lbl_style),
+                keybinding_line("Ctrl+Shift+A", "Animations", key_style, lbl_style),
                 keybinding_line("q", "Quit", key_style, lbl_style),
             ]
         };

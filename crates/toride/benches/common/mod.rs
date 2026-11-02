@@ -1,3 +1,5 @@
+pub mod fixture_host;
+
 use std::time::{Duration, UNIX_EPOCH};
 
 use ratatui::{Terminal, backend::TestBackend};
@@ -17,9 +19,11 @@ use toride::ui::screens::AppScreen;
 use toride::ui::screens::dashboard::DashboardScreen;
 use toride::ui::theme::{CHARM, Palette, Theme};
 
+#[allow(dead_code)]
 pub const SIZES: [(u16, u16); 2] = [(80, 24), (200, 60)];
 
 #[must_use]
+#[allow(dead_code)]
 pub fn render_palette() -> Palette {
     Palette {
         reduced_motion: true,
@@ -28,6 +32,7 @@ pub fn render_palette() -> Palette {
 }
 
 #[must_use]
+#[allow(dead_code)]
 pub fn fixed_capabilities() -> Capabilities {
     Capabilities {
         system: SystemCapabilities {
@@ -52,7 +57,7 @@ pub fn fixed_capabilities() -> Capabilities {
             },
             gpu: GpuCapabilities {
                 identity: true,
-                nvidia_nvml: true,
+                nvidia_smi: true,
                 utilization: true,
                 temperature: true,
                 memory: true,
@@ -120,6 +125,7 @@ pub fn fixed_capabilities() -> Capabilities {
     clippy::duration_suboptimal_units,
     reason = "fixed epoch offset in seconds, mirrors the in-repo fixture"
 )]
+#[allow(dead_code)]
 #[must_use]
 pub fn fixed_status() -> TorideStatus {
     let mk_proc = |pid: u32, name: &str, cpu: f32, mem: u64| ProcessStatus {
@@ -317,16 +323,17 @@ pub fn fixed_status() -> TorideStatus {
     }
 }
 
+#[allow(dead_code)]
 #[must_use]
 pub fn fixed_dashboard() -> DashboardScreen {
     let mut screen = DashboardScreen::new();
     screen.set_active_theme(Theme::Charm);
     let mut status = fixed_status();
-    screen.set_status(status.clone());
+    screen.set_status(std::sync::Arc::new(status.clone()));
     status.system.network.bytes_received = 1_050_000_000;
     status.system.network.bytes_transmitted = 520_000_000;
     status.collected_at += Duration::from_secs(2);
-    screen.set_status(status);
+    screen.set_status(std::sync::Arc::new(status));
     screen
 }
 

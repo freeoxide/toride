@@ -1,6 +1,5 @@
 ---
 source: crates/ufw-kit/src/snapshots.test.rs
-assertion_line: 152
 expression: "format!(\"{status:#?}\")"
 ---
 UfwStatus {
@@ -28,9 +27,15 @@ UfwStatus {
             direction: Some(
                 In,
             ),
-            protocol: None,
-            from: None,
-            to: None,
+            protocol: Some(
+                Tcp,
+            ),
+            from: Some(
+                "Anywhere",
+            ),
+            to: Some(
+                "22/tcp",
+            ),
             comment: None,
             ipv6: false,
             is_route: false,
@@ -44,9 +49,15 @@ UfwStatus {
             direction: Some(
                 In,
             ),
-            protocol: None,
-            from: None,
-            to: None,
+            protocol: Some(
+                Tcp,
+            ),
+            from: Some(
+                "Anywhere",
+            ),
+            to: Some(
+                "443/tcp",
+            ),
             comment: None,
             ipv6: false,
             is_route: false,
@@ -60,9 +71,15 @@ UfwStatus {
             direction: Some(
                 In,
             ),
-            protocol: None,
-            from: None,
-            to: None,
+            protocol: Some(
+                Tcp,
+            ),
+            from: Some(
+                "Anywhere",
+            ),
+            to: Some(
+                "22/tcp",
+            ),
             comment: None,
             ipv6: true,
             is_route: false,
@@ -76,9 +93,15 @@ UfwStatus {
             direction: Some(
                 In,
             ),
-            protocol: None,
-            from: None,
-            to: None,
+            protocol: Some(
+                Tcp,
+            ),
+            from: Some(
+                "Anywhere",
+            ),
+            to: Some(
+                "443/tcp",
+            ),
             comment: None,
             ipv6: true,
             is_route: false,

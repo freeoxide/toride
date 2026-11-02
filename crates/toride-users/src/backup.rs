@@ -84,7 +84,7 @@ pub fn backup_file(source: &Path, backup_dir: Option<&Path>) -> Result<PathBuf> 
         .file_name()
         .ok_or_else(|| Error::Other(format!("path has no filename: {}", source.display())))?;
 
-    let timestamp = chrono_less_timestamp();
+    let timestamp = epoch_nanos_timestamp();
 
     let backup_name = format!("{}.{timestamp}.bak", filename.to_string_lossy());
     let backup_path = dir.join(&backup_name);
@@ -143,12 +143,15 @@ pub fn list_backups(backup_dir: Option<&Path>) -> Result<Vec<PathBuf>> {
     Ok(entries)
 }
 
-/// Generate a simple timestamp string for backup filenames.
-fn chrono_less_timestamp() -> String {
+/// Generate a timestamp string for backup filenames.
+///
+/// Nanosecond precision so two backups taken within the same second cannot
+/// silently overwrite each other.
+fn epoch_nanos_timestamp() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    format!("{}", now.as_secs())
+    format!("{}", now.as_nanos())
 }
 
 #[cfg(test)]

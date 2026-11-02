@@ -3,20 +3,16 @@
 //! This module contains `impl Mise` methods that query mise configuration
 //! without modifying any files:
 //!
-//! - `config_ls` — list config files mise reads.
-//! - `config_get` — get a specific config key.
-//! - `settings` — list all mise settings.
-//! - `settings_get` — get a single mise setting value.
+//! - `config_ls`: list config files mise reads.
+//! - `config_get`: get a specific config key.
+//! - `settings`: list all mise settings.
+//! - `settings_get`: get a single mise setting value.
 
 use camino::Utf8PathBuf;
 
 use crate::client::Mise;
-use crate::config::model::{MiseToml, SettingsEntry};
+use crate::config::model::{MiseToml, SettingsEntry, TaskEntry, ToolVersions};
 use crate::error::MiseResult;
-
-// ---------------------------------------------------------------------------
-// JSON helpers (only compiled under the "json" feature)
-// ---------------------------------------------------------------------------
 
 /// A single entry from `mise config ls --json`.
 #[cfg(feature = "json")]
@@ -24,18 +20,6 @@ use crate::error::MiseResult;
 struct ConfigLsEntry {
     path: String,
 }
-
-/// A single row from `mise settings --json`.
-#[cfg(feature = "json")]
-#[derive(serde::Deserialize)]
-struct SettingsRow {
-    name: String,
-    value: serde_json::Value,
-}
-
-// ---------------------------------------------------------------------------
-// impl Mise — read operations
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// List the config files that mise reads for the current directory.
@@ -85,14 +69,19 @@ impl Mise {
                 let value = output.stdout_trimmed().to_owned();
                 Ok(Some(value))
             }
-            Err(crate::error::MiseError::CommandFailed { stderr, .. }) => {
+            Err(crate::error::MiseError::CommandFailed {
+                command: _,
+                exit_code,
+                stdout,
+                stderr,
+            }) => {
                 if stderr.contains("not found") || stderr.contains("no config") {
                     Ok(None)
                 } else {
                     Err(crate::error::MiseError::CommandFailed {
                         command: format!("config get {key}"),
-                        exit_code: None,
-                        stdout: String::new(),
+                        exit_code,
+                        stdout,
                         stderr,
                     })
                 }
@@ -125,9 +114,11 @@ impl Mise {
         Self::parse_mise_toml(&content, Some(config_path))
     }
 
-    /// List all mise settings and their values.
+    /// List mise settings whose value differs from the default, with their
+    /// current values.
     ///
-    /// Returns a map of setting name to parsed [`SettingsEntry`].
+    /// Real mise `settings ls --json` emits an object keyed by setting name
+    /// (verified on mise 2026.6.14); each value becomes a [`SettingsEntry`].
     ///
     /// # Errors
     ///
@@ -136,14 +127,12 @@ impl Mise {
     pub async fn settings(&self) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
         #[cfg(feature = "json")]
         {
-            let rows: Vec<SettingsRow> =
-                self.run_json_vec_safe(["settings", "ls", "--json"]).await?;
-            let mut map = std::collections::BTreeMap::new();
-            for row in rows {
-                let entry = json_value_to_settings_entry(&row.value);
-                map.insert(row.name, entry);
-            }
-            Ok(map)
+            let output: crate::serde_utils::json_outputs::SettingsOutput =
+                self.run_json(["settings", "ls", "--json"]).await?;
+            Ok(output
+                .iter()
+                .map(|(name, value)| (name.clone(), json_value_to_settings_entry(value)))
+                .collect())
         }
 
         #[cfg(not(feature = "json"))]
@@ -166,10 +155,13 @@ impl Mise {
         }
     }
 
-    /// List all mise settings with extended metadata.
+    /// List every mise setting with its extended metadata: resolved value,
+    /// type, description, and the config source that defined it.
     ///
-    /// Invokes `mise settings ls --json-extended` and returns a map of setting
-    /// name to parsed [`SettingsEntry`].
+    /// Invokes `mise settings ls -a --json-extended` (the `-a` includes
+    /// settings still at their default) and returns the
+    /// [`SettingsExtendedOutput`](crate::serde_utils::json_outputs::SettingsExtendedOutput)
+    /// map keyed by setting name.
     ///
     /// # Errors
     ///
@@ -177,18 +169,11 @@ impl Mise {
     /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn settings_all(
         &self,
-    ) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
+    ) -> MiseResult<crate::serde_utils::json_outputs::SettingsExtendedOutput> {
         #[cfg(feature = "json")]
         {
-            let rows: Vec<SettingsRow> = self
-                .run_json_vec_safe(["settings", "ls", "--json-extended"])
-                .await?;
-            let mut map = std::collections::BTreeMap::new();
-            for row in rows {
-                let entry = json_value_to_settings_entry(&row.value);
-                map.insert(row.name, entry);
-            }
-            Ok(map)
+            self.run_json(["settings", "ls", "-a", "--json-extended"])
+                .await
         }
 
         #[cfg(not(feature = "json"))]
@@ -213,10 +198,12 @@ impl Mise {
         }
     }
 
-    /// List mise settings that are set locally (project-level).
+    /// List mise settings sourced from the local (project-level) config
+    /// file, with their values.
     ///
-    /// Invokes `mise settings ls --json` and filters for settings sourced from
-    /// the local config file.
+    /// Invokes `mise settings ls --local --json-extended`: mise's own
+    /// `--local` flag restricts the listing to settings whose source is the
+    /// local config, and the extended payload carries that source per entry.
     ///
     /// # Errors
     ///
@@ -227,14 +214,18 @@ impl Mise {
     ) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
         #[cfg(feature = "json")]
         {
-            let rows: Vec<SettingsRow> =
-                self.run_json_vec_safe(["settings", "ls", "--json"]).await?;
-            let mut map = std::collections::BTreeMap::new();
-            for row in rows {
-                let entry = json_value_to_settings_entry(&row.value);
-                map.insert(row.name, entry);
-            }
-            Ok(map)
+            let output: crate::serde_utils::json_outputs::SettingsExtendedOutput = self
+                .run_json(["settings", "ls", "--local", "--json-extended"])
+                .await?;
+            Ok(output
+                .iter()
+                .filter_map(|(name, entry)| {
+                    entry
+                        .value
+                        .as_ref()
+                        .map(|value| (name.clone(), json_value_to_settings_entry(value)))
+                })
+                .collect())
         }
 
         #[cfg(not(feature = "json"))]
@@ -275,14 +266,19 @@ impl Mise {
                     Ok(Some(SettingsEntry::from_raw(&raw)))
                 }
             }
-            Err(crate::error::MiseError::CommandFailed { stderr, .. }) => {
+            Err(crate::error::MiseError::CommandFailed {
+                command: _,
+                exit_code,
+                stdout,
+                stderr,
+            }) => {
                 if stderr.contains("not set") || stderr.contains("not found") {
                     Ok(None)
                 } else {
                     Err(crate::error::MiseError::CommandFailed {
                         command: format!("settings get {key}"),
-                        exit_code: None,
-                        stdout: String::new(),
+                        exit_code,
+                        stdout,
                         stderr,
                     })
                 }
@@ -290,10 +286,6 @@ impl Mise {
             Err(e) => Err(e),
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
 
     /// Parse a TOML string into a [`MiseToml`], associating it with an
     /// optional file path.
@@ -321,8 +313,24 @@ impl Mise {
 
             if let Some(tools) = doc.get("tools").and_then(|v| v.as_table()) {
                 for (k, v) in tools {
-                    if let Some(s) = v.as_str() {
-                        config.tools.insert(k.clone(), s.to_owned());
+                    match v {
+                        toml::Value::String(s) => {
+                            config
+                                .tools
+                                .insert(k.clone(), ToolVersions::Single(s.clone()));
+                        }
+                        toml::Value::Array(arr) => {
+                            let versions: Vec<String> = arr
+                                .iter()
+                                .filter_map(|item| item.as_str().map(str::to_owned))
+                                .collect();
+                            if !versions.is_empty() {
+                                config
+                                    .tools
+                                    .insert(k.clone(), ToolVersions::Multiple(versions));
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -337,9 +345,14 @@ impl Mise {
 
             if let Some(tasks) = doc.get("tasks").and_then(|v| v.as_table()) {
                 for (k, v) in tasks {
-                    if let Some(s) = v.as_str() {
-                        config.tasks.insert(k.clone(), s.to_owned());
-                    }
+                    let entry = match v {
+                        toml::Value::String(s) => TaskEntry::Command(s.clone()),
+                        other => match toml::to_string(other) {
+                            Ok(rendered) => TaskEntry::Table(rendered),
+                            Err(_) => continue,
+                        },
+                    };
+                    config.tasks.insert(k.clone(), entry);
                 }
             }
 
@@ -362,10 +375,6 @@ impl Mise {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Conversion helpers
-// ---------------------------------------------------------------------------
 
 /// Convert a [`toml::Value`] into a [`SettingsEntry`].
 #[cfg(feature = "toml")]
@@ -409,10 +418,6 @@ fn json_value_to_settings_entry(value: &serde_json::Value) -> SettingsEntry {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -447,8 +452,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_settings_parses_json() {
-        let json = r#"[{"name":"auto_install","value":true},{"name":"jobs","value":4},{"name":"experimental","value":"yes"}]"#;
+    async fn test_settings_parses_map_shape() {
+        let json = r#"{"auto_install":true,"jobs":4,"experimental":"yes"}"#;
         let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
         let mise = build_mise(fake.clone());
 
@@ -473,5 +478,94 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert!(calls[0].args.contains(&"settings".to_string()));
         assert!(calls[0].args.contains(&"ls".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_settings_local_filters_to_local_config_sources() {
+        let json = r#"{"all_compile":{"value":true,"type":"boolean","description":"do not use precompiled binaries","source":"/project/.mise.toml"}}"#;
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
+        let mise = build_mise(fake.clone());
+
+        let settings = mise.settings_local().await.unwrap();
+        assert_eq!(settings.len(), 1);
+        assert_eq!(
+            settings.get("all_compile"),
+            Some(&super::super::model::SettingsEntry::Bool(true))
+        );
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].args.contains(&"--local".to_string()));
+        assert!(calls[0].args.contains(&"--json-extended".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_settings_all_returns_extended_entries() {
+        let json = r#"{"all_compile":{"value":true,"type":"boolean","description":"do not use precompiled binaries","source":"/project/.mise.toml"}}"#;
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
+        let mise = build_mise(fake.clone());
+
+        let settings = mise.settings_all().await.unwrap();
+        let entry = settings.get("all_compile").expect("entry present");
+        assert_eq!(entry.source.as_deref(), Some("/project/.mise.toml"));
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].args.contains(&"-a".to_string()));
+        assert!(calls[0].args.contains(&"--json-extended".to_string()));
+    }
+
+    #[cfg(feature = "toml")]
+    #[test]
+    fn parse_mise_toml_keeps_array_tool_versions_and_table_tasks() {
+        use crate::config::model::{TaskEntry, ToolVersions};
+
+        let content = r#"
+[tools]
+python = ["3.12", "3.11"]
+node = "22.1.0"
+
+[env]
+FOO = "bar"
+
+[tasks]
+lint = "cargo clippy"
+"#;
+        let config = Mise::parse_mise_toml(content, None).unwrap();
+        assert_eq!(
+            config.tools.get("python"),
+            Some(&ToolVersions::Multiple(vec![
+                "3.12".to_owned(),
+                "3.11".to_owned()
+            ]))
+        );
+        assert_eq!(
+            config.tools.get("node"),
+            Some(&ToolVersions::Single("22.1.0".to_owned()))
+        );
+        assert_eq!(config.env.get("FOO"), Some(&"bar".to_owned()));
+        assert_eq!(
+            config.tasks.get("lint"),
+            Some(&TaskEntry::Command("cargo clippy".to_owned()))
+        );
+    }
+
+    #[cfg(feature = "toml")]
+    #[test]
+    fn parse_mise_toml_keeps_inline_table_tasks() {
+        use crate::config::model::TaskEntry;
+        let content = r#"
+[tasks]
+build = { run = "cargo build", depends = ["lint"] }
+"#;
+        let config = Mise::parse_mise_toml(content, None).unwrap();
+        let TaskEntry::Table(rendered) = config.tasks.get("build").unwrap() else {
+            panic!(
+                "inline-table task must be preserved, got {:?}",
+                config.tasks
+            );
+        };
+        assert!(rendered.contains("run = \"cargo build\""));
+        assert!(rendered.contains("depends"));
     }
 }

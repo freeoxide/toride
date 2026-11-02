@@ -8,11 +8,11 @@
 //! spinner, no cooldown. Every line is a read.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Provider panel — detected provider + CLI tool + metadata endpoint.
-//! 2. Agent service card — whether the provider's agent service is
+//! 1. Provider panel: detected provider + CLI tool + metadata endpoint.
+//! 2. Agent service card: whether the provider's agent service is
 //!    running / enabled at boot.
-//! 3. Security groups table — name, ingress/egress counts, per-rule detail.
-//! 4. Doctor findings — grouped by severity (Critical > Error > Warning > Info).
+//! 3. Security groups table: name, ingress/egress counts, per-rule detail.
+//! 4. Doctor findings: grouped by severity (Critical > Error > Warning > Info).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -206,7 +206,7 @@ impl CloudContent {
         self.unavailable_reason = if self.available { None } else { reason };
     }
 
-    /// Current scroll offset (test accessor — mirrors the other read-only
+    /// Current scroll offset (test accessor: mirrors the other read-only
     /// content sections; used by the dashboard dispatch regression test).
     #[cfg(test)]
     pub fn scroll(&self) -> usize {
@@ -240,7 +240,7 @@ impl CloudContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -264,7 +264,7 @@ impl CloudContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -325,7 +325,7 @@ impl CloudContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (`JoinError`) — not when the provider is `Unknown` (an unknown
+    /// task PANICS (`JoinError`): not when the provider is `Unknown` (an unknown
     /// provider instead produces a Warning doctor finding, which keeps
     /// `available == true` so the operator sees the findings panel). The reason
     /// string is surfaced here so the operator can see what actually panicked;
@@ -739,7 +739,7 @@ mod tests {
         c.set_available(true);
         c.set_security_groups(sample_groups());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

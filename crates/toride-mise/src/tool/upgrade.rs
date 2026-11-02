@@ -8,10 +8,6 @@ use serde::Deserialize;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// JSON response types
-// ---------------------------------------------------------------------------
-
 /// A single outdated tool entry returned by `mise outdated --output=json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OutdatedTool {
@@ -33,10 +29,6 @@ pub struct OutdatedTool {
     #[serde(default)]
     pub install_path: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// UpgradeRequest
-// ---------------------------------------------------------------------------
 
 /// Parameters for a `mise upgrade` invocation.
 ///
@@ -132,10 +124,6 @@ impl UpgradeRequest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
-
 impl Mise {
     /// Upgrade an installed tool to the latest available version (simple
     /// convenience wrapper).
@@ -181,7 +169,7 @@ impl Mise {
             args.push("--inactive".into());
         }
         if req.local_only {
-            args.push("--local-only".into());
+            args.push("--local".into());
         }
         if req.raw {
             args.push("--raw".into());

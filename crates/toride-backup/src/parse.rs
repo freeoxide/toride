@@ -4,10 +4,6 @@
 //! snapshots`, `restic check`, `borg list`, and similar commands into typed
 //! Rust data structures.
 
-// ---------------------------------------------------------------------------
-// SnapshotInfo
-// ---------------------------------------------------------------------------
-
 /// Parsed snapshot metadata from a backup repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotInfo {
@@ -24,10 +20,6 @@ pub struct SnapshotInfo {
     /// Paths included in the snapshot.
     pub paths: Vec<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Restic parsers
-// ---------------------------------------------------------------------------
 
 /// Parse the output of `restic snapshots --json`.
 ///
@@ -117,6 +109,10 @@ fn parse_restic_snapshots_json(json: &str) -> crate::Result<Vec<SnapshotInfo>> {
 }
 
 /// Parse text (non-JSON) output from `restic snapshots`.
+///
+/// Columns are split on whitespace runs so column-aligned tables (restic
+/// pads with spaces) yield real values instead of empty fields; the first
+/// two fields are the snapshot id and timestamp.
 fn parse_restic_snapshots_text(output: &str) -> Vec<SnapshotInfo> {
     let mut snapshots = Vec::new();
     for line in output.lines() {
@@ -125,27 +121,20 @@ fn parse_restic_snapshots_text(output: &str) -> Vec<SnapshotInfo> {
             // Skip header lines.
             continue;
         }
-        let parts: Vec<&str> = line.splitn(4, |c: char| c.is_whitespace()).collect();
-        if parts.len() >= 2 {
-            let full_id = parts[0].to_string();
-            let id = full_id.chars().take(8).collect();
-            let timestamp = parts.get(1).unwrap_or(&"").to_string();
-            snapshots.push(SnapshotInfo {
-                id,
-                full_id,
-                timestamp,
-                hostname: None,
-                tags: Vec::new(),
-                paths: Vec::new(),
-            });
-        }
+        let Some((full_id, timestamp)) = first_two_fields(line) else {
+            continue;
+        };
+        snapshots.push(SnapshotInfo {
+            id: short_id(full_id),
+            full_id: full_id.to_owned(),
+            timestamp: timestamp.to_owned(),
+            hostname: None,
+            tags: Vec::new(),
+            paths: Vec::new(),
+        });
     }
     snapshots
 }
-
-// ---------------------------------------------------------------------------
-// Restic check parser
-// ---------------------------------------------------------------------------
 
 /// Result of parsing `restic check` output.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,15 +165,17 @@ pub fn parse_restic_check(output: &str) -> CheckResult {
     const CLEAN_SUMMARY: &str = "no errors were found";
 
     let mut error_count = 0u64;
-    let output_lines: Vec<String> = output.lines().map(String::from).collect();
+    let mut has_clean_summary = false;
+    let mut output_lines: Vec<String> = Vec::new();
 
-    let has_clean_summary = output_lines
-        .iter()
-        .any(|l| l.to_ascii_lowercase().contains(CLEAN_SUMMARY));
-
-    for line in &output_lines {
+    // Single fused pass with one lowercase allocation per line; the two
+    // scans below run on `lower` using std's memchr-accelerated search
+    // (measurably faster than per-window case-insensitive comparison).
+    for line in output.lines() {
+        output_lines.push(line.to_owned());
         let lower = line.to_ascii_lowercase();
         if lower.contains(CLEAN_SUMMARY) {
+            has_clean_summary = true;
             continue;
         }
         if lower.contains("error") || lower.contains("fatal") || lower.contains("failed") {
@@ -206,35 +197,70 @@ pub fn parse_restic_check(output: &str) -> CheckResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Borg parsers
-// ---------------------------------------------------------------------------
+/// Extract the first two whitespace-run-separated fields of a line,
+/// stopping as soon as the second field ends (a hand byte walk: cheaper than
+/// a `split_whitespace` iterator over every column). Returns `None` when
+/// fewer than two fields exist.
+fn first_two_fields(line: &str) -> Option<(&str, &str)> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let start1 = i;
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i == start1 {
+        return None;
+    }
+    let first = &line[start1..i];
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let start2 = i;
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i == start2 {
+        return None;
+    }
+    Some((first, &line[start2..i]))
+}
+
+/// First eight characters of `full_id` as an owned `String`, slicing when the
+/// eighth byte is a char boundary and falling back to `chars()` otherwise.
+fn short_id(full_id: &str) -> String {
+    if full_id.is_char_boundary(8)
+        && let Some(prefix) = full_id.get(..8)
+    {
+        return prefix.to_owned();
+    }
+    full_id.chars().take(8).collect()
+}
 
 /// Parse the output of `borg list`.
 ///
-/// Borg list output format: `<id> <timestamp> <hostname> <path>`.
-/// Returns a vec of [`SnapshotInfo`] parsed from the output.
+/// Borg list output format: `<id> <timestamp> <hostname> <path>`, with
+/// columns aligned by whitespace runs. The first two fields are the archive
+/// id and the ISO-8601 start timestamp.
 pub fn parse_borg_list(output: &str) -> crate::Result<Vec<SnapshotInfo>> {
     let mut snapshots = Vec::new();
     for line in output.lines() {
-        let line = line.trim();
-        if line.is_empty() {
+        if line.trim().is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line.splitn(4, |c: char| c.is_whitespace()).collect();
-        if parts.len() >= 2 {
-            let full_id = parts[0].to_string();
-            let id = full_id.chars().take(8).collect();
-            let timestamp = parts.get(1).unwrap_or(&"").to_string();
-            snapshots.push(SnapshotInfo {
-                id,
-                full_id,
-                timestamp,
-                hostname: None,
-                tags: Vec::new(),
-                paths: Vec::new(),
-            });
-        }
+        let Some((full_id, timestamp)) = first_two_fields(line) else {
+            continue;
+        };
+        snapshots.push(SnapshotInfo {
+            id: short_id(full_id),
+            full_id: full_id.to_owned(),
+            timestamp: timestamp.to_owned(),
+            hostname: None,
+            tags: Vec::new(),
+            paths: Vec::new(),
+        });
     }
     Ok(snapshots)
 }
@@ -330,9 +356,6 @@ mod tests {
 
     #[test]
     fn restic_snapshots_text_parses_rows() {
-        // Single-space separated; the text parser splits on individual
-        // whitespace characters, so column alignment with runs of spaces
-        // would yield empty parts.
         let output = "ID Time Host Tags Paths\n\
                       ---\n\
                       a1b2c3d4 2024-01-02 host1 /home";
@@ -343,6 +366,23 @@ mod tests {
         assert_eq!(result[0].timestamp, "2024-01-02");
     }
 
+    /// Column-aligned tables (whitespace runs between columns) must yield
+    /// real id/timestamp values, not empty fields shifted into the wrong
+    /// slot: the parser splits on whitespace runs, not single characters.
+    #[test]
+    fn restic_snapshots_text_parses_column_aligned_rows() {
+        let output = "ID Time Host Tags Paths\n\
+                      ---\n\
+                      a1b2c3d4    2024-01-02    host1    /home";
+        let result = parse_restic_snapshots(output).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "a1b2c3d4");
+        assert_eq!(
+            result[0].timestamp, "2024-01-02",
+            "double-space columns must not shift into an empty timestamp"
+        );
+    }
+
     #[test]
     fn borg_list_parses_rows() {
         let output = "a1b2c3d4e5 2024-01-02T03:04:05 host1 /home";
@@ -350,5 +390,47 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].id, "a1b2c3d4");
         assert_eq!(result[0].timestamp, "2024-01-02T03:04:05");
+    }
+
+    /// `borg list` pads columns with runs of spaces (the committed
+    /// `benches/fixtures/borg/list_2k.txt` shape); the whitespace-run split
+    /// must recover the timestamp column.
+    #[test]
+    fn borg_list_parses_column_aligned_rows() {
+        let output = "host00000000-000000000000  2025-01-01T00:00:00  toride-bench-0  /srv/app-0";
+        let result = parse_borg_list(output).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "host0000");
+        assert_eq!(result[0].full_id, "host00000000-000000000000");
+        assert_eq!(
+            result[0].timestamp, "2025-01-01T00:00:00",
+            "double-space columns must yield the real timestamp"
+        );
+    }
+
+    #[test]
+    fn first_two_fields_splits_on_whitespace_runs() {
+        assert_eq!(
+            first_two_fields("a1b2c3d4    2024-01-02    host1"),
+            Some(("a1b2c3d4", "2024-01-02"))
+        );
+        assert_eq!(first_two_fields("one two"), Some(("one", "two")));
+        assert_eq!(first_two_fields("only-one-field"), None);
+        assert_eq!(first_two_fields(""), None);
+        assert_eq!(first_two_fields("   "), None);
+        assert_eq!(
+            first_two_fields("  leading pad ok"),
+            Some(("leading", "pad"))
+        );
+    }
+
+    #[test]
+    fn short_id_slices_ascii_prefixes_and_falls_back_on_multibyte() {
+        assert_eq!(short_id("host00000000-000000000000"), "host0000");
+        assert_eq!(short_id("short"), "short");
+        // 8 bytes lands mid-char for this 4-byte-per-char id: the fallback
+        // takes 8 characters.
+        let wide = "日本語テキスト日本語";
+        assert_eq!(short_id(wide).chars().count(), 8);
     }
 }

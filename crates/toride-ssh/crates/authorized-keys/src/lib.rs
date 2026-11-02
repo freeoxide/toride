@@ -59,14 +59,8 @@ impl<'a> AuthorizedKeysService<'a> {
         comment: Option<&str>,
         options: Option<&str>,
     ) -> Result<()> {
-        // Reject options containing newlines to prevent injection attacks.
-        if let Some(opts) = options
-            && (opts.contains('\n') || opts.contains('\r'))
-        {
-            return Err(Error::AuthorizedKeysWriteFailed(
-                "options must not contain newlines".to_owned(),
-            ));
-        }
+        reject_newlines("options", options)?;
+        reject_newlines("comment", comment)?;
 
         // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
         let path = self.paths.authorized_keys_path().to_path_buf();
@@ -83,7 +77,7 @@ impl<'a> AuthorizedKeysService<'a> {
             .to_openssh()
             .map_err(|e| Error::KeyParseFailed(format!("failed to serialize key: {e}")))?;
 
-        // Check for duplicate before writing — reuse the parsed key's fingerprint.
+        // Check for duplicate before writing, reuse the parsed key's fingerprint.
         let target_fp = pk.fingerprint(ssh_key::HashAlg::Sha256).to_string();
         if self.contains_fingerprint(&target_fp).await? {
             return Err(Error::KeyExists(
@@ -152,15 +146,24 @@ impl<'a> AuthorizedKeysService<'a> {
     ///
     /// Returns an error if the file cannot be read, parsed, or written.
     pub async fn remove(&self, fingerprint: &str) -> Result<usize> {
-        // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
         let path = self.paths.authorized_keys_path().to_path_buf();
 
-        let entries = self.list().await?;
+        let raw_contents = match tokio::fs::read_to_string(&path).await {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
 
-        // Collect line numbers of entries whose fingerprint matches.
+        let parse_contents = raw_contents.clone();
+        let entries = tokio::task::spawn_blocking(move || {
+            parse::parse_authorized_keys_contents(&parse_contents)
+        })
+        .await
+        .map_err(|e| Error::AuthorizedKeysParseFailed(e.to_string()))??;
+
         let lines_to_remove: std::collections::HashSet<usize> = entries
             .iter()
-            .filter(|e| e.fingerprint().as_deref() == Some(fingerprint))
+            .filter(|e| e.fingerprint() == fingerprint)
             .map(|e| e.line_number)
             .collect();
 
@@ -170,26 +173,14 @@ impl<'a> AuthorizedKeysService<'a> {
 
         let removed = lines_to_remove.len();
 
-        // Read the raw file to preserve formatting of kept lines
-        let raw_contents = tokio::fs::read_to_string(&path).await?;
+        let mut new_contents = String::with_capacity(raw_contents.len());
+        for (idx, line) in raw_contents.lines().enumerate() {
+            if !lines_to_remove.contains(&(idx + 1)) {
+                new_contents.push_str(line);
+                new_contents.push('\n');
+            }
+        }
 
-        // Reconstruct the file without removed lines.
-        // Uses `fold` to avoid an intermediate `Vec` allocation.
-        let mut new_contents = raw_contents
-            .lines()
-            .enumerate()
-            .filter(|(i, _)| !lines_to_remove.contains(&(i + 1)))
-            .map(|(_, line)| line)
-            .fold(String::new(), |mut acc, line| {
-                if !acc.is_empty() {
-                    acc.push('\n');
-                }
-                acc.push_str(line);
-                acc
-            });
-        new_contents.push('\n');
-
-        // Write atomically: write to temp file in same directory, then rename
         tokio::task::spawn_blocking(move || atomic_write(&path, &new_contents))
             .await
             .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))??;
@@ -221,14 +212,87 @@ impl<'a> AuthorizedKeysService<'a> {
     /// the caller already has a fingerprint.
     async fn contains_fingerprint(&self, target_fp: &str) -> Result<bool> {
         let entries = self.list().await?;
-        Ok(entries
-            .iter()
-            .any(|e| e.fingerprint().as_deref() == Some(target_fp)))
+        Ok(entries.iter().any(|e| e.fingerprint() == target_fp))
     }
+}
+
+/// Reject a field that would break the one-entry-per-line file format.
+fn reject_newlines(field: &'static str, value: Option<&str>) -> Result<()> {
+    if let Some(value) = value
+        && (value.contains('\n') || value.contains('\r'))
+    {
+        return Err(Error::AuthorizedKeysWriteFailed(format!(
+            "{field} must not contain newlines"
+        )));
+    }
+    Ok(())
 }
 
 /// Write `contents` to `path` atomically with 0o600 permissions using `toride_fs`.
 fn atomic_write(path: &std::path::Path, contents: &str) -> Result<()> {
     toride_fs::atomic_write_with_perms(path, contents, AUTHORIZED_KEYS_MODE)
         .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ED25519_PUB: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl unit@test";
+
+    fn service(paths: &'static SshPaths) -> AuthorizedKeysService<'static> {
+        AuthorizedKeysService::new(paths)
+    }
+
+    #[tokio::test]
+    async fn add_rejects_comment_with_embedded_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: &'static SshPaths = Box::leak(Box::new(SshPaths::with_dir(dir.path())));
+        let svc = service(paths);
+
+        let err = svc
+            .add(ED25519_PUB, Some("harmless\nssh-rsa AAAA attacker"), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::AuthorizedKeysWriteFailed(ref msg) if msg.contains("comment")),
+            "expected an AuthorizedKeysWriteFailed naming the comment: {err:?}"
+        );
+        assert!(
+            !svc.paths.authorized_keys_path().exists(),
+            "nothing may be written when the comment is rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_rejects_comment_with_carriage_return() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: &'static SshPaths = Box::leak(Box::new(SshPaths::with_dir(dir.path())));
+        let svc = service(paths);
+
+        let err = svc
+            .add(ED25519_PUB, Some("harmless\rssh-rsa AAAA attacker"), None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::AuthorizedKeysWriteFailed(ref msg) if msg.contains("comment")),
+            "expected an AuthorizedKeysWriteFailed naming the comment: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_rejects_options_with_embedded_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: &'static SshPaths = Box::leak(Box::new(SshPaths::with_dir(dir.path())));
+        let svc = service(paths);
+
+        let err = svc
+            .add(ED25519_PUB, None, Some("no-pty\nssh-rsa AAAA attacker"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::AuthorizedKeysWriteFailed(ref msg) if msg.contains("options")),
+            "expected an AuthorizedKeysWriteFailed naming the options: {err:?}"
+        );
+    }
 }

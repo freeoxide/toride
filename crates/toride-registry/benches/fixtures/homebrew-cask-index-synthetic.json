@@ -1,0 +1,1652 @@
+[
+{
+"token": "bench-app-000",
+"name": [
+"Bench App 000"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/000",
+"url": "https://bench.example/App000.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.000.0"
+},
+{
+"token": "bench-app-001",
+"name": [
+"Bench App 001"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/001",
+"url": "https://bench.example/App001.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.001.0"
+},
+{
+"token": "bench-app-002",
+"name": [
+"Bench App 002"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/002",
+"url": "https://bench.example/App002.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.002.0"
+},
+{
+"token": "bench-app-003",
+"name": [
+"Bench App 003"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/003",
+"url": "https://bench.example/App003.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.003.0"
+},
+{
+"token": "bench-app-004",
+"name": [
+"Bench App 004"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/004",
+"url": "https://bench.example/App004.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.004.0"
+},
+{
+"token": "bench-app-005",
+"name": [
+"Bench App 005"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/005",
+"url": "https://bench.example/App005.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.005.0"
+},
+{
+"token": "bench-app-006",
+"name": [
+"Bench App 006"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/006",
+"url": "https://bench.example/App006.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.006.0"
+},
+{
+"token": "bench-app-007",
+"name": [
+"Bench App 007"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/007",
+"url": "https://bench.example/App007.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.007.0"
+},
+{
+"token": "bench-app-008",
+"name": [
+"Bench App 008"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/008",
+"url": "https://bench.example/App008.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.008.0"
+},
+{
+"token": "bench-app-009",
+"name": [
+"Bench App 009"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/009",
+"url": "https://bench.example/App009.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.009.0"
+},
+{
+"token": "bench-app-010",
+"name": [
+"Bench App 010"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/010",
+"url": "https://bench.example/App010.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.010.0"
+},
+{
+"token": "bench-app-011",
+"name": [
+"Bench App 011"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/011",
+"url": "https://bench.example/App011.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.011.0"
+},
+{
+"token": "bench-app-012",
+"name": [
+"Bench App 012"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/012",
+"url": "https://bench.example/App012.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.012.0"
+},
+{
+"token": "bench-app-013",
+"name": [
+"Bench App 013"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/013",
+"url": "https://bench.example/App013.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.013.0"
+},
+{
+"token": "bench-app-014",
+"name": [
+"Bench App 014"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/014",
+"url": "https://bench.example/App014.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.014.0"
+},
+{
+"token": "bench-app-015",
+"name": [
+"Bench App 015"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/015",
+"url": "https://bench.example/App015.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.015.0"
+},
+{
+"token": "bench-app-016",
+"name": [
+"Bench App 016"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/016",
+"url": "https://bench.example/App016.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.016.0"
+},
+{
+"token": "bench-app-017",
+"name": [
+"Bench App 017"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/017",
+"url": "https://bench.example/App017.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.017.0"
+},
+{
+"token": "bench-app-018",
+"name": [
+"Bench App 018"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/018",
+"url": "https://bench.example/App018.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.018.0"
+},
+{
+"token": "bench-app-019",
+"name": [
+"Bench App 019"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/019",
+"url": "https://bench.example/App019.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.019.0"
+},
+{
+"token": "bench-app-020",
+"name": [
+"Bench App 020"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/020",
+"url": "https://bench.example/App020.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.020.0"
+},
+{
+"token": "bench-app-021",
+"name": [
+"Bench App 021"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/021",
+"url": "https://bench.example/App021.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.021.0"
+},
+{
+"token": "bench-app-022",
+"name": [
+"Bench App 022"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/022",
+"url": "https://bench.example/App022.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.022.0"
+},
+{
+"token": "bench-app-023",
+"name": [
+"Bench App 023"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/023",
+"url": "https://bench.example/App023.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.023.0"
+},
+{
+"token": "bench-app-024",
+"name": [
+"Bench App 024"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/024",
+"url": "https://bench.example/App024.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.024.0"
+},
+{
+"token": "bench-app-025",
+"name": [
+"Bench App 025"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/025",
+"url": "https://bench.example/App025.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.025.0"
+},
+{
+"token": "bench-app-026",
+"name": [
+"Bench App 026"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/026",
+"url": "https://bench.example/App026.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.026.0"
+},
+{
+"token": "bench-app-027",
+"name": [
+"Bench App 027"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/027",
+"url": "https://bench.example/App027.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.027.0"
+},
+{
+"token": "bench-app-028",
+"name": [
+"Bench App 028"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/028",
+"url": "https://bench.example/App028.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.028.0"
+},
+{
+"token": "bench-app-029",
+"name": [
+"Bench App 029"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/029",
+"url": "https://bench.example/App029.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.029.0"
+},
+{
+"token": "bench-app-030",
+"name": [
+"Bench App 030"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/030",
+"url": "https://bench.example/App030.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.030.0"
+},
+{
+"token": "bench-app-031",
+"name": [
+"Bench App 031"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/031",
+"url": "https://bench.example/App031.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.031.0"
+},
+{
+"token": "bench-app-032",
+"name": [
+"Bench App 032"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/032",
+"url": "https://bench.example/App032.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.032.0"
+},
+{
+"token": "bench-app-033",
+"name": [
+"Bench App 033"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/033",
+"url": "https://bench.example/App033.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.033.0"
+},
+{
+"token": "bench-app-034",
+"name": [
+"Bench App 034"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/034",
+"url": "https://bench.example/App034.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.034.0"
+},
+{
+"token": "bench-app-035",
+"name": [
+"Bench App 035"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/035",
+"url": "https://bench.example/App035.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.035.0"
+},
+{
+"token": "bench-app-036",
+"name": [
+"Bench App 036"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/036",
+"url": "https://bench.example/App036.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.036.0"
+},
+{
+"token": "bench-app-037",
+"name": [
+"Bench App 037"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/037",
+"url": "https://bench.example/App037.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.037.0"
+},
+{
+"token": "bench-app-038",
+"name": [
+"Bench App 038"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/038",
+"url": "https://bench.example/App038.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.038.0"
+},
+{
+"token": "bench-app-039",
+"name": [
+"Bench App 039"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/039",
+"url": "https://bench.example/App039.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.039.0"
+},
+{
+"token": "bench-app-040",
+"name": [
+"Bench App 040"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/040",
+"url": "https://bench.example/App040.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.040.0"
+},
+{
+"token": "bench-app-041",
+"name": [
+"Bench App 041"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/041",
+"url": "https://bench.example/App041.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.041.0"
+},
+{
+"token": "bench-app-042",
+"name": [
+"Bench App 042"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/042",
+"url": "https://bench.example/App042.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.042.0"
+},
+{
+"token": "bench-app-043",
+"name": [
+"Bench App 043"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/043",
+"url": "https://bench.example/App043.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.043.0"
+},
+{
+"token": "bench-app-044",
+"name": [
+"Bench App 044"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/044",
+"url": "https://bench.example/App044.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.044.0"
+},
+{
+"token": "bench-app-045",
+"name": [
+"Bench App 045"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/045",
+"url": "https://bench.example/App045.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.045.0"
+},
+{
+"token": "bench-app-046",
+"name": [
+"Bench App 046"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/046",
+"url": "https://bench.example/App046.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.046.0"
+},
+{
+"token": "bench-app-047",
+"name": [
+"Bench App 047"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/047",
+"url": "https://bench.example/App047.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.047.0"
+},
+{
+"token": "bench-app-048",
+"name": [
+"Bench App 048"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/048",
+"url": "https://bench.example/App048.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.048.0"
+},
+{
+"token": "bench-app-049",
+"name": [
+"Bench App 049"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/049",
+"url": "https://bench.example/App049.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.049.0"
+},
+{
+"token": "bench-app-050",
+"name": [
+"Bench App 050"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/050",
+"url": "https://bench.example/App050.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.050.0"
+},
+{
+"token": "bench-app-051",
+"name": [
+"Bench App 051"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/051",
+"url": "https://bench.example/App051.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.051.0"
+},
+{
+"token": "bench-app-052",
+"name": [
+"Bench App 052"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/052",
+"url": "https://bench.example/App052.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.052.0"
+},
+{
+"token": "bench-app-053",
+"name": [
+"Bench App 053"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/053",
+"url": "https://bench.example/App053.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.053.0"
+},
+{
+"token": "bench-app-054",
+"name": [
+"Bench App 054"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/054",
+"url": "https://bench.example/App054.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.054.0"
+},
+{
+"token": "bench-app-055",
+"name": [
+"Bench App 055"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/055",
+"url": "https://bench.example/App055.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.055.0"
+},
+{
+"token": "bench-app-056",
+"name": [
+"Bench App 056"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/056",
+"url": "https://bench.example/App056.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.056.0"
+},
+{
+"token": "bench-app-057",
+"name": [
+"Bench App 057"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/057",
+"url": "https://bench.example/App057.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.057.0"
+},
+{
+"token": "bench-app-058",
+"name": [
+"Bench App 058"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/058",
+"url": "https://bench.example/App058.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.058.0"
+},
+{
+"token": "bench-app-059",
+"name": [
+"Bench App 059"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/059",
+"url": "https://bench.example/App059.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.059.0"
+},
+{
+"token": "bench-app-060",
+"name": [
+"Bench App 060"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/060",
+"url": "https://bench.example/App060.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.060.0"
+},
+{
+"token": "bench-app-061",
+"name": [
+"Bench App 061"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/061",
+"url": "https://bench.example/App061.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.061.0"
+},
+{
+"token": "bench-app-062",
+"name": [
+"Bench App 062"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/062",
+"url": "https://bench.example/App062.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.062.0"
+},
+{
+"token": "bench-app-063",
+"name": [
+"Bench App 063"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/063",
+"url": "https://bench.example/App063.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.063.0"
+},
+{
+"token": "bench-app-064",
+"name": [
+"Bench App 064"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/064",
+"url": "https://bench.example/App064.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.064.0"
+},
+{
+"token": "bench-app-065",
+"name": [
+"Bench App 065"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/065",
+"url": "https://bench.example/App065.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.065.0"
+},
+{
+"token": "bench-app-066",
+"name": [
+"Bench App 066"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/066",
+"url": "https://bench.example/App066.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.066.0"
+},
+{
+"token": "bench-app-067",
+"name": [
+"Bench App 067"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/067",
+"url": "https://bench.example/App067.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.067.0"
+},
+{
+"token": "bench-app-068",
+"name": [
+"Bench App 068"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/068",
+"url": "https://bench.example/App068.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.068.0"
+},
+{
+"token": "bench-app-069",
+"name": [
+"Bench App 069"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/069",
+"url": "https://bench.example/App069.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.069.0"
+},
+{
+"token": "bench-app-070",
+"name": [
+"Bench App 070"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/070",
+"url": "https://bench.example/App070.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.070.0"
+},
+{
+"token": "bench-app-071",
+"name": [
+"Bench App 071"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/071",
+"url": "https://bench.example/App071.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.071.0"
+},
+{
+"token": "bench-app-072",
+"name": [
+"Bench App 072"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/072",
+"url": "https://bench.example/App072.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.072.0"
+},
+{
+"token": "bench-app-073",
+"name": [
+"Bench App 073"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/073",
+"url": "https://bench.example/App073.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.073.0"
+},
+{
+"token": "bench-app-074",
+"name": [
+"Bench App 074"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/074",
+"url": "https://bench.example/App074.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.074.0"
+},
+{
+"token": "bench-app-075",
+"name": [
+"Bench App 075"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/075",
+"url": "https://bench.example/App075.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.075.0"
+},
+{
+"token": "bench-app-076",
+"name": [
+"Bench App 076"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/076",
+"url": "https://bench.example/App076.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.076.0"
+},
+{
+"token": "bench-app-077",
+"name": [
+"Bench App 077"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/077",
+"url": "https://bench.example/App077.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.077.0"
+},
+{
+"token": "bench-app-078",
+"name": [
+"Bench App 078"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/078",
+"url": "https://bench.example/App078.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.078.0"
+},
+{
+"token": "bench-app-079",
+"name": [
+"Bench App 079"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/079",
+"url": "https://bench.example/App079.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.079.0"
+},
+{
+"token": "bench-app-080",
+"name": [
+"Bench App 080"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/080",
+"url": "https://bench.example/App080.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.080.0"
+},
+{
+"token": "bench-app-081",
+"name": [
+"Bench App 081"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/081",
+"url": "https://bench.example/App081.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.081.0"
+},
+{
+"token": "bench-app-082",
+"name": [
+"Bench App 082"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/082",
+"url": "https://bench.example/App082.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.082.0"
+},
+{
+"token": "bench-app-083",
+"name": [
+"Bench App 083"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/083",
+"url": "https://bench.example/App083.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.083.0"
+},
+{
+"token": "bench-app-084",
+"name": [
+"Bench App 084"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/084",
+"url": "https://bench.example/App084.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.084.0"
+},
+{
+"token": "bench-app-085",
+"name": [
+"Bench App 085"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/085",
+"url": "https://bench.example/App085.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.085.0"
+},
+{
+"token": "bench-app-086",
+"name": [
+"Bench App 086"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/086",
+"url": "https://bench.example/App086.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.086.0"
+},
+{
+"token": "bench-app-087",
+"name": [
+"Bench App 087"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/087",
+"url": "https://bench.example/App087.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.087.0"
+},
+{
+"token": "bench-app-088",
+"name": [
+"Bench App 088"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/088",
+"url": "https://bench.example/App088.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.088.0"
+},
+{
+"token": "bench-app-089",
+"name": [
+"Bench App 089"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/089",
+"url": "https://bench.example/App089.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.089.0"
+},
+{
+"token": "bench-app-090",
+"name": [
+"Bench App 090"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/090",
+"url": "https://bench.example/App090.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.090.0"
+},
+{
+"token": "bench-app-091",
+"name": [
+"Bench App 091"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/091",
+"url": "https://bench.example/App091.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.091.0"
+},
+{
+"token": "bench-app-092",
+"name": [
+"Bench App 092"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/092",
+"url": "https://bench.example/App092.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.092.0"
+},
+{
+"token": "bench-app-093",
+"name": [
+"Bench App 093"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/093",
+"url": "https://bench.example/App093.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.093.0"
+},
+{
+"token": "bench-app-094",
+"name": [
+"Bench App 094"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/094",
+"url": "https://bench.example/App094.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.094.0"
+},
+{
+"token": "bench-app-095",
+"name": [
+"Bench App 095"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/095",
+"url": "https://bench.example/App095.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.095.0"
+},
+{
+"token": "bench-app-096",
+"name": [
+"Bench App 096"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/096",
+"url": "https://bench.example/App096.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.096.0"
+},
+{
+"token": "bench-app-097",
+"name": [
+"Bench App 097"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/097",
+"url": "https://bench.example/App097.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.097.0"
+},
+{
+"token": "bench-app-098",
+"name": [
+"Bench App 098"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/098",
+"url": "https://bench.example/App098.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.098.0"
+},
+{
+"token": "bench-app-099",
+"name": [
+"Bench App 099"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/099",
+"url": "https://bench.example/App099.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.099.0"
+},
+{
+"token": "bench-app-100",
+"name": [
+"Bench App 100"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/100",
+"url": "https://bench.example/App100.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.100.0"
+},
+{
+"token": "bench-app-101",
+"name": [
+"Bench App 101"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/101",
+"url": "https://bench.example/App101.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.101.0"
+},
+{
+"token": "bench-app-102",
+"name": [
+"Bench App 102"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/102",
+"url": "https://bench.example/App102.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.102.0"
+},
+{
+"token": "bench-app-103",
+"name": [
+"Bench App 103"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/103",
+"url": "https://bench.example/App103.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.103.0"
+},
+{
+"token": "bench-app-104",
+"name": [
+"Bench App 104"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/104",
+"url": "https://bench.example/App104.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.104.0"
+},
+{
+"token": "bench-app-105",
+"name": [
+"Bench App 105"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/105",
+"url": "https://bench.example/App105.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.105.0"
+},
+{
+"token": "bench-app-106",
+"name": [
+"Bench App 106"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/106",
+"url": "https://bench.example/App106.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.106.0"
+},
+{
+"token": "bench-app-107",
+"name": [
+"Bench App 107"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/107",
+"url": "https://bench.example/App107.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.107.0"
+},
+{
+"token": "bench-app-108",
+"name": [
+"Bench App 108"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/108",
+"url": "https://bench.example/App108.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.108.0"
+},
+{
+"token": "bench-app-109",
+"name": [
+"Bench App 109"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/109",
+"url": "https://bench.example/App109.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.109.0"
+},
+{
+"token": "bench-app-110",
+"name": [
+"Bench App 110"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/110",
+"url": "https://bench.example/App110.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.110.0"
+},
+{
+"token": "bench-app-111",
+"name": [
+"Bench App 111"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/111",
+"url": "https://bench.example/App111.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.111.0"
+},
+{
+"token": "bench-app-112",
+"name": [
+"Bench App 112"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/112",
+"url": "https://bench.example/App112.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.112.0"
+},
+{
+"token": "bench-app-113",
+"name": [
+"Bench App 113"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/113",
+"url": "https://bench.example/App113.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.113.0"
+},
+{
+"token": "bench-app-114",
+"name": [
+"Bench App 114"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/114",
+"url": "https://bench.example/App114.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.114.0"
+},
+{
+"token": "bench-app-115",
+"name": [
+"Bench App 115"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/115",
+"url": "https://bench.example/App115.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.115.0"
+},
+{
+"token": "bench-app-116",
+"name": [
+"Bench App 116"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/116",
+"url": "https://bench.example/App116.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.116.0"
+},
+{
+"token": "bench-app-117",
+"name": [
+"Bench App 117"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/117",
+"url": "https://bench.example/App117.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.117.0"
+},
+{
+"token": "bench-app-118",
+"name": [
+"Bench App 118"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/118",
+"url": "https://bench.example/App118.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.118.0"
+},
+{
+"token": "bench-app-119",
+"name": [
+"Bench App 119"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/119",
+"url": "https://bench.example/App119.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.119.0"
+},
+{
+"token": "bench-app-120",
+"name": [
+"Bench App 120"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/120",
+"url": "https://bench.example/App120.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.120.0"
+},
+{
+"token": "bench-app-121",
+"name": [
+"Bench App 121"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/121",
+"url": "https://bench.example/App121.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.121.0"
+},
+{
+"token": "bench-app-122",
+"name": [
+"Bench App 122"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/122",
+"url": "https://bench.example/App122.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.122.0"
+},
+{
+"token": "bench-app-123",
+"name": [
+"Bench App 123"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/123",
+"url": "https://bench.example/App123.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.123.0"
+},
+{
+"token": "bench-app-124",
+"name": [
+"Bench App 124"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/124",
+"url": "https://bench.example/App124.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.124.0"
+},
+{
+"token": "bench-app-125",
+"name": [
+"Bench App 125"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/125",
+"url": "https://bench.example/App125.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.125.0"
+},
+{
+"token": "bench-app-126",
+"name": [
+"Bench App 126"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/126",
+"url": "https://bench.example/App126.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.126.0"
+},
+{
+"token": "bench-app-127",
+"name": [
+"Bench App 127"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/127",
+"url": "https://bench.example/App127.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.127.0"
+},
+{
+"token": "bench-app-128",
+"name": [
+"Bench App 128"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/128",
+"url": "https://bench.example/App128.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.128.0"
+},
+{
+"token": "bench-app-129",
+"name": [
+"Bench App 129"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/129",
+"url": "https://bench.example/App129.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.129.0"
+},
+{
+"token": "bench-app-130",
+"name": [
+"Bench App 130"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/130",
+"url": "https://bench.example/App130.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.130.0"
+},
+{
+"token": "bench-app-131",
+"name": [
+"Bench App 131"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/131",
+"url": "https://bench.example/App131.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.131.0"
+},
+{
+"token": "bench-app-132",
+"name": [
+"Bench App 132"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/132",
+"url": "https://bench.example/App132.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.132.0"
+},
+{
+"token": "bench-app-133",
+"name": [
+"Bench App 133"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/133",
+"url": "https://bench.example/App133.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.133.0"
+},
+{
+"token": "bench-app-134",
+"name": [
+"Bench App 134"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/134",
+"url": "https://bench.example/App134.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.134.0"
+},
+{
+"token": "bench-app-135",
+"name": [
+"Bench App 135"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/135",
+"url": "https://bench.example/App135.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.135.0"
+},
+{
+"token": "bench-app-136",
+"name": [
+"Bench App 136"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/136",
+"url": "https://bench.example/App136.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.136.0"
+},
+{
+"token": "bench-app-137",
+"name": [
+"Bench App 137"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/137",
+"url": "https://bench.example/App137.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.137.0"
+},
+{
+"token": "bench-app-138",
+"name": [
+"Bench App 138"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/138",
+"url": "https://bench.example/App138.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.138.0"
+},
+{
+"token": "bench-app-139",
+"name": [
+"Bench App 139"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/139",
+"url": "https://bench.example/App139.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.139.0"
+},
+{
+"token": "bench-app-140",
+"name": [
+"Bench App 140"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/140",
+"url": "https://bench.example/App140.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.140.0"
+},
+{
+"token": "bench-app-141",
+"name": [
+"Bench App 141"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/141",
+"url": "https://bench.example/App141.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.141.0"
+},
+{
+"token": "bench-app-142",
+"name": [
+"Bench App 142"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/142",
+"url": "https://bench.example/App142.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.142.0"
+},
+{
+"token": "bench-app-143",
+"name": [
+"Bench App 143"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/143",
+"url": "https://bench.example/App143.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.143.0"
+},
+{
+"token": "bench-app-144",
+"name": [
+"Bench App 144"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/144",
+"url": "https://bench.example/App144.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.144.0"
+},
+{
+"token": "bench-app-145",
+"name": [
+"Bench App 145"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/145",
+"url": "https://bench.example/App145.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.145.0"
+},
+{
+"token": "bench-app-146",
+"name": [
+"Bench App 146"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/146",
+"url": "https://bench.example/App146.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.146.0"
+},
+{
+"token": "bench-app-147",
+"name": [
+"Bench App 147"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/147",
+"url": "https://bench.example/App147.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.147.0"
+},
+{
+"token": "bench-app-148",
+"name": [
+"Bench App 148"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/148",
+"url": "https://bench.example/App148.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.148.0"
+},
+{
+"token": "bench-app-149",
+"name": [
+"Bench App 149"
+],
+"desc": "A synthetic bench cask",
+"homepage": "https://bench.example/149",
+"url": "https://bench.example/App149.dmg",
+"sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+"version": "1.149.0"
+}
+]

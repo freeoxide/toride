@@ -21,60 +21,8 @@ use crate::provider::{
     VirtualizationProvider,
 };
 
-#[cfg(feature = "os-info")]
-#[allow(unused_imports)]
-use os_info as _os_info;
-
-#[cfg(feature = "cpu-cpuid")]
-#[allow(unused_imports)]
-use raw_cpuid as _raw_cpuid;
-
-#[cfg(feature = "gpu-nvidia")]
-#[allow(unused_imports)]
-use nvml_wrapper as _nvml;
-
 #[cfg(feature = "battery")]
 use starship_battery::{self, Manager, State};
-
-#[cfg(feature = "hardware-dmi")]
-#[allow(unused_imports)]
-use dmidecode as _dmidecode;
-
-#[cfg(feature = "linux-procfs")]
-#[allow(unused_imports)]
-use procfs as _procfs;
-
-#[cfg(feature = "linux-sensors")]
-#[allow(unused_imports)]
-use lm_sensors as _lm_sensors;
-
-#[cfg(feature = "commands")]
-#[allow(unused_imports)]
-use duct as _duct;
-
-#[cfg(feature = "linux-udev")]
-#[allow(unused_imports)]
-use udev as _udev;
-
-#[cfg(feature = "linux-rtnetlink")]
-#[allow(unused_imports)]
-use rtnetlink as _rtnetlink;
-
-#[cfg(feature = "hardware-pci")]
-#[allow(unused_imports)]
-use pci_info as _pci_info;
-
-#[cfg(feature = "hardware-pci")]
-#[allow(unused_imports)]
-use pci_ids as _pci_ids;
-
-#[cfg(feature = "hardware-topology")]
-#[allow(unused_imports)]
-use hwlocality as _hwlocality;
-
-#[cfg(feature = "linux-cgroups")]
-#[allow(unused_imports)]
-use cgroups_rs as _cgroups_rs;
 
 #[cfg(any(target_os = "macos", test))]
 #[allow(
@@ -383,18 +331,7 @@ fn detect_gateway() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         let content = std::fs::read_to_string("/proc/net/route").ok()?;
-        for line in content.lines().skip(1) {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() >= 3 && fields[1] == "00000000" {
-                let val = u32::from_str_radix(fields[2], 16).ok()?;
-                let bytes = val.to_ne_bytes();
-                return Some(format!(
-                    "{}.{}.{}.{}",
-                    bytes[0], bytes[1], bytes[2], bytes[3]
-                ));
-            }
-        }
-        None
+        gateway_from_route_content(&content)
     }
     #[cfg(target_os = "macos")]
     {
@@ -471,6 +408,28 @@ fn note_proc_read() {
     if SLOW_LOCK_HELD.with(std::cell::Cell::get) {
         SLOW_READS_UNDER_LOCK.with(|c| c.set(c.get() + 1));
     }
+}
+
+/// Parses `/proc/net/route` content into the default gateway address.
+///
+/// The `Gateway` column is a little-endian hex u32 regardless of host
+/// endianness, per `proc_net_route` semantics in the kernel documentation.
+#[cfg(target_os = "linux")]
+fn gateway_from_route_content(content: &str) -> Option<String> {
+    for line in content.lines().skip(1) {
+        let mut fields = line.split_whitespace();
+        let _iface = fields.next();
+        if fields.next() != Some("00000000") {
+            continue;
+        }
+        let val = u32::from_str_radix(fields.next()?, 16).ok()?;
+        let bytes = val.to_le_bytes();
+        return Some(format!(
+            "{}.{}.{}.{}",
+            bytes[0], bytes[1], bytes[2], bytes[3]
+        ));
+    }
+    None
 }
 
 #[cfg(target_os = "linux")]
@@ -703,29 +662,53 @@ impl Drop for SlowLockHeld {
 
 #[cfg(target_os = "linux")]
 fn read_hwmon_fans() -> Vec<SensorStatus> {
+    read_hwmon_fans_at(std::path::Path::new("/sys/class/hwmon"))
+}
+
+/// Derive the aggregated snapshot (CPU/GPU temperature highlights) from
+/// component readings, consuming the readings vector.
+fn snapshot_from_readings(readings: Vec<SensorStatus>) -> SensorSnapshot {
+    let cpu_temperature = readings.iter().find_map(|s| {
+        if s.label.to_lowercase().contains("cpu") {
+            s.temperature
+        } else {
+            None
+        }
+    });
+    let gpu_temperature = readings.iter().find_map(|s| {
+        if s.label.to_lowercase().contains("gpu") {
+            s.temperature
+        } else {
+            None
+        }
+    });
+    SensorSnapshot {
+        readings,
+        cpu_temperature,
+        gpu_temperature,
+    }
+}
+
+/// Enumerate hwmon fan sensors under a caller-supplied hwmon class root.
+///
+/// The production probe reads `/sys/class/hwmon`; this root-parameterized
+/// variant exists so benches and tests can point the probe at a synthetic
+/// tree. Chip names come from each `hwmon*/name` file (directory name as
+/// fallback); every `fan<N>_input` file present in the chip directory is
+/// read (discovered via `read_dir`, not fixed-name probing).
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn read_hwmon_fans_at(root: &std::path::Path) -> Vec<SensorStatus> {
     let mut sensors = Vec::new();
-    let Ok(hwmon_dir) = std::fs::read_dir("/sys/class/hwmon") else {
-        return sensors;
-    };
-    for entry in hwmon_dir.flatten() {
-        let path = entry.path();
-        let name = std::fs::read_to_string(path.join("name")).map_or_else(
-            |_| entry.file_name().to_string_lossy().to_string(),
-            |s| s.trim().to_string(),
-        );
-        for i in 1..=16u32 {
-            let fan_path = path.join(format!("fan{i}_input"));
-            if let Ok(rpm_str) = std::fs::read_to_string(fan_path)
-                && let Ok(rpm) = rpm_str.trim().parse::<u32>()
-            {
-                sensors.push(SensorStatus {
-                    label: format!("{name} Fan {i}"),
-                    temperature: None,
-                    fan_rpm: Some(rpm),
-                    voltage: None,
-                    thermal_throttling: None,
-                });
-            }
+    for (path, name) in hwmon_chip_dirs(root) {
+        for (index, rpm) in numbered_inputs(&path, "fan", "input") {
+            sensors.push(SensorStatus {
+                label: format!("{name} Fan {index}"),
+                temperature: None,
+                fan_rpm: Some(rpm),
+                voltage: None,
+                thermal_throttling: None,
+            });
         }
     }
     sensors
@@ -734,36 +717,99 @@ fn read_hwmon_fans() -> Vec<SensorStatus> {
 #[cfg(target_os = "linux")]
 #[allow(clippy::cast_precision_loss)]
 fn read_hwmon_voltages() -> Vec<SensorStatus> {
+    read_hwmon_voltages_at(std::path::Path::new("/sys/class/hwmon"))
+}
+
+/// Enumerate hwmon voltage sensors under a caller-supplied hwmon class root.
+///
+/// Root-parameterized twin of the voltage half of the production probe: it
+/// reads every `in<N>_input` file present per chip (discovered via
+/// `read_dir`) and reports millivolt readings converted to volts.
+#[cfg(target_os = "linux")]
+#[allow(clippy::cast_precision_loss)]
+#[must_use]
+pub fn read_hwmon_voltages_at(root: &std::path::Path) -> Vec<SensorStatus> {
     let mut sensors = Vec::new();
-    let Ok(hwmon_dir) = std::fs::read_dir("/sys/class/hwmon") else {
-        return sensors;
-    };
-    for entry in hwmon_dir.flatten() {
-        let path = entry.path();
-        let name = std::fs::read_to_string(path.join("name")).map_or_else(
-            |_| entry.file_name().to_string_lossy().to_string(),
-            |s| s.trim().to_string(),
-        );
-        for i in 0..=16u32 {
-            let in_path = path.join(format!("in{i}_input"));
-            if let Ok(mv_str) = std::fs::read_to_string(in_path)
-                && let Ok(mv) = mv_str.trim().parse::<f32>()
-            {
-                sensors.push(SensorStatus {
-                    label: format!("{name} Voltage {i}"),
-                    temperature: None,
-                    fan_rpm: None,
-                    voltage: Some(mv / 1000.0),
-                    thermal_throttling: None,
-                });
-            }
+    for (path, name) in hwmon_chip_dirs(root) {
+        for (index, mv) in numbered_inputs::<f32>(&path, "in", "input") {
+            sensors.push(SensorStatus {
+                label: format!("{name} Voltage {index}"),
+                temperature: None,
+                fan_rpm: None,
+                voltage: Some(mv / 1000.0),
+                thermal_throttling: None,
+            });
         }
     }
     sensors
 }
 
+/// The `(directory, chip-name)` pairs under an hwmon class root, sorted by
+/// directory name so readings come out in a stable order.
+#[cfg(target_os = "linux")]
+fn hwmon_chip_dirs(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+    let Ok(hwmon_dir) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut chips: Vec<(std::path::PathBuf, String)> = hwmon_dir
+        .flatten()
+        .map(|entry| {
+            let path = entry.path();
+            let name = std::fs::read_to_string(path.join("name")).map_or_else(
+                |_| entry.file_name().to_string_lossy().to_string(),
+                |s| s.trim().to_string(),
+            );
+            (path, name)
+        })
+        .collect();
+    chips.sort_by(|a, b| a.0.file_name().cmp(&b.0.file_name()));
+    chips
+}
+
+/// Numeric readings from `<prefix><N>_<suffix>` files in `dir`, ordered by N.
+///
+/// Only files whose whole name matches the pattern are read, so unrelated
+/// sysfs entries cost one `read_dir` entry each instead of 34 fixed-name
+/// opens per chip.
+#[cfg(target_os = "linux")]
+fn numbered_inputs<T: std::str::FromStr>(
+    dir: &std::path::Path,
+    prefix: &str,
+    suffix: &str,
+) -> Vec<(u32, T)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut inputs: Vec<(u32, T)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let file_name = entry.file_name();
+            let stem = file_name.to_str()?;
+            let number = stem
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(&format!("_{suffix}")))
+                .and_then(|n| n.parse::<u32>().ok())?;
+            let value = std::fs::read_to_string(entry.path())
+                .ok()
+                .and_then(|s| s.trim().parse::<T>().ok())?;
+            Some((number, value))
+        })
+        .collect();
+    inputs.sort_by_key(|(number, _)| *number);
+    inputs
+}
+
 #[cfg(target_os = "linux")]
 fn disk_base_device(name: &str) -> &str {
+    disk_base_device_at(name, Path::new("/sys/block"))
+}
+
+/// Resolves a `/proc/diskstats` or mount device name to its base
+/// `/sys/block` entry, stripping partition suffixes (`sda1` to `sda`,
+/// `mmcblk0p1` to `mmcblk0`) only when the remainder names a real block
+/// device under `sys_block`.
+#[cfg(target_os = "linux")]
+fn disk_base_device_at<'a>(name: &'a str, sys_block: &Path) -> &'a str {
     if name.contains("nvme") {
         if let Some(idx) = name.rfind('p') {
             let suffix = &name[idx + 1..];
@@ -773,7 +819,59 @@ fn disk_base_device(name: &str) -> &str {
         }
         return name;
     }
-    name.trim_end_matches(|c: char| c.is_ascii_digit())
+    let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    if trimmed.is_empty() {
+        return name;
+    }
+    if sys_block.join(trimmed).exists() {
+        return trimmed;
+    }
+    let stripped = trimmed.strip_suffix('p').unwrap_or(trimmed);
+    if sys_block.join(stripped).exists() {
+        return stripped;
+    }
+    if sys_block.join(name).exists() {
+        return name;
+    }
+    trimmed
+}
+
+/// Sums `/proc/diskstats` counters over base devices only.
+///
+/// A line counts only when its device name exists as a `/sys/block/<name>`
+/// entry; partitions (`vda3`) live under their parent's directory and are
+/// skipped, preventing double counting against the parent (`vda`).
+/// `loop*`, `ram*`, and `dm-*` devices are always skipped.
+#[cfg(target_os = "linux")]
+fn parse_diskstats(content: &str, sys_block: &Path) -> DiskIoSnapshot {
+    let mut snap = DiskIoSnapshot::default();
+    for line in content.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 14 {
+            continue;
+        }
+        let name = fields[2];
+        if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("dm-") {
+            continue;
+        }
+        if !sys_block.join(name).exists() {
+            continue;
+        }
+        let sectors_read: u64 = fields[5].parse().unwrap_or(0);
+        let read_time: u64 = fields[6].parse().unwrap_or(0);
+        let reads: u64 = fields[3].parse().unwrap_or(0);
+        let sectors_written: u64 = fields[9].parse().unwrap_or(0);
+        let write_time: u64 = fields[10].parse().unwrap_or(0);
+        let writes: u64 = fields[7].parse().unwrap_or(0);
+        snap.read_bytes = snap.read_bytes.saturating_add(sectors_read * 512);
+        snap.written_bytes = snap.written_bytes.saturating_add(sectors_written * 512);
+        snap.read_ops = snap.read_ops.saturating_add(reads);
+        snap.write_ops = snap.write_ops.saturating_add(writes);
+        snap.busy_time_ms = snap
+            .busy_time_ms
+            .saturating_add(read_time.saturating_add(write_time));
+    }
+    snap
 }
 
 #[cfg(target_os = "linux")]
@@ -803,6 +901,7 @@ fn read_disk_type_macos(filesystem: &str) -> String {
     }
 }
 
+#[derive(Clone)]
 struct CpuTopology {
     sockets: Option<u32>,
     cores_per_socket: Option<u32>,
@@ -815,9 +914,79 @@ struct CpuTopology {
     cache_l3: Option<u64>,
 }
 
+/// Memoize a reboot-invariant probe for the process lifetime.
+///
+/// The wrapped probes read static host description (`/proc/cpuinfo`, sysfs
+/// cache files, DMI, os-release); polling callers pay the file walks once
+/// per process instead of once per collect.
+fn memoized<T: Clone + Send + Sync + 'static>(
+    cell: &std::sync::Mutex<Option<T>>,
+    probe: impl FnOnce() -> T,
+) -> T {
+    let mut guard = cell
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(value) = guard.as_ref() {
+        return value.clone();
+    }
+    let value = probe();
+    *guard = Some(value.clone());
+    value
+}
+
+/// CPU topology from the platform probe, cached after the first call.
+fn read_cpu_topology() -> CpuTopology {
+    static CACHE: std::sync::Mutex<Option<CpuTopology>> = std::sync::Mutex::new(None);
+    memoized(&CACHE, cpu_topology_probe)
+}
+
+/// DMI hardware inventory from the platform probe, cached after the first
+/// call.
+fn read_hardware_inventory() -> HardwareInventory {
+    static CACHE: std::sync::Mutex<Option<HardwareInventory>> = std::sync::Mutex::new(None);
+    memoized(&CACHE, hardware_inventory_probe)
+}
+
+fn build_static_info(
+    sys: &System,
+    topology: &CpuTopology,
+    hardware: HardwareInventory,
+    os: OsInfo,
+    kernel_version: Option<String>,
+    hostname: String,
+    physical_cores: Option<usize>,
+) -> StaticInfo {
+    let cpus = sys.cpus();
+    StaticInfo {
+        os,
+        kernel_version,
+        hostname,
+        cpu_brand: cpus
+            .first()
+            .map_or_else(String::new, |c| c.brand().to_string()),
+        cpu_vendor: cpus
+            .first()
+            .map_or_else(String::new, |c| c.vendor_id().to_string()),
+        cpu_frequency: cpus.first().map_or(0, sysinfo::Cpu::frequency),
+        physical_cores,
+        logical_cores: cpus.len(),
+        memory_total_bytes: sys.total_memory(),
+        hardware,
+        sockets: topology.sockets,
+        cores_per_socket: topology.cores_per_socket,
+        threads_per_core: topology.threads_per_core,
+        base_frequency: topology.base_frequency,
+        max_frequency: topology.max_frequency,
+        cache_l1d: topology.cache_l1d,
+        cache_l1i: topology.cache_l1i,
+        cache_l2: topology.cache_l2,
+        cache_l3: topology.cache_l3,
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[allow(clippy::cast_possible_truncation)]
-fn read_cpu_topology() -> CpuTopology {
+fn cpu_topology_probe() -> CpuTopology {
     fn sysctl_u64(name: &str) -> Option<u64> {
         run_cmd("sysctl", &["-n", name]).and_then(|s| s.trim().parse().ok())
     }
@@ -877,7 +1046,7 @@ fn read_cpu_topology() -> CpuTopology {
     clippy::similar_names,
     reason = "L1d/L1i cache level names mirror the hardware nomenclature"
 )]
-fn read_cpu_topology() -> CpuTopology {
+fn cpu_topology_probe() -> CpuTopology {
     use std::collections::HashSet;
     use std::fs;
 
@@ -994,7 +1163,7 @@ fn read_cpu_topology() -> CpuTopology {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn read_cpu_topology() -> CpuTopology {
+fn cpu_topology_probe() -> CpuTopology {
     CpuTopology {
         sockets: None,
         cores_per_socket: None,
@@ -1009,7 +1178,7 @@ fn read_cpu_topology() -> CpuTopology {
 }
 
 #[cfg(target_os = "macos")]
-fn read_hardware_inventory() -> HardwareInventory {
+fn hardware_inventory_probe() -> HardwareInventory {
     let mut inv = HardwareInventory {
         manufacturer: Some("Apple".to_string()),
         bios_vendor: Some("Apple".to_string()),
@@ -1036,7 +1205,7 @@ fn read_hardware_inventory() -> HardwareInventory {
 }
 
 #[cfg(target_os = "linux")]
-fn read_hardware_inventory() -> HardwareInventory {
+fn hardware_inventory_probe() -> HardwareInventory {
     use std::fs;
 
     fn read_dmi_string(path: &str) -> Option<String> {
@@ -1101,7 +1270,7 @@ fn read_hardware_inventory() -> HardwareInventory {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn read_hardware_inventory() -> HardwareInventory {
+fn hardware_inventory_probe() -> HardwareInventory {
     HardwareInventory::default()
 }
 
@@ -1315,7 +1484,7 @@ pub struct DiskIoSnapshot {
 /// be read (e.g. load average on Windows) will be `None`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemStatus {
-    /// CPU usage as a percentage (0.0–100.0).
+    /// CPU usage as a percentage (0.0-100.0).
     pub cpu_usage: Option<f64>,
     /// Memory metrics.
     pub memory: MemoryStatus,
@@ -1368,7 +1537,7 @@ pub struct MemoryStatus {
     pub used_bytes: u64,
     /// Total memory in bytes.
     pub total_bytes: u64,
-    /// Usage percentage (0.0–100.0).
+    /// Usage percentage (0.0-100.0).
     pub percentage: f64,
     /// Free memory in bytes.
     pub free_bytes: u64,
@@ -1393,7 +1562,7 @@ pub struct DiskStatus {
     pub used_bytes: u64,
     /// Total disk space in bytes.
     pub total_bytes: u64,
-    /// Usage percentage (0.0–100.0).
+    /// Usage percentage (0.0-100.0).
     pub percentage: f64,
     /// Whether the disk is removable.
     pub is_removable: bool,
@@ -1411,7 +1580,7 @@ pub struct DiskStatus {
     pub serial: Option<String>,
     /// Device temperature in Celsius, if available.
     pub temperature: Option<f32>,
-    /// Wear percentage (0.0–100.0) for SSDs, if available.
+    /// Wear percentage (0.0-100.0) for SSDs, if available.
     pub wear_percent: Option<f32>,
 }
 
@@ -1483,7 +1652,7 @@ pub struct OsInfo {
 pub struct CpuCore {
     /// Core identifier (e.g., "cpu0").
     pub name: String,
-    /// Core usage percentage (0.0–100.0).
+    /// Core usage percentage (0.0-100.0).
     pub usage: f64,
     /// Core frequency in MHz.
     pub frequency: u64,
@@ -1521,7 +1690,7 @@ pub struct CpuStatic {
 /// Point-in-time CPU usage sample.
 #[derive(Debug, Clone, Serialize)]
 pub struct CpuSample {
-    /// Aggregate CPU usage percentage (0.0–100.0).
+    /// Aggregate CPU usage percentage (0.0-100.0).
     pub total_usage: Option<f64>,
     /// Per-core usage percentages.
     pub per_core: Vec<f64>,
@@ -1534,7 +1703,7 @@ pub struct SwapStatus {
     pub used_bytes: u64,
     /// Total swap in bytes.
     pub total_bytes: u64,
-    /// Usage percentage (0.0–100.0).
+    /// Usage percentage (0.0-100.0).
     pub percentage: f64,
     /// Free swap in bytes.
     pub free_bytes: u64,
@@ -1644,7 +1813,7 @@ pub struct GpuInfo {
 /// Battery status snapshot.
 #[derive(Debug, Clone, Serialize)]
 pub struct BatteryInfo {
-    /// Battery charge percentage (0.0–100.0).
+    /// Battery charge percentage (0.0-100.0).
     pub charge_percent: f32,
     /// Battery state (Charging, Discharging, Full, Unknown).
     pub state: String,
@@ -1808,24 +1977,54 @@ impl ProcessSnapshot {
 }
 
 impl SystemStatus {
-    /// Collect a point-in-time snapshot of OS metrics.
-    ///
-    /// Each metric is collected independently — a failure reading one metric
-    /// results in `None` for that field rather than propagating an error.
+    /// Build a `sysinfo` handle configured for the refreshes
+    /// [`collect`](Self::collect) performs; retain one across collects and
+    /// feed it to [`collect_with_system`](Self::collect_with_system) to skip
+    /// the per-call construction and CPU warm-up sleep.
     #[must_use]
-    pub fn collect() -> Self {
-        let mut sys = System::new_with_specifics(
+    pub fn new_system() -> System {
+        System::new_with_specifics(
             RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
                 .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap())
                 .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
-        );
-        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-        sys.refresh_cpu_usage();
-        sys.refresh_processes(ProcessesToUpdate::All, true);
+        )
+    }
 
-        let cpu_usage = Self::read_cpu(&sys);
-        let memory = Self::read_memory(&sys);
+    /// Collect a point-in-time snapshot of OS metrics.
+    ///
+    /// Each metric is collected independently: a failure reading one metric
+    /// results in `None` for that field rather than propagating an error.
+    /// Builds a fresh sysinfo handle and sleeps
+    /// [`sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`] once so the first CPU sample
+    /// is valid; polling callers should retain a handle via
+    /// [`new_system`](Self::new_system) and use
+    /// [`collect_with_system`](Self::collect_with_system) instead.
+    #[must_use]
+    pub fn collect() -> Self {
+        let mut sys = Self::new_system();
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        Self::collect_with_system(&mut sys)
+    }
+
+    /// Collect a snapshot by refreshing a retained sysinfo handle.
+    ///
+    /// Refreshes CPU usage, memory, and processes on `sys`, then reads every
+    /// metric. No sleep is performed: when `sys` was last refreshed at least
+    /// [`sysinfo::MINIMUM_CPU_UPDATE_INTERVAL`] ago (any polling interval
+    /// at or above ~200 ms), the refreshed CPU usage is already valid; a
+    /// handle refreshed more recently yields 0% for this sample.
+    #[must_use]
+    pub fn collect_with_system(sys: &mut System) -> Self {
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        Self::build_from_refreshed(sys)
+    }
+
+    fn build_from_refreshed(sys: &System) -> Self {
+        let cpu_usage = Self::read_cpu(sys);
+        let memory = Self::read_memory(sys);
         let disks = Self::read_disks();
         let disk = Self::find_root_disk(&disks);
         let networks = Networks::new_with_refreshed_list();
@@ -1834,20 +2033,19 @@ impl SystemStatus {
         let uptime_secs = Self::read_uptime();
         let hostname = Self::read_hostname();
         let os_info = Self::read_os_info();
-        let cpu_cores = Self::read_cpu_cores(&sys);
+        let cpu_cores = Self::read_cpu_cores(sys);
         let physical_cores = System::physical_core_count();
-        let swap = Self::read_swap(&sys);
+        let swap = Self::read_swap(sys);
         let network_interfaces = Self::read_network_interfaces(&networks);
-        let sensors = Self::read_sensors();
+        let (sensors, sensor_snapshot) = Self::read_sensors_with_snapshot();
         let boot_time = {
             let bt = System::boot_time();
             if bt > 0 { Some(bt) } else { None }
         };
-        let processes = Self::read_processes_from(&sys);
+        let processes = Self::read_processes_from(sys);
         let gpu = Self::read_gpus();
         let battery = read_battery_os();
-        let static_info = Self::read_static_info(&sys);
-        let sensor_snapshot = Self::read_sensor_snapshot();
+        let static_info = Self::read_static_info(sys);
         let virtualization = Self::read_virtualization();
         let disk_io = Self::read_disk_io();
 
@@ -1972,7 +2170,31 @@ impl SystemStatus {
     }
 
     fn read_os_info() -> OsInfo {
-        build_os_info()
+        static CACHE: std::sync::Mutex<Option<OsInfo>> = std::sync::Mutex::new(None);
+        memoized(&CACHE, build_os_info)
+    }
+
+    #[expect(
+        clippy::option_option,
+        reason = "cache slot must distinguish not-yet-probed from probed-None"
+    )]
+    fn read_kernel_version_cached() -> Option<String> {
+        static CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::Mutex::new(None);
+        memoized(&CACHE, sysinfo::System::kernel_version)
+    }
+
+    fn read_hostname_cached() -> String {
+        static CACHE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+        memoized(&CACHE, || System::host_name().unwrap_or_default())
+    }
+
+    #[expect(
+        clippy::option_option,
+        reason = "cache slot must distinguish not-yet-probed from probed-None"
+    )]
+    fn read_physical_cores_cached() -> Option<usize> {
+        static CACHE: std::sync::Mutex<Option<Option<usize>>> = std::sync::Mutex::new(None);
+        memoized(&CACHE, sysinfo::System::physical_core_count)
     }
 
     fn read_cpu_cores(sys: &System) -> Vec<CpuCore> {
@@ -2101,14 +2323,23 @@ impl SystemStatus {
             .collect()
     }
 
-    fn read_sensors() -> Vec<SensorStatus> {
+    /// Enumerate temperature sensors plus, on Linux, hwmon fans and voltages.
+    ///
+    /// Walks a freshly refreshed sysinfo `Components` list once and appends
+    /// the hwmon fan and voltage probes on Linux; no snapshot is derived, so
+    /// callers needing only the list pay no extra cost. Callers needing both
+    /// the list and the snapshot should use
+    /// [`Self::read_sensors_with_snapshot`] instead of calling this and
+    /// [`Self::read_sensor_snapshot`].
+    #[must_use]
+    pub fn read_sensors() -> Vec<SensorStatus> {
         let components = Components::new_with_refreshed_list();
         #[allow(unused_mut)]
         let mut sensors: Vec<SensorStatus> = components
             .iter()
             .map(|c| SensorStatus {
                 label: c.label().to_string(),
-                temperature: { c.temperature().filter(|t| !t.is_nan()) },
+                temperature: c.temperature().filter(|t| !t.is_nan()),
                 fan_rpm: None,
                 voltage: None,
                 thermal_throttling: None,
@@ -2120,6 +2351,37 @@ impl SystemStatus {
             sensors.extend(read_hwmon_voltages());
         }
         sensors
+    }
+
+    /// Read the sensor list and the aggregated snapshot in one pass.
+    ///
+    /// Both outputs derive from a single refreshed sysinfo `Components` walk
+    /// (the snapshot's readings are the component readings before the hwmon
+    /// fan/voltage probes are appended, matching the historical
+    /// [`Self::read_sensor_snapshot`] contents); callers needing both avoid
+    /// the second enumeration.
+    #[must_use]
+    pub fn read_sensors_with_snapshot() -> (Vec<SensorStatus>, SensorSnapshot) {
+        let components = Components::new_with_refreshed_list();
+        let readings: Vec<SensorStatus> = components
+            .iter()
+            .map(|c| SensorStatus {
+                label: c.label().to_string(),
+                temperature: c.temperature().filter(|t| !t.is_nan()),
+                fan_rpm: None,
+                voltage: None,
+                thermal_throttling: None,
+            })
+            .collect();
+        let snapshot = snapshot_from_readings(readings.clone());
+        #[allow(unused_mut)]
+        let mut sensors = readings;
+        #[cfg(target_os = "linux")]
+        {
+            sensors.extend(read_hwmon_fans());
+            sensors.extend(read_hwmon_voltages());
+        }
+        (sensors, snapshot)
     }
 
     fn read_processes_from(sys: &System) -> ProcessSnapshot {
@@ -2303,41 +2565,59 @@ impl SystemStatus {
         gpus
     }
 
-    fn read_static_info(sys: &System) -> StaticInfo {
-        let cpus = sys.cpus();
-        let brand = cpus
-            .first()
-            .map_or_else(String::new, |c| c.brand().to_string());
-        let vendor = cpus
-            .first()
-            .map_or_else(String::new, |c| c.vendor_id().to_string());
-        let freq = cpus.first().map_or(0, sysinfo::Cpu::frequency);
-        let topology = read_cpu_topology();
-        let hardware = read_hardware_inventory();
-        StaticInfo {
-            os: Self::read_os_info(),
-            kernel_version: sysinfo::System::kernel_version(),
-            hostname: Self::read_hostname(),
-            cpu_brand: brand,
-            cpu_vendor: vendor,
-            cpu_frequency: freq,
-            physical_cores: sysinfo::System::physical_core_count(),
-            logical_cores: cpus.len(),
-            memory_total_bytes: sys.total_memory(),
-            hardware,
-            sockets: topology.sockets,
-            cores_per_socket: topology.cores_per_socket,
-            threads_per_core: topology.threads_per_core,
-            base_frequency: topology.base_frequency,
-            max_frequency: topology.max_frequency,
-            cache_l1d: topology.cache_l1d,
-            cache_l1i: topology.cache_l1i,
-            cache_l2: topology.cache_l2,
-            cache_l3: topology.cache_l3,
-        }
+    /// Read the reboot-invariant host description from `sys`.
+    ///
+    /// CPU brand, vendor, current frequency, logical core count, and total
+    /// memory come live from `sys`'s CPU list; every reboot-invariant probe
+    /// (cpuinfo topology, DMI hardware inventory, os-release, hostname,
+    /// kernel version, physical core count) is memoized for the process
+    /// lifetime, so repeated calls cost one struct build plus mutex-backed
+    /// cache reads. Benchmarks and tests that need the per-call probe cost
+    /// use [`Self::read_static_info_uncached`].
+    #[must_use]
+    pub fn read_static_info(sys: &System) -> StaticInfo {
+        build_static_info(
+            sys,
+            &read_cpu_topology(),
+            read_hardware_inventory(),
+            Self::read_os_info(),
+            Self::read_kernel_version_cached(),
+            Self::read_hostname_cached(),
+            Self::read_physical_cores_cached(),
+        )
     }
 
-    fn read_sensor_snapshot() -> SensorSnapshot {
+    /// Uncached counterpart of [`Self::read_static_info`]: re-probes every
+    /// reboot-invariant source (cpuinfo topology, DMI, os-release, hostname,
+    /// kernel version, physical core count) on each call.
+    ///
+    /// Polling callers pay the full probe cost per call here; this entry
+    /// point exists so benches and tests can measure what
+    /// [`Self::read_static_info`]'s memoization saves.
+    #[must_use]
+    pub fn read_static_info_uncached(sys: &System) -> StaticInfo {
+        build_static_info(
+            sys,
+            &cpu_topology_probe(),
+            hardware_inventory_probe(),
+            build_os_info(),
+            sysinfo::System::kernel_version(),
+            System::host_name().unwrap_or_default(),
+            sysinfo::System::physical_core_count(),
+        )
+    }
+
+    /// Build the aggregated sensor snapshot with CPU and GPU temperature
+    /// highlights.
+    ///
+    /// `cpu_temperature` is the first reading whose label contains "cpu",
+    /// `gpu_temperature` the first whose label contains "gpu" (both
+    /// case-insensitive), and readings without a numeric temperature keep
+    /// `temperature: None`. Walks its own `Components` list; callers needing
+    /// both the sensor list and the snapshot should use
+    /// [`Self::read_sensors_with_snapshot`] to share one walk.
+    #[must_use]
+    pub fn read_sensor_snapshot() -> SensorSnapshot {
         let components = Components::new_with_refreshed_list();
         let readings: Vec<SensorStatus> = components
             .iter()
@@ -2349,25 +2629,7 @@ impl SystemStatus {
                 thermal_throttling: None,
             })
             .collect();
-        let cpu_temperature = readings.iter().find_map(|s| {
-            if s.label.to_lowercase().contains("cpu") {
-                s.temperature
-            } else {
-                None
-            }
-        });
-        let gpu_temperature = readings.iter().find_map(|s| {
-            if s.label.to_lowercase().contains("gpu") {
-                s.temperature
-            } else {
-                None
-            }
-        });
-        SensorSnapshot {
-            readings,
-            cpu_temperature,
-            gpu_temperature,
-        }
+        snapshot_from_readings(readings)
     }
 
     #[cfg(target_os = "linux")]
@@ -2426,35 +2688,10 @@ impl SystemStatus {
 
     #[cfg(target_os = "linux")]
     fn read_disk_io() -> DiskIoSnapshot {
-        use std::fs;
-        let Ok(content) = fs::read_to_string("/proc/diskstats") else {
+        let Ok(content) = std::fs::read_to_string("/proc/diskstats") else {
             return DiskIoSnapshot::default();
         };
-        let mut snap = DiskIoSnapshot::default();
-        for line in content.lines() {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 14 {
-                continue;
-            }
-            let name = fields[2];
-            if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("dm-") {
-                continue;
-            }
-            let sectors_read: u64 = fields[5].parse().unwrap_or(0);
-            let read_time: u64 = fields[6].parse().unwrap_or(0);
-            let reads: u64 = fields[3].parse().unwrap_or(0);
-            let sectors_written: u64 = fields[9].parse().unwrap_or(0);
-            let write_time: u64 = fields[10].parse().unwrap_or(0);
-            let writes: u64 = fields[7].parse().unwrap_or(0);
-            snap.read_bytes = snap.read_bytes.saturating_add(sectors_read * 512);
-            snap.written_bytes = snap.written_bytes.saturating_add(sectors_written * 512);
-            snap.read_ops = snap.read_ops.saturating_add(reads);
-            snap.write_ops = snap.write_ops.saturating_add(writes);
-            snap.busy_time_ms = snap
-                .busy_time_ms
-                .saturating_add(read_time.saturating_add(write_time));
-        }
-        snap
+        parse_diskstats(&content, Path::new("/sys/block"))
     }
 
     #[cfg(target_os = "macos")]
@@ -3099,62 +3336,13 @@ impl SystemStatus {
     }
 }
 
-const KB: u64 = 1024;
-const MB: u64 = KB * 1024;
-const GB: u64 = MB * 1024;
-const TB: u64 = GB * 1024;
-const PB: u64 = TB * 1024;
-const EB: u64 = PB * 1024;
-
 #[allow(clippy::cast_precision_loss)]
 fn write_bytes(f: &mut fmt::Formatter<'_>, bytes: u64) -> fmt::Result {
-    if bytes >= EB {
-        write!(f, "{:.1} EiB", bytes as f64 / EB as f64)
-    } else if bytes >= PB {
-        write!(f, "{:.1} PiB", bytes as f64 / PB as f64)
-    } else if bytes >= TB {
-        write!(f, "{:.1} TiB", bytes as f64 / TB as f64)
-    } else if bytes >= GB {
-        write!(f, "{:.1} GiB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        write!(f, "{:.1} MiB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        write!(f, "{:.1} KiB", bytes as f64 / KB as f64)
-    } else {
-        write!(f, "{bytes} B")
-    }
+    crate::units::write_bytes(f, bytes)
 }
 
-#[allow(clippy::useless_let_if_seq)]
 fn write_duration(f: &mut fmt::Formatter<'_>, secs: u64) -> fmt::Result {
-    let days = secs / 86400;
-    let hours = (secs % 86400) / 3600;
-    let minutes = (secs % 3600) / 60;
-    let seconds = secs % 60;
-
-    let mut first = true;
-    if days > 0 {
-        write!(f, "{days}d")?;
-        first = false;
-    }
-    if hours > 0 || !first {
-        if !first {
-            write!(f, " ")?;
-        }
-        write!(f, "{hours}h")?;
-        first = false;
-    }
-    if minutes > 0 || !first {
-        if !first {
-            write!(f, " ")?;
-        }
-        write!(f, "{minutes}m")?;
-        first = false;
-    }
-    if !first {
-        write!(f, " ")?;
-    }
-    write!(f, "{seconds}s")
+    crate::units::write_duration(f, secs)
 }
 
 #[cfg(test)]
@@ -3182,6 +3370,12 @@ fn format_duration(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    const TB: u64 = GB * 1024;
+    const PB: u64 = TB * 1024;
+    const EB: u64 = PB * 1024;
 
     #[test]
     fn collect_returns_valid_cpu_usage() {
@@ -3189,7 +3383,7 @@ mod tests {
         if let Some(cpu) = status.cpu_usage {
             assert!(
                 (0.0..=100.0).contains(&cpu),
-                "CPU usage {cpu}% out of range 0–100"
+                "CPU usage {cpu}% out of range 0-100"
             );
         }
     }
@@ -3323,12 +3517,12 @@ mod tests {
 
     #[test]
     fn format_bytes_one_gib() {
-        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0 GiB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.00 GiB");
     }
 
     #[test]
     fn format_bytes_one_tib() {
-        assert_eq!(format_bytes(1024_u64 * 1024 * 1024 * 1024), "1.0 TiB");
+        assert_eq!(format_bytes(1024_u64 * 1024 * 1024 * 1024), "1.00 TiB");
     }
 
     #[test]
@@ -4060,7 +4254,7 @@ mod tests {
 
     #[test]
     fn format_bytes_pib_boundary() {
-        assert_eq!(format_bytes(PB), "1.0 PiB");
+        assert_eq!(format_bytes(PB), "1.00 PiB");
     }
 
     #[test]
@@ -4084,22 +4278,22 @@ mod tests {
 
     #[test]
     fn format_bytes_exact_gib() {
-        assert_eq!(format_bytes(GB), "1.0 GiB");
+        assert_eq!(format_bytes(GB), "1.00 GiB");
     }
 
     #[test]
     fn format_bytes_exact_tib() {
-        assert_eq!(format_bytes(TB), "1.0 TiB");
+        assert_eq!(format_bytes(TB), "1.00 TiB");
     }
 
     #[test]
     fn format_bytes_exact_pib() {
-        assert_eq!(format_bytes(PB), "1.0 PiB");
+        assert_eq!(format_bytes(PB), "1.00 PiB");
     }
 
     #[test]
     fn format_bytes_exact_eib() {
-        assert_eq!(format_bytes(EB), "1.0 EiB");
+        assert_eq!(format_bytes(EB), "1.00 EiB");
     }
 
     #[test]
@@ -4748,7 +4942,7 @@ mod tests {
             "should contain GPU name"
         );
         assert!(output.contains("NVIDIA"), "should contain GPU vendor");
-        assert!(output.contains("24.0 GiB"), "should contain VRAM");
+        assert!(output.contains("24.00 GiB"), "should contain VRAM");
     }
 
     #[test]
@@ -5326,7 +5520,7 @@ mod tests {
         if let Some(cpu) = status.cpu_usage {
             assert!(
                 (0.0..=100.0).contains(&cpu),
-                "CPU usage {cpu}% out of range 0–100"
+                "CPU usage {cpu}% out of range 0-100"
             );
         }
     }
@@ -6323,7 +6517,7 @@ mod tests {
             assert_eq!(
                 SLOW_READS_UNDER_LOCK.with(std::cell::Cell::get),
                 0,
-                "no /proc read observed the cache mutex held — the lock is \
+                "no /proc read observed the cache mutex held; the lock is \
              never held across the reads"
             );
         });
@@ -6429,5 +6623,134 @@ mod tests {
         fn drop(&mut self) {
             SLOW_TTL_TEST_OFFSET_MS.with(|o| o.set(0));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn hwmon_fixture(root: &std::path::Path) {
+        let chip = root.join("hwmon0");
+        std::fs::create_dir_all(&chip).expect("chip dir");
+        std::fs::write(chip.join("name"), "nct6775\n").expect("chip name");
+        std::fs::write(chip.join("fan2_input"), "1200\n").expect("fan2");
+        std::fs::write(chip.join("fan10_input"), "1750\n").expect("fan10");
+        std::fs::write(chip.join("in0_input"), "11840\n").expect("in0");
+        std::fs::write(chip.join("input"), "unrelated\n").expect("unrelated file");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hwmon_reads_discover_numbered_inputs_via_read_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        hwmon_fixture(dir.path());
+        let fans = read_hwmon_fans_at(dir.path());
+        assert_eq!(fans.len(), 2, "fan2 and fan10 only, in index order");
+        assert_eq!(fans[0].label, "nct6775 Fan 2");
+        assert_eq!(fans[0].fan_rpm, Some(1200));
+        assert_eq!(fans[1].label, "nct6775 Fan 10");
+        let voltages = read_hwmon_voltages_at(dir.path());
+        assert_eq!(voltages.len(), 1);
+        assert_eq!(voltages[0].label, "nct6775 Voltage 0");
+        assert!((voltages[0].voltage.unwrap_or(0.0) - 11.84).abs() < 0.01);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn diskstats_fixture() -> String {
+        let mut lines = Vec::new();
+        let mut push = |name: &str,
+                        reads: u64,
+                        sectors_read: u64,
+                        read_ms: u64,
+                        writes: u64,
+                        sectors_written: u64,
+                        write_ms: u64| {
+            lines.push(format!(
+                "  8  0 {name} {reads} 0 {sectors_read} {read_ms} {writes} 0 {sectors_written} \
+                 {write_ms} 0 0 0 0 0"
+            ));
+        };
+        push("vda", 100, 200, 30, 50, 400, 70);
+        push("vda3", 90, 180, 25, 45, 380, 60);
+        push("nvme0n1", 10, 20, 5, 5, 40, 8);
+        push("nvme0n1p2", 9, 18, 4, 4, 36, 7);
+        push("loop0", 1, 2, 1, 1, 2, 1);
+        push("dm-0", 1, 2, 1, 1, 2, 1);
+        lines.join("\n")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parse_diskstats_counts_base_devices_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sys_block = dir.path();
+        for base in ["vda", "nvme0n1"] {
+            std::fs::create_dir(sys_block.join(base)).expect("base device dir");
+        }
+        let snap = parse_diskstats(&diskstats_fixture(), sys_block);
+        assert_eq!(snap.read_bytes, (200 + 20) * 512);
+        assert_eq!(snap.written_bytes, (400 + 40) * 512);
+        assert_eq!(snap.read_ops, 110);
+        assert_eq!(snap.write_ops, 55);
+        assert_eq!(snap.busy_time_ms, 30 + 70 + 5 + 8);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn disk_base_device_strips_partition_suffixes_by_sys_block_lookup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sys_block = dir.path();
+        for base in ["sda", "mmcblk0", "md0", "nvme0n1"] {
+            std::fs::create_dir(sys_block.join(base)).expect("base device dir");
+        }
+        assert_eq!(disk_base_device_at("sda1", sys_block), "sda");
+        assert_eq!(disk_base_device_at("mmcblk0p1", sys_block), "mmcblk0");
+        assert_eq!(disk_base_device_at("md0", sys_block), "md0");
+        assert_eq!(disk_base_device_at("nvme0n1p2", sys_block), "nvme0n1");
+        assert_eq!(disk_base_device_at("sda", sys_block), "sda");
+        assert_eq!(
+            disk_base_device_at("nosuchdev3", sys_block),
+            "nosuchdev",
+            "unknown names keep the legacy digit-stripped form"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gateway_from_route_content_decodes_little_endian_hex() {
+        let content = "Iface\tDestination\tGateway\tFlags\n\
+                       eth0\t00000000\t0100A8C0\t0003\n\
+                       eth0\t00000000\t00000000\t0001\n";
+        assert_eq!(
+            gateway_from_route_content(content),
+            Some("192.168.0.1".to_string())
+        );
+        assert_eq!(gateway_from_route_content("Iface only header\n"), None);
+    }
+
+    #[test]
+    fn read_static_info_cached_and_uncached_agree_on_static_parts() {
+        let sys = System::new();
+        let cached = SystemStatus::read_static_info(&sys);
+        let uncached = SystemStatus::read_static_info_uncached(&sys);
+        assert_eq!(cached.hostname, uncached.hostname);
+        assert_eq!(cached.kernel_version, uncached.kernel_version);
+        assert_eq!(cached.physical_cores, uncached.physical_cores);
+        assert_eq!(cached.os.name, uncached.os.name);
+        assert_eq!(cached.os.version, uncached.os.version);
+        assert_eq!(cached.cpu_brand, uncached.cpu_brand);
+        assert_eq!(cached.hardware.manufacturer, uncached.hardware.manufacturer);
+        assert_eq!(cached.sockets, uncached.sockets);
+        assert_eq!(cached.cores_per_socket, uncached.cores_per_socket);
+        assert_eq!(cached.cache_l3, uncached.cache_l3);
+    }
+
+    #[test]
+    fn read_static_info_repeated_cached_calls_are_stable() {
+        let sys = System::new();
+        let first = SystemStatus::read_static_info(&sys);
+        let second = SystemStatus::read_static_info(&sys);
+        assert_eq!(first.hostname, second.hostname);
+        assert_eq!(first.kernel_version, second.kernel_version);
+        assert_eq!(first.physical_cores, second.physical_cores);
+        assert_eq!(first.os.name, second.os.name);
+        assert_eq!(first.hardware.manufacturer, second.hardware.manufacturer);
     }
 }

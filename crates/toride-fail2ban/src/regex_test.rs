@@ -24,6 +24,7 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use regex::Regex;
 
@@ -31,9 +32,15 @@ use crate::Result;
 use crate::command::{CommandOutput, Runner};
 use crate::report::RegexTestResult;
 
-// ---------------------------------------------------------------------------
-// RegexTester
-// ---------------------------------------------------------------------------
+static MATCH_STATS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)Lines:\s*(\d+)\s+lines,(?:\s*(\d+)\s+ignored,)?\s*(\d+)\s+matched")
+        .expect("hardcoded regex should always compile")
+});
+
+static IGNORED_STATS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)Lines:\s*\d+\s+lines,\s*(\d+)\s+ignored")
+        .expect("hardcoded regex should always compile")
+});
 
 /// Typed wrapper around the `fail2ban-regex` command.
 ///
@@ -72,10 +79,6 @@ impl<'a> RegexTester<'a> {
     pub fn binary_path(&self) -> &Path {
         &self.binary
     }
-
-    // -----------------------------------------------------------------------
-    // Public API
-    // -----------------------------------------------------------------------
 
     /// Test a single log line against a raw failregex pattern.
     ///
@@ -123,20 +126,41 @@ impl<'a> RegexTester<'a> {
 
     /// Test whether a log line is caught by an ignore-regex pattern.
     ///
-    /// Runs `fail2ban-regex --ignoreregex '{regex}' '{log_line}'` and returns
-    /// whether the line was ignored.
+    /// Runs `fail2ban-regex '{log_line}' '{failregex}' '{ignoreregex}'`:
+    /// ignoreregex is the third positional argument (fail2ban-regex has no
+    /// `--ignoreregex` option; verified against fail2ban-regex 1.1.0).
     ///
     /// # Arguments
     ///
-    /// * `regex` - A Fail2Ban ignoreregex pattern.
+    /// * `failregex` - A Fail2Ban failregex pattern.
+    /// * `ignoreregex` - A Fail2Ban ignoreregex pattern. Fail2Ban compiles it
+    ///   with the same `<HOST>` tag requirement as a failregex, so a pattern
+    ///   without `<HOST>` never matches.
     /// * `log_line` - A single line of log text to test.
     ///
     /// # Returns
     ///
     /// A [`RegexTestResult`] where `lines_matched > 0` indicates the line was
-    /// matched (and therefore would be **ignored** by Fail2Ban).
-    pub fn test_ignoreregex(&self, regex: &str, log_line: &str) -> Result<RegexTestResult> {
-        self.run_regex(&["--ignoreregex", regex, log_line])
+    /// ignored (and therefore would be **skipped** by Fail2Ban); the ignored
+    /// count is reported through `lines_matched`.
+    pub fn test_ignoreregex(
+        &self,
+        failregex: &str,
+        ignoreregex: &str,
+        log_line: &str,
+    ) -> Result<RegexTestResult> {
+        let result = self.run_regex(&[log_line, failregex, ignoreregex])?;
+        let ignored = parse_ignored_count(&result.output).unwrap_or(0);
+        if ignored > 0 {
+            let processed = result.lines_processed.max(ignored);
+            return Ok(RegexTestResult::new(
+                ignored,
+                processed,
+                result.output,
+                result.success,
+            ));
+        }
+        Ok(result)
     }
 
     /// Test a datepattern against a log line with a failregex.
@@ -177,10 +201,6 @@ impl<'a> RegexTester<'a> {
         self.run_regex(&["-l", &maxlines.to_string(), log_line, regex])
     }
 
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
-
     /// Execute `fail2ban-regex` with the given arguments and parse output.
     ///
     /// The output of `fail2ban-regex` is best-effort parsed for match
@@ -219,10 +239,6 @@ impl<'a> RegexTester<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Output parsing
-// ---------------------------------------------------------------------------
-
 /// Combine stdout and stderr into a single string for parsing.
 ///
 /// `fail2ban-regex` may write useful information to either stream depending
@@ -248,16 +264,11 @@ fn combine_output(output: &CommandOutput) -> String {
 /// Falls back to counting "Found a match" / "Sorry, no match" lines when the
 /// summary line is not present. Returns `(0, 0)` when nothing is recognised.
 fn parse_match_stats(text: &str) -> (usize, usize) {
-    // Primary pattern: "Lines: X lines, Y matched, Z missed [...]"
-    // Use a regex to capture total and matched directly from the summary line.
-    let re = Regex::new(r"(?i)Lines:\s*(\d+)\s+lines,\s*(\d+)\s+matched")
-        .expect("hardcoded regex should always compile");
-
     for line in text.lines() {
         let trimmed = line.trim();
-        if let Some(caps) = re.captures(trimmed) {
+        if let Some(caps) = MATCH_STATS_RE.captures(trimmed) {
             let total: usize = caps[1].parse().unwrap_or(0);
-            let matched: usize = caps[2].parse().unwrap_or(0);
+            let matched: usize = caps[3].parse().unwrap_or(0);
             return (matched, total);
         }
     }
@@ -272,6 +283,16 @@ fn parse_match_stats(text: &str) -> (usize, usize) {
     let lines_processed = count_processed(text).unwrap_or(lines_matched);
 
     (lines_matched, lines_processed)
+}
+
+/// Extracts the ignored-line count from a `Lines: N lines, M ignored, ...`
+/// summary, used by [`RegexTester::test_ignoreregex`].
+fn parse_ignored_count(text: &str) -> Option<usize> {
+    text.lines().find_map(|line| {
+        IGNORED_STATS_RE
+            .captures(line.trim())
+            .and_then(|caps| caps[1].parse().ok())
+    })
 }
 
 /// Count occurrences of "Found a match" indicators in the output.

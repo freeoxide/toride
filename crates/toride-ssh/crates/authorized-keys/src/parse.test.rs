@@ -61,10 +61,6 @@ async fn parse_authorized_keys_should_skip_comments_and_blank_lines() {
     assert!(entries.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case tests for find_key_type_offset
-// ---------------------------------------------------------------------------
-
 #[test]
 fn find_key_type_offset_empty_string() {
     assert_eq!(find_key_type_offset(""), None);
@@ -101,10 +97,6 @@ fn find_key_type_offset_dss() {
     assert_eq!(find_key_type_offset("ssh-dss AAAA..."), Some(0));
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case tests for starts_with_key_type
-// ---------------------------------------------------------------------------
-
 #[test]
 fn starts_with_key_type_all_prefixes() {
     for prefix in KEY_TYPE_PREFIXES {
@@ -130,10 +122,6 @@ fn starts_with_key_type_empty() {
 fn starts_with_key_type_partial_match() {
     assert!(!starts_with_key_type("ssh-ed2 AAAA"));
 }
-
-// ---------------------------------------------------------------------------
-// Weird edge-case tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn find_key_type_offset_with_nested_quotes() {
@@ -183,7 +171,7 @@ fn starts_with_key_type_with_comment() {
 
 #[test]
 fn starts_with_key_type_with_tab() {
-    // Key type followed by tab instead of space — the parser requires a space, not tab
+    // Key type followed by tab instead of space, the parser requires a space, not tab
     assert!(!starts_with_key_type("ssh-ed25519\tAAAA"));
 }
 
@@ -211,9 +199,6 @@ fn find_key_type_offset_with_escaped_quote_at_boundary() {
     assert!(&line[offset..].starts_with("ssh-ed25519"));
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case tests: keys with complex options (full parse_line)
-// ---------------------------------------------------------------------------
 // These tests use a valid ed25519 public key so ssh_key validation passes.
 
 const VALID_ED25519: &str =
@@ -307,10 +292,6 @@ fn parse_line_no_options() {
     assert_eq!(entry.comment.as_deref(), Some("simple@host"));
 }
 
-// ---------------------------------------------------------------------------
-// Integration: parse_authorized_keys with complex entries
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn parse_authorized_keys_with_complex_options() {
     let dir = tempfile::tempdir().unwrap();
@@ -355,4 +336,33 @@ async fn parse_authorized_keys_with_complex_options() {
     // principals stores the raw value as a single entry (not comma-split).
     assert_eq!(opts.principals, vec!["admin,ops"]);
     assert_eq!(ca.line_number, 8);
+}
+
+const CERT_LINE: &str = "ssh-ed25519-cert-v01@openssh.com AAAAIHNzaC1lZDI1NTE5LWNlcnQtdjAxQG9wZW5zc2guY29tAAAAIBj1BZhaE2CTOJT5BUiP3w+DYhHbYcKzFAbritvIfdo4AAAAIDxpDjaElq5SGE3NVLdiVQ7UHXyxApiU7f2c930fzfndAAAAAAAAAAAAAAABAAAACmJlbmNoLWNlcnQAAAAKAAAABmRlcGxveQAAAABeC9LwAAAAAPKlFXAAAAAAAAAAggAAABVwZXJtaXQtWDExLWZvcndhcmRpbmcAAAAAAAAAF3Blcm1pdC1hZ2VudC1mb3J3YXJkaW5nAAAAAAAAABZwZXJtaXQtcG9ydC1mb3J3YXJkaW5nAAAAAAAAAApwZXJtaXQtcHR5AAAAAAAAAA5wZXJtaXQtdXNlci1yYwAAAAAAAAAAAAAAMwAAAAtzc2gtZWQyNTUxOQAAACDqkIjoiwxDCgTFy20ty4iyj4DdcMkkl2a5QostYPS1sQAAAFMAAAALc3NoLWVkMjU1MTkAAABAnf5Z9Sq5tE20PInsLCIFlDAXDVZwagEvfg+MoEjFJmOXPV8SFSkzmt7tzTYOAeAkavH5vUWNmYDz+TtzT+bxAg== deploy@example";
+
+#[test]
+fn parse_line_accepts_certificate_entry() {
+    let entry = parse_line(CERT_LINE, 1, CERT_LINE).unwrap();
+    assert_eq!(entry.key_type, "ssh-ed25519-cert-v01@openssh.com");
+    assert_eq!(entry.comment.as_deref(), Some("deploy@example"));
+    assert_eq!(
+        entry.fingerprint(),
+        "SHA256:waBquWFCn1ftBqZjG/8isrQB71UZVR6PsbV9lg3rn10",
+        "fingerprint must match `ssh-keygen -lf` on the same cert"
+    );
+}
+
+#[test]
+fn parse_authorized_keys_accepts_file_with_certificate_line() {
+    let contents = format!(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl plain@example\n{CERT_LINE}\n"
+    );
+
+    let entries = parse_authorized_keys_sync(&contents).unwrap();
+    assert_eq!(
+        entries.len(),
+        2,
+        "a certificate line must not fail the file"
+    );
+    assert_eq!(entries[1].key_type, "ssh-ed25519-cert-v01@openssh.com");
 }

@@ -1,7 +1,7 @@
 //! Convert `toride-proxy` library types to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that imports `toride_proxy`
-//! types — mirroring `fail2ban_convert.rs`'s role as the single boundary
+//! types: mirroring `fail2ban_convert.rs`'s role as the single boundary
 //! between backend and presentation. Each function handles errors gracefully:
 //! malformed input is skipped with a `tracing::warn!` and a placeholder, never
 //! propagated (the read-only section must never crash the TUI).
@@ -21,7 +21,7 @@ use crate::ui::screens::toride_proxy::{CertEntry, FindingEntry, ServerBlockEntry
 ///
 /// The proxy doctor has no explicit `Ok` severity (it uses `Info` for healthy
 /// checks), so `Ok` is mapped to `"ok"` defensively but is not expected in
-/// practice — every emitted finding already maps through this function.
+/// practice: every emitted finding already maps through this function.
 fn severity_str(s: toride_proxy::doctor::DoctorSeverity) -> &'static str {
     use toride_proxy::doctor::DoctorSeverity;
     match s {

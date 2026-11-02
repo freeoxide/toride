@@ -83,12 +83,10 @@ impl HardenSpec {
     pub fn all_parameters(&self) -> Vec<SysctlParam> {
         let mut params: Vec<SysctlParam> = Vec::new();
 
-        // Profile parameters act as defaults.
         if let Some(profile) = self.profile {
             params.extend(profile.params());
         }
 
-        // Explicit parameters override profile defaults for the same key.
         params.extend(self.parameters.iter().cloned());
 
         dedup_by_key_last_wins(&mut params);
@@ -101,7 +99,6 @@ impl HardenSpec {
 /// Profile parameters are appended before explicit parameters, so explicit
 /// entries (which appear later) override profile defaults for the same key.
 fn dedup_by_key_last_wins(params: &mut Vec<SysctlParam>) {
-    // Walk back-to-front, recording the first (i.e. last) index seen per key.
     let mut keep = Vec::with_capacity(params.len());
     let mut seen = std::collections::HashSet::new();
     for (i, p) in params.iter().enumerate().rev() {
@@ -109,7 +106,7 @@ fn dedup_by_key_last_wins(params: &mut Vec<SysctlParam>) {
             keep.push(i);
         }
     }
-    keep.reverse(); // restore original order
+    keep.reverse();
     let next: Vec<SysctlParam> = keep.into_iter().map(|i| params[i].clone()).collect();
     *params = next;
 }
@@ -168,7 +165,6 @@ mod tests {
 
     #[test]
     fn all_parameters_expands_profile_only_spec() {
-        // A profile-only spec used to silently yield zero parameters.
         let spec = HardenSpec::builder()
             .profile(HardeningProfile::Server)
             .build();
@@ -178,7 +174,6 @@ mod tests {
             !params.is_empty(),
             "profile-only spec must expand the profile's parameter set"
         );
-        // Server profile hardens kptr_restrict.
         assert!(params.iter().any(|p| p.key == "kernel.kptr_restrict"));
     }
 
@@ -190,15 +185,12 @@ mod tests {
             .build();
 
         let params = spec.all_parameters();
-        // Profile params present.
         assert!(params.iter().any(|p| p.key == "kernel.kptr_restrict"));
-        // Explicit param present.
         assert!(params.iter().any(|p| p.key == "kernel.custom_key"));
     }
 
     #[test]
     fn all_parameters_explicit_overrides_profile_for_same_key() {
-        // Desktop sets kernel.yama.ptrace_scope = 1; explicit param sets 3.
         let spec = HardenSpec::builder()
             .profile(HardeningProfile::Desktop)
             .param(SysctlParam::new(
@@ -213,9 +205,7 @@ mod tests {
             .iter()
             .filter(|p| p.key == "kernel.yama.ptrace_scope")
             .collect::<Vec<_>>();
-        // No duplicate after dedup.
         assert_eq!(ptrace.len(), 1);
-        // Explicit value wins.
         assert_eq!(ptrace[0].value, "3");
     }
 

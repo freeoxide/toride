@@ -7,13 +7,13 @@
 //! analogue) [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector).
 //!
 //! This is the TEMPLATE read-only integration. It mirrors `Fail2banCollector`
-//! MINUS the entire write path — there are no operations, no optimistic
+//! MINUS the entire write path: there are no operations, no optimistic
 //! updates, no cooldown gate, and no loading spinner. Every call to the
 //! backend is a pure read.
 //!
 //! Doctor findings are expensive (they shell out to `aws` / `gcloud` / `doctl`
 //! / `hcloud`, consult `which::which`, …) and change slowly, so they are
-//! cached for 60s — exactly like the fail2ban findings cache.
+//! cached for 60s: exactly like the fail2ban findings cache.
 //!
 //! ## macOS / detection
 //!
@@ -28,8 +28,8 @@
 //! ## Blocking
 //!
 //! The `DuctRunner` shells out synchronously and `which::which` is blocking.
-//! ALL backend work — `CloudClient::detect`, `list_security_groups`,
-//! `report`, `Doctor::run`, `ServiceManager` probes — runs inside a single
+//! ALL backend work: `CloudClient::detect`, `list_security_groups`,
+//! `report`, `Doctor::run`, `ServiceManager` probes: runs inside a single
 //! [`tokio::task::spawn_blocking`] block inside the spawned task, exactly like
 //! `collect_real_fail2ban`.
 
@@ -42,7 +42,7 @@ use crate::ui::screens::toride_cloud::{CloudFindingEntry, ProviderInfo, Security
 #[derive(Clone, Debug)]
 pub struct CloudDataBundle {
     /// Whether the cloud backend was reachable at all. `false` is reserved for
-    /// the panic case (a `spawn_blocking` `JoinError`) — a missing provider or
+    /// the panic case (a `spawn_blocking` `JoinError`): a missing provider or
     /// CLI surfaces as doctor findings and keeps `available == true` so the
     /// operator SEES the findings rather than a blank panel.
     pub available: bool,
@@ -60,7 +60,7 @@ pub struct CloudDataBundle {
     pub findings: Vec<CloudFindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
     /// `available == false` because a collection task panicked (`JoinError`).
-    /// `None` otherwise — notably also `None` for a freshly-constructed empty
+    /// `None` otherwise: notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
     pub unavailable_reason: Option<String>,
@@ -79,11 +79,13 @@ pub struct CloudCollector {
     /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
     /// would reset the TTL clock with the SAME (already-cached) findings and
     /// the cache would never expire for the lifetime of the app.
-    rx: Option<oneshot::Receiver<(CloudDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<CloudDataBundle>, bool)>>,
     /// Cached doctor findings from the last collection.
     cached_findings: Option<Vec<CloudFindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
+    cached_bundle: Option<std::sync::Arc<CloudDataBundle>>,
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
@@ -97,6 +99,8 @@ impl CloudCollector {
             rx: None,
             cached_findings: None,
             findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -115,6 +119,16 @@ impl CloudCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
+        if let (Some(bundle), Some(at)) = (&self.cached_bundle, self.bundle_fresh_at)
+            && at.elapsed() < FINDINGS_TTL
+        {
+            self.rx = Some(rx);
+            let bundle = std::sync::Arc::clone(bundle);
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
@@ -123,32 +137,27 @@ impl CloudCollector {
         self.rx = Some(rx);
         tokio::spawn(async move {
             let (bundle, reused_cache) = collect_real_cloud(use_cache, cached_findings).await;
-            let _ = tx.send((bundle, reused_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache));
         });
     }
 
     /// Poll for a completed collection result.
     ///
     /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed. On success the cached findings are
-    /// updated to the freshly-returned findings, but the freshness timestamp is
-    /// only advanced when the doctor was actually re-run (not on a cache-hit
-    /// poll) — otherwise the 60s TTL would be re-armed forever with the same
-    /// cached data on every 2s refresh.
-    pub async fn poll(&mut self) -> Option<CloudDataBundle> {
+    /// pending or if the collection failed. On a fresh run the cached findings
+    /// and bundle are stored and the freshness timestamps advance; a cache-hit
+    /// poll re-ships the cached `Arc` by refcount and touches nothing.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<CloudDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
+                if let Some((ref bundle, used_cache)) = result
+                    && !used_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    // Only advance the freshness clock when the doctor was
-                    // actually re-run. On a cache-hit poll the findings are the
-                    // SAME data we already cached, so resetting the TTL here
-                    // would let the cache live forever as long as the 2s refresh
-                    // tick keeps firing inside the TTL window.
-                    if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)
@@ -158,10 +167,11 @@ impl CloudCollector {
     }
 
     /// Invalidate the findings cache so the next collection re-runs the doctor.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -175,9 +185,9 @@ impl Default for CloudCollector {
 
 /// Collect cloud-provider data by running the real backend.
 ///
-/// ALL work — `CloudClient::detect` (env vars + DMI file reads),
+/// ALL work: `CloudClient::detect` (env vars + DMI file reads),
 /// `list_security_groups` (provider CLI shells out), `report`, `Doctor::run`,
-/// `ServiceManager` probes — runs inside a single `spawn_blocking` block that
+/// `ServiceManager` probes: runs inside a single `spawn_blocking` block that
 /// owns the constructed client, so no synchronous work ever stalls the tokio
 /// worker. Doctor findings may be reused from the cache. On ANY panic
 /// (`JoinError`) returns [`empty_bundle_with_reason`] with `available = false`.
@@ -262,7 +272,7 @@ async fn collect_real_cloud(
         // ── Availability heuristic ────────────────────────────────────────
         // The section is "available" whenever collection did not panic. A host
         // with no cloud VM resolves to provider == Unknown and produces a
-        // `provider.unknown` Warning finding — that STILL counts as available
+        // `provider.unknown` Warning finding: that STILL counts as available
         // so the operator SEES the finding rather than a blank panel. (A
         // missing CLI similarly surfaces as a Warning finding.) Only a panic
         // (handled by the JoinError branch below) flips available to false.
@@ -313,7 +323,7 @@ fn empty_bundle() -> CloudDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`): the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> CloudDataBundle {
     let mut b = empty_bundle();

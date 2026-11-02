@@ -284,14 +284,14 @@ fn test_filter_file_no_matches() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_ignoreregex_matched_line_would_be_ignored() {
-    // "Lines: 1 lines, 1 matched, 0 missed" -> matched = 1, total = 1.
+fn test_ignoreregex_ignored_line_reports_ignored_count() {
+    // "Lines: 1 lines, 1 ignored, 0 matched, 0 missed" -> ignored = 1.
     let mut fake = FakeRunner::new();
     fake.with_response(
         FAKE_BINARY,
-        &["--ignoreregex", r"^trusted", "trusted host allowed"],
+        &["trusted host allowed", r"^trusted <ip>$", "healthcheck"],
         CommandOutput {
-            stdout: "Lines: 1 lines, 1 matched, 0 missed\n".to_string(),
+            stdout: "Lines: 1 lines, 1 ignored, 0 matched, 0 missed\n".to_string(),
             stderr: String::new(),
             exit_code: Some(0),
             success: true,
@@ -300,23 +300,23 @@ fn test_ignoreregex_matched_line_would_be_ignored() {
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
     let result = tester
-        .test_ignoreregex(r"^trusted", "trusted host allowed")
+        .test_ignoreregex(r"^trusted <ip>$", r"healthcheck", "trusted host allowed")
         .unwrap();
 
-    assert_eq!(result.lines_matched, 1);
+    assert_eq!(result.lines_matched, 1, "ignored count surfaces as matched");
     assert_eq!(result.lines_processed, 1);
     assert!(result.success);
 }
 
 #[test]
 fn test_ignoreregex_no_match_line_not_ignored() {
-    // "Lines: 1 lines, 0 matched, 1 missed" -> matched = 0, total = 1.
+    // "Lines: 1 lines, 0 ignored, 0 matched, 1 missed" -> nothing ignored.
     let mut fake = FakeRunner::new();
     fake.with_response(
         FAKE_BINARY,
-        &["--ignoreregex", r"^trusted", "untrusted attacker"],
+        &["untrusted attacker", r"attack from <ip>$", r"^trusted"],
         CommandOutput {
-            stdout: "Lines: 1 lines, 0 matched, 1 missed\n".to_string(),
+            stdout: "Lines: 1 lines, 0 ignored, 0 matched, 1 missed\n".to_string(),
             stderr: String::new(),
             exit_code: Some(0),
             success: true,
@@ -325,7 +325,7 @@ fn test_ignoreregex_no_match_line_not_ignored() {
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
     let result = tester
-        .test_ignoreregex(r"^trusted", "untrusted attacker")
+        .test_ignoreregex(r"attack from <ip>$", r"^trusted", "untrusted attacker")
         .unwrap();
 
     assert_eq!(result.lines_matched, 0);
@@ -337,7 +337,7 @@ fn test_ignoreregex_sorry_no_match() {
     let mut fake = FakeRunner::new();
     fake.with_response(
         FAKE_BINARY,
-        &["--ignoreregex", r"^whitelisted", "normal log entry"],
+        &["normal log entry", r"attack from <ip>$", r"^whitelisted"],
         CommandOutput {
             stdout: "Sorry, no match\n".to_string(),
             stderr: String::new(),
@@ -348,7 +348,7 @@ fn test_ignoreregex_sorry_no_match() {
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
     let result = tester
-        .test_ignoreregex(r"^whitelisted", "normal log entry")
+        .test_ignoreregex(r"attack from <ip>$", r"^whitelisted", "normal log entry")
         .unwrap();
 
     assert_eq!(result.lines_matched, 0);
@@ -499,20 +499,20 @@ fn test_line_records_call_on_fake_runner() {
 }
 
 #[test]
-fn test_ignoreregex_records_flag_in_args() {
+fn test_ignoreregex_records_positional_args() {
     let fake = FakeRunner::new();
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
     let _ = tester
-        .test_ignoreregex(r"^whitelist", "trusted line")
+        .test_ignoreregex(r"attack from <ip>$", r"^whitelist", "trusted line")
         .unwrap();
 
     let calls = fake.calls();
     assert_eq!(calls.len(), 1);
-    // test_ignoreregex passes ["--ignoreregex", regex, log_line]
+    // ignoreregex is the third positional argument; there is no --ignoreregex option
     assert_eq!(
         calls[0].1,
-        vec!["--ignoreregex", "^whitelist", "trusted line"]
+        vec!["trusted line", "attack from <ip>$", "^whitelist"]
     );
 }
 

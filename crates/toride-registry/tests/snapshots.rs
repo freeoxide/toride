@@ -4,11 +4,11 @@
 //! cross-cutting drift (field drops, dedup regressions, platform/artifact
 //! tuple changes) surfaces as a reviewable snapshot diff. The deduped
 //! tuples DESIGN.md §9 pins (brave: 2 platforms / 2 artifacts; vscode:
-//! 2 platforms / 4 artifacts — default + collapsed Intel + `big_sur` +
+//! 2 platforms / 4 artifacts: default + collapsed Intel + `big_sur` +
 //! `arm64_big_sur`) are visible in the `homebrew__cask_*` snapshots.
 //!
 //! Fixtures are loaded at runtime via the `env!("CARGO_MANIFEST_DIR")`
-//! anchor (conventions.md §7 — never `include_str!`). The
+//! anchor (conventions.md §7: never `include_str!`). The
 //! `appstream/fedora-43-os-metainfo.xml` fixture is reference-only wave-2
 //! material (appstream.rs module docs) with no parser, so it has no
 //! snapshot. Snapshot payloads are `serde_json::to_string_pretty` of the
@@ -39,7 +39,7 @@ fn snap(name: &str, value: &impl serde::Serialize) {
     );
 }
 
-/// The normalized apps of the Debian sid/main DEP-11 fixture — the async
+/// The normalized apps of the Debian sid/main DEP-11 fixture: the async
 /// `Adapter::search` run on a minimal current-thread runtime (the inline
 /// tests' `block_on_search` shape).
 fn appstream_fixture_apps() -> Vec<App> {

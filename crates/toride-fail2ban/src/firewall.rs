@@ -36,19 +36,37 @@ use crate::Result;
 use crate::command::Runner;
 use crate::report::{Finding, Severity};
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+/// Table family and table used by Fail2Ban's stock nftables actions
+/// (`table_family = inet`, `table = f2b-table` in `action.d/nftables.conf`).
+const NFT_TABLE_FAMILY: &str = "inet";
+const NFT_TABLE: &str = "f2b-table";
 
-/// Default nftables table used by Fail2Ban's stock nftables actions.
-const NFT_TABLE: &str = "fail2ban";
+/// Prefix of the nft set names Fail2Ban's stock nftables actions create
+/// (`addr_set = addr-set-<name>` for IPv4, `addr6-set-<name>` for IPv6).
+const NFT_SET_PREFIX: &str = "addr-set-";
+const NFT_SET_PREFIX_V6: &str = "addr6-set-";
 
-/// Default iptables chain name created by Fail2Ban's stock iptables actions.
-const IPTABLES_CHAIN: &str = "f2b-chain";
+/// Prefix of the iptables chains Fail2Ban's stock iptables actions create
+/// (`actionban = <iptables> -I f2b-<name> 1 -s <ip> -j DROP`).
+const IPTABLES_CHAIN_PREFIX: &str = "f2b-";
 
-// ---------------------------------------------------------------------------
-// FirewallChecker
-// ---------------------------------------------------------------------------
+/// Expected nft set name for a jail (`addr-set-<jail>`).
+#[must_use]
+pub fn nft_set_name_for_jail(jail: &str) -> String {
+    format!("{NFT_SET_PREFIX}{jail}")
+}
+
+/// Expected nft IPv6 set name for a jail (`addr6-set-<jail>`).
+#[must_use]
+pub fn nft_set6_name_for_jail(jail: &str) -> String {
+    format!("{NFT_SET_PREFIX_V6}{jail}")
+}
+
+/// Expected iptables chain name for a jail (`f2b-<jail>`).
+#[must_use]
+pub fn iptables_chain_name_for_jail(jail: &str) -> String {
+    format!("{IPTABLES_CHAIN_PREFIX}{jail}")
+}
 
 /// Diagnostic checker for firewall backend availability.
 ///
@@ -80,10 +98,6 @@ impl<'a> FirewallChecker<'a> {
         Self { runner }
     }
 
-    // -----------------------------------------------------------------------
-    // Binary availability probes
-    // -----------------------------------------------------------------------
-
     /// Check whether the `nft` binary is available on the system.
     ///
     /// Runs `nft --version` and returns `true` if the command exits
@@ -107,17 +121,21 @@ impl<'a> FirewallChecker<'a> {
         Ok(self.runner.run("ip6tables", &["--version"])?.success)
     }
 
-    // -----------------------------------------------------------------------
-    // State probes
-    // -----------------------------------------------------------------------
-
     /// Check whether an nft set exists in the Fail2Ban table.
     ///
-    /// Runs `nft list set inet fail2ban <set_name>` and returns `true` if
+    /// Runs `nft list set inet f2b-table <set_name>` and returns `true` if
     /// the command succeeds (i.e. the set is present in the kernel).
     pub fn check_nft_set(&self, set_name: &str) -> Result<bool> {
-        let args = &["list", "set", "inet", NFT_TABLE, set_name];
+        let args = &["list", "set", NFT_TABLE_FAMILY, NFT_TABLE, set_name];
         Ok(self.runner.run("nft", args)?.success)
+    }
+
+    /// Check whether the nft sets a jail's stock nftables action creates
+    /// exist: `addr-set-<jail>` and `addr6-set-<jail>` in `inet f2b-table`.
+    pub fn check_nft_sets_for_jail(&self, jail: &str) -> Result<(bool, bool)> {
+        let v4 = self.check_nft_set(&nft_set_name_for_jail(jail))?;
+        let v6 = self.check_nft_set(&nft_set6_name_for_jail(jail))?;
+        Ok((v4, v6))
     }
 
     /// Check whether an iptables chain exists.
@@ -129,28 +147,27 @@ impl<'a> FirewallChecker<'a> {
         Ok(self.runner.run("iptables", args)?.success)
     }
 
-    // -----------------------------------------------------------------------
-    // Aggregate diagnosis
-    // -----------------------------------------------------------------------
-
     /// Run all firewall-related diagnostic checks based on the configured
     /// actions and return a list of [`Finding`] values.
     ///
     /// `configured_actions` should contain the action names as they appear in
     /// the Fail2Ban jail configuration (e.g. `"nftables"`, `"iptables"`,
-    /// `"iptables-multiport"`, `"nftables-multiport"`).
+    /// `"iptables-multiport"`, `"nftables-multiport"`); `jails` names the
+    /// jails those actions run for, because stock Fail2Ban actions create
+    /// per-jail structures (`addr-set-<jail>` nft sets, `f2b-<jail>`
+    /// iptables chains).
     ///
     /// # Checks performed
     ///
     /// 1. If any action contains `"nftables"`, verify `nft` is available and
-    ///    the expected nft set exists.
+    ///    each jail's `addr-set-<jail>` / `addr6-set-<jail>` sets exist.
     /// 2. If any action contains `"iptables"`, verify `iptables` is available
-    ///    and the expected iptables chain exists.
+    ///    and each jail's `f2b-<jail>` chain exists.
     /// 3. If any action contains `"iptables"` (which implies potential IPv6
     ///    usage), verify `ip6tables` is available as well.
     /// 4. If no firewall-related action is found at all, emit an informational
     ///    note that firewall diagnostics were skipped.
-    pub fn diagnose(&self, configured_actions: &[String]) -> Vec<Finding> {
+    pub fn diagnose(&self, jails: &[String], configured_actions: &[String]) -> Vec<Finding> {
         let mut findings = Vec::new();
 
         let uses_nft = configured_actions
@@ -178,68 +195,70 @@ impl<'a> FirewallChecker<'a> {
             return findings;
         }
 
-        // --- nftables checks ------------------------------------------------
-
         if uses_nft {
-            self.diagnose_nftables(&mut findings);
+            self.diagnose_nftables(jails, &mut findings);
         }
 
-        // --- iptables checks ------------------------------------------------
-
         if uses_iptables {
-            self.diagnose_iptables(&mut findings);
+            self.diagnose_iptables(jails, &mut findings);
         }
 
         findings
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
-    /// Run nftables-specific diagnostic probes and append findings.
-    fn diagnose_nftables(&self, findings: &mut Vec<Finding>) {
+    /// Run nftables-specific diagnostic probes and append findings, one set
+    /// of checks per jail (`addr-set-<jail>` and `addr6-set-<jail>`).
+    fn diagnose_nftables(&self, jails: &[String], findings: &mut Vec<Finding>) {
         match self.check_nft_available() {
             Ok(true) => {
-                // nft is present -- check that the expected set exists.
-                match self.check_nft_set(IPTABLES_CHAIN) {
-                    Ok(true) => {
-                        findings.push(Finding::new(
-                            "firewall.nft.set-present",
-                            Severity::Ok,
-                            "nft fail2ban set exists",
-                        ));
-                    }
-                    Ok(false) => {
-                        findings.push(
-                            Finding::new(
-                                "firewall.nft.set-missing",
-                                Severity::Warning,
-                                "nft fail2ban set not found",
-                            )
-                            .detail(format!(
-                                "The nft set \"{IPTABLES_CHAIN}\" in table \"inet {NFT_TABLE}\" does \
-                                 not exist. It is normally created when a jail \
-                                 with a nftables action starts.",
-                            ))
-                            .fix(
-                                "Start (or restart) the jail so Fail2Ban \
-                                 creates the nft set, or verify that the \
-                                 correct action is configured.",
-                            ),
-                        );
-                    }
-                    Err(e) => {
-                        findings.push(
-                            Finding::new(
-                                "firewall.nft.set-check-error",
-                                Severity::Error,
-                                "Failed to check nft set",
-                            )
-                            .detail(format!(
-                                "Running `nft list set inet {NFT_TABLE} {IPTABLES_CHAIN}` failed: {e}",
-                            )),
-                        );
+                let jails_to_check: Vec<String> = if jails.is_empty() {
+                    Vec::new()
+                } else {
+                    jails.to_vec()
+                };
+                for jail in &jails_to_check {
+                    match self.check_nft_sets_for_jail(jail) {
+                        Ok((true, _)) => {
+                            findings.push(Finding::new(
+                                "firewall.nft.set-present",
+                                Severity::Ok,
+                                format!("nft set for jail '{jail}' exists"),
+                            ));
+                        }
+                        Ok((false, _)) => {
+                            let set = nft_set_name_for_jail(jail);
+                            findings.push(
+                                Finding::new(
+                                    "firewall.nft.set-missing",
+                                    Severity::Warning,
+                                    format!("nft set for jail '{jail}' not found"),
+                                )
+                                .detail(format!(
+                                    "The nft set \"{set}\" in table \
+                                     \"{NFT_TABLE_FAMILY} {NFT_TABLE}\" does not exist. It is \
+                                     created when a jail with a nftables action \
+                                     starts.",
+                                ))
+                                .fix(format!(
+                                    "Start (or restart) jail '{jail}' so Fail2Ban \
+                                     creates the nft set, or verify that the \
+                                     correct action is configured.",
+                                )),
+                            );
+                        }
+                        Err(e) => {
+                            let set = nft_set_name_for_jail(jail);
+                            findings.push(
+                                Finding::new(
+                                    "firewall.nft.set-check-error",
+                                    Severity::Error,
+                                    format!("Failed to check nft set for jail '{jail}'"),
+                                )
+                                .detail(format!(
+                                    "Running `nft list set {NFT_TABLE_FAMILY} {NFT_TABLE} {set}` failed: {e}",
+                                )),
+                            );
+                        }
                     }
                 }
             }
@@ -271,56 +290,54 @@ impl<'a> FirewallChecker<'a> {
         }
     }
 
-    /// Run iptables-specific diagnostic probes and append findings.
+    /// Run iptables-specific diagnostic probes and append findings, one chain
+    /// check per jail (`f2b-<jail>`).
     #[allow(
         clippy::too_many_lines,
         reason = "sequential probe chain, splitting obscures flow"
     )]
-    fn diagnose_iptables(&self, findings: &mut Vec<Finding>) {
-        // --- iptables (IPv4) ------------------------------------------------
-
+    fn diagnose_iptables(&self, jails: &[String], findings: &mut Vec<Finding>) {
         match self.check_iptables_available() {
             Ok(true) => {
-                // iptables is present -- check the expected chain.
-                match self.check_iptables_chain(IPTABLES_CHAIN) {
-                    Ok(true) => {
-                        findings.push(Finding::new(
-                            "firewall.iptables.chain-present",
-                            Severity::Ok,
-                            "iptables fail2ban chain exists",
-                        ));
-                    }
-                    Ok(false) => {
-                        findings.push(
-                            Finding::new(
-                                "firewall.iptables.chain-missing",
-                                Severity::Warning,
-                                "iptables fail2ban chain not found",
-                            )
-                            .detail(format!(
-                                "The iptables chain \"{IPTABLES_CHAIN}\" does not \
-                                 exist. It is normally created when a jail with \
-                                 an iptables action starts.",
-                            ))
-                            .fix(
-                                "Start (or restart) the jail so Fail2Ban \
-                                 creates the chain, or verify that the correct \
-                                 action is configured.",
-                            ),
-                        );
-                    }
-                    Err(e) => {
-                        findings.push(
-                            Finding::new(
-                                "firewall.iptables.chain-check-error",
-                                Severity::Error,
-                                "Failed to check iptables chain",
-                            )
-                            .detail(format!(
-                                "Running `iptables -n -L {IPTABLES_CHAIN}` \
-                                 failed: {e}",
-                            )),
-                        );
+                for jail in jails {
+                    let chain = iptables_chain_name_for_jail(jail);
+                    match self.check_iptables_chain(&chain) {
+                        Ok(true) => {
+                            findings.push(Finding::new(
+                                "firewall.iptables.chain-present",
+                                Severity::Ok,
+                                format!("iptables chain '{chain}' exists"),
+                            ));
+                        }
+                        Ok(false) => {
+                            findings.push(
+                                Finding::new(
+                                    "firewall.iptables.chain-missing",
+                                    Severity::Warning,
+                                    format!("iptables chain '{chain}' not found"),
+                                )
+                                .detail(format!(
+                                    "The iptables chain \"{chain}\" does not \
+                                     exist. It is created when a jail with an \
+                                     iptables action starts.",
+                                ))
+                                .fix(format!(
+                                    "Start (or restart) jail '{jail}' so Fail2Ban \
+                                     creates the chain, or verify that the correct \
+                                     action is configured.",
+                                )),
+                            );
+                        }
+                        Err(e) => {
+                            findings.push(
+                                Finding::new(
+                                    "firewall.iptables.chain-check-error",
+                                    Severity::Error,
+                                    format!("Failed to check iptables chain '{chain}'"),
+                                )
+                                .detail(format!("Running `iptables -n -L {chain}` failed: {e}")),
+                            );
+                        }
                     }
                 }
             }
@@ -350,8 +367,6 @@ impl<'a> FirewallChecker<'a> {
                 );
             }
         }
-
-        // --- ip6tables (IPv6) -----------------------------------------------
 
         match self.check_ip6tables_available() {
             Ok(true) => {
@@ -388,10 +403,6 @@ impl<'a> FirewallChecker<'a> {
             }
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Feature-gated deep-inspection stubs
-    // -----------------------------------------------------------------------
 
     /// Parse the full nftables ruleset from JSON output into structured types.
     ///
@@ -446,10 +457,6 @@ impl<'a> FirewallChecker<'a> {
         ))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "firewall.test.rs"]

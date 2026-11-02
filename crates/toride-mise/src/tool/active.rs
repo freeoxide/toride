@@ -8,28 +8,22 @@ use serde::Deserialize;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// JSON response types
-// ---------------------------------------------------------------------------
-
-/// A single active tool version as reported by `mise current --output=json`.
+/// A single active tool version as reported by `mise current`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ActiveTool {
     /// The tool name (e.g. `"node"`).
     pub name: String,
     /// The version currently in use (e.g. `"22.1.0"`).
     pub version: String,
-    /// The install path on disk.
+    /// The install path on disk. `mise current` does not report this, so it
+    /// is `None` for every parsed row.
     #[serde(default)]
     pub install_path: Option<String>,
-    /// The source that resolved this version.
+    /// The source that resolved this version. `mise current` does not report
+    /// this, so it is `None` for every parsed row.
     #[serde(default)]
     pub source: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// ListActiveRequest
-// ---------------------------------------------------------------------------
 
 /// Parameters for a `mise current` invocation.
 ///
@@ -38,8 +32,6 @@ pub struct ActiveTool {
 pub struct ListActiveRequest {
     /// Only list the active version for this specific tool.
     pub tool: Option<String>,
-    /// Include the source that resolved each tool version.
-    pub show_source: bool,
 }
 
 impl ListActiveRequest {
@@ -53,54 +45,174 @@ impl ListActiveRequest {
         self.tool = Some(tool.into());
         self
     }
-
-    /// Include the source that resolved each tool version.
-    pub fn show_source(mut self) -> Self {
-        self.show_source = true;
-        self
-    }
 }
 
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
+fn parse_current_lines(stdout: &str) -> Vec<ActiveTool> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (name, version) = line.trim().split_once(char::is_whitespace)?;
+            let version = version.trim();
+            (!name.is_empty() && !version.is_empty()).then(|| ActiveTool {
+                name: name.to_owned(),
+                version: version.to_owned(),
+                install_path: None,
+                source: None,
+            })
+        })
+        .collect()
+}
+
+fn parse_current_bare_version(tool: &str, stdout: &str) -> Vec<ActiveTool> {
+    let version = stdout.trim();
+    (!tool.is_empty() && !version.is_empty())
+        .then(|| ActiveTool {
+            name: tool.to_owned(),
+            version: version.to_owned(),
+            install_path: None,
+            source: None,
+        })
+        .into_iter()
+        .collect()
+}
 
 impl Mise {
     /// List all currently active (resolved) tool versions.
     ///
-    /// Invokes `mise current --output=json`.
+    /// Invokes `mise current`, which prints one `<tool> <version>` line per
+    /// active tool; each line becomes one [`ActiveTool`] row.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_active(&self) -> MiseResult<Vec<ActiveTool>> {
-        self.run_json_vec_safe(["current", "--output=json"]).await
+        let output = self.run_checked(["current"]).await?;
+        Ok(parse_current_lines(output.stdout_trimmed()))
     }
 
     /// List active tools using a full [`ListActiveRequest`].
     ///
-    /// Builds the complete `mise current` command with all flags from the
-    /// request struct.
+    /// With no tool set, `mise current` prints one `<tool> <version>` line
+    /// per active tool. With [`ListActiveRequest::tool`] set, mise prints
+    /// only the bare version for that tool, so the requested name labels
+    /// the returned row.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_active_with(&self, req: &ListActiveRequest) -> MiseResult<Vec<ActiveTool>> {
-        let mut args: Vec<String> = Vec::new();
-        args.push("current".into());
-
-        if req.show_source {
-            args.push("--source".into());
-        }
-
-        args.push("--output=json".into());
-
+        let mut args: Vec<String> = vec!["current".into()];
         if let Some(ref tool) = req.tool {
             args.push(tool.clone());
         }
 
-        self.run_json_vec_safe(args).await
+        let output = self.run_checked(args).await?;
+        if let Some(ref tool) = req.tool {
+            return Ok(parse_current_bare_version(tool, output.stdout_trimmed()));
+        }
+        Ok(parse_current_lines(output.stdout_trimmed()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use toride_runner::{CommandOutput, FakeRunner};
+
+    use crate::client::Mise;
+
+    fn build_mise(fake: Arc<FakeRunner>) -> Mise {
+        Mise::builder()
+            .runner(fake as Arc<dyn toride_runner::AsyncRunner>)
+            .binary(crate::binary::MiseBinary::from_path("/usr/bin/mise"))
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn list_active_parses_tool_version_lines() {
+        let fake = Arc::new(
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout("node 22.1.0\npython 3.12.5\n")),
+        );
+        let mise = build_mise(fake.clone());
+
+        let tools = mise.list_active().await.unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].name, "node");
+        assert_eq!(tools[0].version, "22.1.0");
+        assert_eq!(tools[1].name, "python");
+        assert_eq!(tools[1].version, "3.12.5");
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].args, ["current"]);
+    }
+
+    #[tokio::test]
+    async fn list_active_with_tool_parses_the_bare_version_form() {
+        let fake =
+            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("0.12.15\n")));
+        let mise = build_mise(fake.clone());
+
+        let tools = mise
+            .list_active_with(&super::ListActiveRequest::new().tool("uv"))
+            .await
+            .unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "uv");
+        assert_eq!(tools[0].version, "0.12.15");
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].args, ["current", "uv"]);
+    }
+
+    #[tokio::test]
+    async fn list_active_with_tool_and_empty_output_yields_no_rows() {
+        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("")));
+        let mise = build_mise(fake);
+
+        let tools = mise
+            .list_active_with(&super::ListActiveRequest::new().tool("node"))
+            .await
+            .unwrap();
+        assert!(tools.is_empty(), "an inactive tool prints no version");
+    }
+
+    #[tokio::test]
+    async fn list_active_with_no_tool_parses_tool_version_lines() {
+        let fake = Arc::new(
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout("uv 0.12.15\nnode 22.1.0\n")),
+        );
+        let mise = build_mise(fake.clone());
+
+        let tools = mise
+            .list_active_with(&super::ListActiveRequest::new())
+            .await
+            .unwrap();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].name, "uv");
+        assert_eq!(tools[0].version, "0.12.15");
+        assert_eq!(tools[1].name, "node");
+
+        let calls = fake.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].args, ["current"]);
+    }
+
+    #[tokio::test]
+    async fn list_active_skips_unparseable_lines() {
+        let fake = Arc::new(
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout("node 22.1.0\nno-version\n")),
+        );
+        let mise = build_mise(fake);
+
+        let tools = mise.list_active().await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "node");
     }
 }

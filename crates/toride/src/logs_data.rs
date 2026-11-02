@@ -2,16 +2,18 @@
 //!
 //! [`LogsCollector`] tails recent lines from the log sources that exist on
 //! THIS host via a tokio oneshot channel, following the SIMPLE pattern of
-//! [`StatusCollector`](crate::status_collector::StatusCollector) (no findings
-//! cache — logs must be fresh on every 2s tick).
+//! [`StatusCollector`](crate::status_collector::StatusCollector) plus a
+//! short TTL cache (three refresh ticks) so an open Logs view re-reads
+//! sources a few times a minute instead of on every tick.
 //!
-//! This is the most "live" read-only section: every collection reads the last
-//! ~200 lines of each existing source. There are no write operations, no
-//! optimistic updates, no cooldown gate, and no loading spinner.
+//! This is the most "live" read-only section: every fresh collection reads
+//! the last ~200 lines of each existing source. There are no write
+//! operations, no optimistic updates, no cooldown gate, and no loading
+//! spinner.
 //!
 //! ## Sources probed
 //!
-//! * toride's own log file — resolved from the same
+//! * toride's own log file: resolved from the same
 //!   `$TORIDE_LOG_FILE` / `dirs::cache_dir().join("toride").join("toride.log")`
 //!   resolution that [`main`](../../main.rs) uses for the tracing appender, so
 //!   the operator can tail what the app itself is emitting.
@@ -29,7 +31,7 @@
 //! [`tokio::task::spawn_blocking`] closure, so the tokio worker is never
 //! stalled. Permission errors are caught per-source (that source is degraded
 //! to `exists == false` with a `"(permission denied)"` note) and never panic.
-//! Large files are seeked near the end before reading — total bytes per file
+//! Large files are seeked near the end before reading: total bytes per file
 //! are capped at `MAX_FILE_BYTES` (256 KiB) so a multi-GB syslog is never
 //! read whole.
 
@@ -82,7 +84,7 @@ pub struct LogSource {
     /// viewer clamps scroll against it).
     pub line_count: usize,
     /// The last ~`MAX_LINES` lines of the source (already decoded UTF-8,
-    /// lossy for non-UTF-8 bytes — logs must never crash the viewer).
+    /// lossy for non-UTF-8 bytes: logs must never crash the viewer).
     pub lines: Vec<String>,
 }
 
@@ -92,7 +94,7 @@ pub struct LogSource {
 /// exist on this host `available` STAYS `true` and the viewer surfaces an
 /// honest `"no log sources found on this host"` line (NOT a fake "coming
 /// soon"). `available` flips to `false` ONLY when the collection task itself
-/// panicked (`JoinError`) — the viewer then renders the degraded panel.
+/// panicked (`JoinError`): the viewer then renders the degraded panel.
 #[derive(Clone, Debug)]
 pub struct LogsDataBundle {
     /// Whether collection ran at all. `false` is reserved for the panic
@@ -103,7 +105,7 @@ pub struct LogsDataBundle {
     /// permission-denied note). Empty on a host with no log sources.
     pub sources: Vec<LogSource>,
     /// Human-readable reason collection failed, populated ONLY when
-    /// `available == false` (collection-task panic). `None` otherwise —
+    /// `available == false` (collection-task panic). `None` otherwise:
     /// notably also `None` for a freshly-constructed empty bundle before any
     /// collection has run.
     pub unavailable_reason: Option<String>,
@@ -111,23 +113,32 @@ pub struct LogsDataBundle {
 
 // ── Collector ───────────────────────────────────────────────────────────────
 
+/// Upper bound on how long a collected bundle stays fresh enough to re-ship
+/// without re-reading files or re-spawning journalctl: three refresh ticks.
+const LOGS_TTL: Duration = Duration::from_secs(6);
+
 /// Manages periodic async log collection.
 ///
-/// Mirrors [`StatusCollector`](crate::status_collector::StatusCollector): a
-/// single oneshot channel for the in-flight result. There is NO findings
-/// cache here (unlike [`HardenCollector`](crate::toride_harden_data::HardenCollector))
-/// because log tails must be fresh on every 2s tick — a cache would show
-/// stale lines.
+/// Mirrors the TTL collectors of the other sections but with a short window
+/// ([`LOGS_TTL`], three refresh ticks): within the window `start()` re-ships
+/// the cached bundle and spawns nothing, so an idle Logs view costs no
+/// journalctl or file reads while the tail still refreshes several times a
+/// minute.
 pub struct LogsCollector {
     /// Carries the in-flight bundle. `None` when no collection is running.
-    rx: Option<oneshot::Receiver<LogsDataBundle>>,
+    rx: Option<oneshot::Receiver<(bool, std::sync::Arc<LogsDataBundle>)>>,
+    /// Last freshly collected bundle and when it was collected.
+    cache: Option<(std::time::Instant, std::sync::Arc<LogsDataBundle>)>,
 }
 
 impl LogsCollector {
     /// Create a new collector with no pending collection.
     #[must_use]
     pub fn new() -> Self {
-        Self { rx: None }
+        Self {
+            rx: None,
+            cache: None,
+        }
     }
 
     /// Whether a collection is currently in-flight.
@@ -137,37 +148,52 @@ impl LogsCollector {
 
     /// Start a new background collection.
     ///
-    /// If a collection is already in-flight, this is a no-op. All filesystem
-    /// reads AND the optional journalctl subprocess run inside ONE
-    /// `spawn_blocking` so the tokio worker is never stalled; the result
-    /// crosses back to the async caller via the oneshot channel.
+    /// If a collection is already in-flight, this is a no-op. When the cached
+    /// bundle is younger than [`LOGS_TTL`] the cache is re-shipped and nothing
+    /// is spawned; otherwise all filesystem reads AND the optional journalctl
+    /// subprocess run inside ONE `spawn_blocking` so the tokio worker is never
+    /// stalled, with the result crossing back via the oneshot channel.
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
         }
         let (tx, rx) = oneshot::channel();
         self.rx = Some(rx);
+        if let Some((at, bundle)) = &self.cache
+            && at.elapsed() < LOGS_TTL
+        {
+            let bundle = std::sync::Arc::clone(bundle);
+            tokio::spawn(async move {
+                let _ = tx.send((false, bundle));
+            });
+            return;
+        }
         tokio::spawn(async move {
             let bundle = collect_real_logs().await;
-            let _ = tx.send(bundle);
+            let _ = tx.send((true, std::sync::Arc::new(bundle)));
         });
     }
 
     /// Poll for a completed collection result.
     ///
     /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed (sender dropped — e.g. the spawned
-    /// task panicked before sending). The receiver is always cleared after
-    /// this call.
-    pub async fn poll(&mut self) -> Option<LogsDataBundle> {
-        match &mut self.rx {
+    /// pending or if the collection failed (sender dropped: e.g. the spawned
+    /// task panicked before sending). A freshly collected bundle refreshes the
+    /// TTL cache; a re-shipped cache hit does not. The receiver is always
+    /// cleared after this call.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<LogsDataBundle>> {
+        let (fresh, bundle) = match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
                 self.rx = None;
-                result
+                result?
             }
-            None => None,
+            None => return None,
+        };
+        if fresh {
+            self.cache = Some((std::time::Instant::now(), std::sync::Arc::clone(&bundle)));
         }
+        Some(bundle)
     }
 }
 
@@ -216,7 +242,7 @@ async fn collect_real_logs() -> LogsDataBundle {
     if have_journalctl {
         // Bound the journalctl subprocess so a huge journal cannot stall the
         // 2s refresh tick. A timeout degrades the journalctl source to absent
-        // rather than aborting the whole bundle — the file sources already
+        // rather than aborting the whole bundle: the file sources already
         // collected still surface.
         if let Ok(Some(journal)) =
             tokio::time::timeout(JOURNALCTL_TIMEOUT, read_journalctl_async()).await
@@ -243,7 +269,7 @@ async fn collect_real_logs() -> LogsDataBundle {
 /// Order matters for the viewer's default selection: toride's own log is
 /// listed first (the operator almost always wants the app's own output), then
 /// platform logs, then journalctl as a catch-all. Linux/macOS paths are both
-/// included unconditionally — the reader simply reports `exists == false` for
+/// included unconditionally: the reader reports `exists == false` for
 /// the ones that don't apply on this OS, which keeps the probe list
 /// data-driven and identical across hosts (easier to reason about than
 /// per-OS branching).
@@ -291,7 +317,7 @@ fn toride_log_path() -> Option<PathBuf> {
 ///
 /// journalctl is handled separately (see [`read_journalctl_async`]) because
 /// it is an async subprocess with its own timeout, not a blocking file read.
-/// Errors never propagate — a failed read degrades that one source.
+/// Errors never propagate: a failed read degrades that one source.
 fn read_file_sources(candidates: &[(&'static str, PathBuf)]) -> Vec<LogSource> {
     let mut sources: Vec<LogSource> = Vec::new();
 
@@ -314,7 +340,7 @@ fn read_file_sources(candidates: &[(&'static str, PathBuf)]) -> Vec<LogSource> {
             }
             FileRead::PermissionDenied => {
                 // Surface the permission failure so the operator knows WHY a
-                // file they expected to see is missing — better than silently
+                // file they expected to see is missing: better than silently
                 // dropping it.
                 sources.push(LogSource {
                     name: format!("{name} (permission denied)"),
@@ -327,7 +353,7 @@ fn read_file_sources(candidates: &[(&'static str, PathBuf)]) -> Vec<LogSource> {
                 });
             }
             FileRead::Absent | FileRead::Other(_) => {
-                // Silently skip — see fn doc.
+                // Silently skip: see fn doc.
             }
         }
     }
@@ -382,7 +408,7 @@ fn read_file_tail(path: &std::path::Path) -> FileRead {
     let size_bytes = meta.len();
 
     // Permission errors on OPEN are distinct from metadata's PermissionDenied
-    // (the file may be stat-able but not readable) — surface them too.
+    // (the file may be stat-able but not readable): surface them too.
     let mut file = match File::open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -478,7 +504,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// lines as a [`LogSource`], OR `None` on any error / non-zero exit / empty
 /// output. The caller has already confirmed via `which::which("journalctl")`
 /// that the binary is on PATH, and bounds this future with
-/// [`JOURNALCTL_TIMEOUT`] via `tokio::time::timeout` — see
+/// [`JOURNALCTL_TIMEOUT`] via `tokio::time::timeout`: see
 /// [`collect_real_logs`].
 ///
 /// Uses [`tokio::process::Command`] (not `std::process::Command`) so the wait
@@ -538,7 +564,7 @@ fn empty_bundle() -> LogsDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when the spawned
-/// collection task panicked (`JoinError`) — the reason string is rendered by
+/// collection task panicked (`JoinError`): the reason string is rendered by
 /// the viewer's degraded panel.
 fn empty_bundle_with_reason(reason: String) -> LogsDataBundle {
     let mut b = empty_bundle();
@@ -613,6 +639,24 @@ mod tests {
         let bundle = bundle.unwrap();
         // available is true whenever collection RAN, even with zero sources.
         assert!(bundle.available, "available must be true post-collection");
+    }
+
+    #[tokio::test]
+    async fn start_re_ships_cached_bundle_within_ttl() {
+        let mut collector = LogsCollector::new();
+        collector.start();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let first = collector.poll().await.expect("first collection");
+        assert!(!collector.is_pending());
+
+        collector.start();
+        let second = collector.poll().await;
+        assert!(second.is_some(), "cache hit must still deliver a bundle");
+        assert_eq!(
+            second.unwrap().sources.len(),
+            first.sources.len(),
+            "cache hit must re-ship the same bundle"
+        );
     }
 
     #[test]

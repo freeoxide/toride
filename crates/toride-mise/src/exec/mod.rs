@@ -3,9 +3,9 @@
 //! This module provides types for executing commands through mise's tool
 //! environment and for resolving binary paths managed by mise.
 //!
-//! - [`ExecRequest`] — parameters for `mise exec` with builder methods.
-//! - [`SandboxPolicy`] — controls sandboxing behaviour for exec.
-//! - [`BinResolution`] — a resolved binary path with metadata.
+//! - [`ExecRequest`]: parameters for `mise exec` with builder methods.
+//! - [`SandboxPolicy`]: controls sandboxing behaviour for exec.
+//! - [`BinResolution`]: a resolved binary path with metadata.
 //! - [`Mise`] extension methods: [`exec`](Mise::exec), [`which`](Mise::which),
 //!   [`which_with_tool`](Mise::which_with_tool), [`which_version`](Mise::which_version),
 //!   [`which_plugin`](Mise::which_plugin), [`where_tool`](Mise::where_tool).
@@ -17,10 +17,6 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::{MiseError, MiseResult};
 use crate::tool::ToolSpec;
-
-// ---------------------------------------------------------------------------
-// ExecRequest
-// ---------------------------------------------------------------------------
 
 /// Parameters for a `mise exec` invocation.
 ///
@@ -106,10 +102,6 @@ impl ExecRequest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SandboxPolicy
-// ---------------------------------------------------------------------------
-
 /// Controls sandboxing behaviour when executing commands through mise.
 ///
 /// When attached to an [`ExecRequest`], the fields are translated into the
@@ -140,10 +132,6 @@ pub struct SandboxPolicy {
     pub allow_env: Vec<String>,
 }
 
-// ---------------------------------------------------------------------------
-// BinResolution
-// ---------------------------------------------------------------------------
-
 /// A resolved binary path with associated metadata.
 ///
 /// Returned by [`Mise::which`] and related methods.
@@ -165,10 +153,6 @@ impl BinResolution {
         self.path.as_std_path()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Mise impl — exec methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// Execute a command through `mise exec`.
@@ -197,7 +181,7 @@ impl Mise {
 
         // Fresh environment.
         if req.fresh_env {
-            args.push("--fresh".into());
+            args.push("--fresh-env".into());
         }
 
         // Skip deps.
@@ -212,7 +196,7 @@ impl Mise {
 
         // Working directory.
         if let Some(ref cwd) = req.cwd {
-            args.push("--cwd".into());
+            args.push("--cd".into());
             args.push(cwd.to_string());
         }
 
@@ -419,10 +403,6 @@ impl Mise {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -498,10 +478,6 @@ mod tests {
         assert!(calls[0].args.contains(&"node@22".to_string()));
     }
 
-    // -----------------------------------------------------------------------
-    // Strict-mode tests
-    // -----------------------------------------------------------------------
-
     #[tokio::test]
     async fn test_exec_strict_mode() {
         let expected = toride_runner::CommandSpec::new("/usr/bin/mise")
@@ -565,7 +541,7 @@ mod tests {
             .arg("node@22")
             .arg("--jobs")
             .arg("2")
-            .arg("--fresh")
+            .arg("--fresh-env")
             .arg("--raw")
             .arg("--")
             .arg("echo")
@@ -590,7 +566,7 @@ mod tests {
         assert!(args.contains(&"exec".to_string()));
         assert!(args.contains(&"--jobs".to_string()));
         assert!(args.contains(&"2".to_string()));
-        assert!(args.contains(&"--fresh".to_string()));
+        assert!(args.contains(&"--fresh-env".to_string()));
         assert!(args.contains(&"--raw".to_string()));
         assert!(args.contains(&"--".to_string()));
         assert!(args.contains(&"echo".to_string()));

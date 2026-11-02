@@ -185,7 +185,7 @@ fn render_profile_should_produce_valid_ini() {
         ],
     };
 
-    let rendered = render_profile(&spec);
+    let rendered = render_profile(&spec).unwrap();
     assert!(rendered.contains("Managed by ufw-kit"));
     assert!(rendered.contains("[Test]"));
     assert!(rendered.contains("ports=80/tcp|443/tcp"));
@@ -255,8 +255,48 @@ fn render_profile_should_handle_single_port() {
         }],
     };
 
-    let rendered = render_profile(&spec);
+    let rendered = render_profile(&spec).unwrap();
     assert!(rendered.contains("ports=22/tcp"));
+}
+
+#[test]
+fn render_profile_should_reject_newline_injection() {
+    // Regression: title/description text was interpolated verbatim, so a
+    // newline injected arbitrary keys into the root-parsed INI file in
+    // /etc/ufw/applications.d.
+    let spec = AppProfileSpec {
+        name: "Evil".into(),
+        title: "innocent\nports=0/tcp".into(),
+        description: "desc".into(),
+        ports: vec![AppPort {
+            port: "80".into(),
+            protocol: "tcp".into(),
+        }],
+    };
+    assert!(render_profile(&spec).is_err());
+
+    let bad_port = AppProfileSpec {
+        name: "Evil".into(),
+        title: "t".into(),
+        description: "d".into(),
+        ports: vec![AppPort {
+            port: "80\nports=0".into(),
+            protocol: "tcp".into(),
+        }],
+    };
+    assert!(render_profile(&bad_port).is_err());
+
+    let bad_proto = AppPort {
+        port: "80".into(),
+        protocol: "tcp\nports=0".into(),
+    };
+    let bad = AppProfileSpec {
+        name: "Evil".into(),
+        title: "t".into(),
+        description: "d".into(),
+        ports: vec![bad_proto],
+    };
+    assert!(render_profile(&bad).is_err());
 }
 
 // ---------------------------------------------------------------------------

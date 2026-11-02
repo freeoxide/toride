@@ -13,20 +13,20 @@
 //!
 //! Doctor findings are expensive (they shell out to `which` for `wg` /
 //! `wg-quick`, stat the config directory, and would probe `wg show`) and change
-//! slowly, so they are cached for 60s — exactly like the fail2ban / ufw-kit /
+//! slowly, so they are cached for 60s: exactly like the fail2ban / ufw-kit /
 //! harden / SSH diagnostics cache.
 //!
 //! ## macOS / construction
 //!
 //! [`toride_wireguard::client::WireguardClient::new`] is the constructor. The
 //! backend is currently a scaffold (it does not actually shell out to `wg`
-//! yet), so construction succeeds on ANY host — including macOS dev machines
+//! yet), so construction succeeds on ANY host: including macOS dev machines
 //! where `wg` is absent. The doctor, run separately inside
 //! `collect_real_wireguard`, is what probes `$PATH` for `wg` / `wg-quick`
 //! via `which::which(...)`. On macOS that probe surfaces a missing-`wg`
 //! Error / Warning finding, and the availability heuristic below
 //! (`available = !interfaces.is_empty() || !findings.is_empty()`) evaluates to
-//! `true` — so the LIVE panel renders WITH those findings, not the degraded
+//! `true`: so the LIVE panel renders WITH those findings, not the degraded
 //! panel.
 //!
 //! The `Err(BinaryNotFound)` / `available = false` / degraded-panel path
@@ -48,7 +48,7 @@ use crate::ui::screens::toride_wireguard::{FindingEntry, InterfaceEntry, PeerEnt
 #[derive(Clone, Debug)]
 pub struct WireguardDataBundle {
     /// Whether the `WireGuard` backend was reachable at all. `false` when
-    /// construction failed entirely or every probe returned no data — the UI
+    /// construction failed entirely or every probe returned no data: the UI
     /// renders a degraded "unavailable" panel.
     pub available: bool,
     /// Active interfaces parsed from `wg show`.
@@ -67,7 +67,7 @@ pub struct WireguardDataBundle {
     pub findings: Vec<FindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
     /// `available == false` (construction error or collection-task panic).
-    /// `None` otherwise — notably also `None` for a freshly-constructed empty
+    /// `None` otherwise: notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
     pub unavailable_reason: Option<String>,
@@ -86,11 +86,13 @@ pub struct WireguardCollector {
     /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
     /// would reset the TTL clock with the SAME (already-cached) findings and
     /// the cache would never expire for the lifetime of the app.
-    rx: Option<oneshot::Receiver<(WireguardDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<WireguardDataBundle>, bool)>>,
     /// Cached doctor findings from the last collection.
     cached_findings: Option<Vec<FindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
+    cached_bundle: Option<std::sync::Arc<WireguardDataBundle>>,
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
@@ -104,6 +106,8 @@ impl WireguardCollector {
             rx: None,
             cached_findings: None,
             findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -123,6 +127,16 @@ impl WireguardCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
+        if let (Some(bundle), Some(at)) = (&self.cached_bundle, self.bundle_fresh_at)
+            && at.elapsed() < FINDINGS_TTL
+        {
+            self.rx = Some(rx);
+            let bundle = std::sync::Arc::clone(bundle);
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
@@ -135,7 +149,7 @@ impl WireguardCollector {
                 reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
             )]
             let (bundle, used_cache) = collect_real_wireguard(use_cache, cached_findings).await;
-            let _ = tx.send((bundle, used_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), used_cache));
         });
     }
 
@@ -145,22 +159,19 @@ impl WireguardCollector {
     /// pending or if the collection failed. On success the cached findings are
     /// updated to the freshly-returned findings, but the freshness timestamp is
     /// only advanced when the doctor was actually re-run (not on a cache-hit
-    /// poll) — otherwise the 60s TTL would be re-armed forever with the same
+    /// poll): otherwise the 60s TTL would be re-armed forever with the same
     /// cached data on every 2s refresh.
-    pub async fn poll(&mut self) -> Option<WireguardDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<WireguardDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
+                if let Some((ref bundle, used_cache)) = result
+                    && !used_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    // Only advance the freshness clock when the doctor was
-                    // actually re-run. On a cache-hit poll the findings are the
-                    // SAME data we already cached, so resetting the TTL here
-                    // would let the cache live forever as long as the 2s refresh
-                    // tick keeps firing inside the TTL window.
-                    if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)
@@ -170,10 +181,11 @@ impl WireguardCollector {
     }
 
     /// Invalidate the findings cache so the next collection re-runs the doctor.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -189,8 +201,8 @@ impl Default for WireguardCollector {
 ///
 /// All work runs on the blocking thread pool (`wg` shells out synchronously,
 /// config files are read synchronously). Doctor findings may be reused from the
-/// cache. On ANY error — construction failure, doctor error, every probe
-/// failing — returns [`empty_bundle`] / [`empty_bundle_with_reason`] with
+/// cache. On ANY error: construction failure, doctor error, every probe
+/// failing: returns [`empty_bundle`] / [`empty_bundle_with_reason`] with
 /// `available = false`.
 ///
 /// `use_cache` / `cached_findings` mirror the fail2ban / harden diagnostics
@@ -203,7 +215,7 @@ async fn collect_real_wireguard(
     cached_findings: Option<Vec<FindingEntry>>,
 ) -> (WireguardDataBundle, bool) {
     // Build the WireguardClient on the blocking pool. Construction is lazy
-    // (it does NOT probe for `wg`), so it is effectively infallible here —
+    // (it does NOT probe for `wg`), so it is effectively infallible here:
     // binary availability is surfaced by the cheap probes below and by the
     // doctor suite, and a missing `wg` instead surfaces as an error from the
     // first show()/list_peers() call inside collection. Built INSIDE
@@ -216,7 +228,7 @@ async fn collect_real_wireguard(
         Ok(Ok(client)) => client,
         Ok(Err(e)) => {
             // Construction failed (rare; new() is lazy, so this is not the
-            // missing-`wg` path — that surfaces later during collection).
+            // missing-`wg` path: that surfaces later during collection).
             tracing::debug!("wireguard construction failed: {e}");
             return (
                 empty_bundle_with_reason(format!("wireguard backend unavailable: {e}")),
@@ -241,13 +253,13 @@ async fn collect_real_wireguard(
     // boundary cleanly. Doctor findings are taken from the cache when fresh
     // (`use_cache`), otherwise re-run here.
     let result = tokio::task::spawn_blocking(move || {
-        // ── Findings (doctor) — the ONLY part gated by the 60s cache ──────
+        // ── Findings (doctor): the ONLY part gated by the 60s cache ──────
         // Mirror the fail2ban reference idiom (fail2ban_data.rs:219-229): the
         // expensive doctor suite is what we cache, and ONLY its findings Vec.
         // The doctor carries binary-availability + config-dir probes that
         // surface the missing-`wg` finding on macOS; DoctorScope::All runs
         // every check the backend implements (binaries, config dir,
-        // interfaces, key permissions, dns leak — most are TODOs today). The
+        // interfaces, key permissions, dns leak: most are TODOs today). The
         // cheap binary / config-dir probes below are re-run every poll so the
         // Environment panel never flickers to "? unknown" on a cache-hit tick
         // (~29 of every 30 refresh ticks at the 2s cadence). On a doctor
@@ -266,13 +278,13 @@ async fn collect_real_wireguard(
             }
         };
 
-        // ── Cheap probes — re-run EVERY poll, outside the cache ──────────
+        // ── Cheap probes: re-run EVERY poll, outside the cache ──────────
         // Two `which::which` calls + one `is_dir`, exactly what the doctor
         // itself does (doctor.rs:94, 106, 124) and exactly what fail2ban does
         // for nft/iptables availability (fail2ban_data.rs:283-285). Cheap
         // enough to run on every 2s tick, never None, so the Environment
         // badges stay stable. `WireguardPaths::new()` points at `/etc/wireguard`
-        // — the same root the doctor stats.
+        // - the same root the doctor stats.
         let wg_binary_found = which::which("wg").is_ok();
         let wg_quick_binary_found = which::which("wg-quick").is_ok();
         let paths = toride_wireguard::paths::WireguardPaths::new();
@@ -332,7 +344,7 @@ async fn collect_real_wireguard(
         // ── Availability heuristic ────────────────────────────────────────
         // The section is "available" if EITHER the client returned any
         // interface OR the doctor produced any findings. A host with `wg`
-        // missing yields an Error finding (binary.wg) but no interfaces —
+        // missing yields an Error finding (binary.wg) but no interfaces:
         // that still counts as available so the operator SEES the finding
         // rather than a blank panel. A host where construction failed
         // entirely (BinaryNotFound) never reaches this code path; it returns
@@ -387,7 +399,7 @@ fn empty_bundle() -> WireguardDataBundle {
 
 /// Empty bundle carrying the reason collection failed. Used when a
 /// `spawn_blocking` task panicked (`JoinError`) during construction or
-/// collection — `WireguardClient::new()` is lazy and effectively infallible,
+/// collection: `WireguardClient::new()` is lazy and effectively infallible,
 /// so in practice this is reached only on a panic, not on a missing `wg`
 /// binary (which surfaces as a doctor finding / collection error instead).
 /// The reason string is rendered by the UI's degraded panel so the operator

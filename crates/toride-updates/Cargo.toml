@@ -1,5 +1,4 @@
 [package]
-exclude = ["benches/fixtures/**"]
 name = "toride-updates"
 version.workspace = true
 edition.workspace = true
@@ -13,6 +12,7 @@ categories = ["os"]
 [lib]
 name = "toride_updates"
 path = "src/lib.rs"
+bench = false
 
 [[bin]]
 name = "toride-updates"
@@ -23,10 +23,8 @@ required-features = ["cli"]
 default = ["client", "doctor"]
 client = ["dep:duct"]
 doctor = ["service"]
-# `service` now links toride-service so ServiceManager can delegate real
-# systemctl calls through toride_service::ServiceManager.
 service = ["client", "dep:toride-service"]
-config = ["client", "dep:regex"]
+config = ["client"]
 apt = ["client"]
 dnf = ["client"]
 schedule = ["client"]
@@ -48,7 +46,6 @@ which = { workspace = true }
 duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
-regex = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]
@@ -59,8 +56,6 @@ proptest = "1"
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
-# parse_kernels: the unattended-upgrades log parser over a committed
-# 10k-line fixture. Hermetic — no apt/dnf binaries, no network.
 [[bench]]
 name = "parse_kernels"
 harness = false

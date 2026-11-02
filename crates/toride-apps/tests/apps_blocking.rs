@@ -1,10 +1,11 @@
-//! Integration tests for the [`AppsBlocking`] facade — the sync twin of the
+//! Integration tests for the [`AppsBlocking`] facade: the sync twin of the
 //! [`Apps`] facade, end to end on the calling thread: a strict
 //! [`FakeRunner`] scripts every backend command, manifests live under
 //! unique temp-dir paths, and the tests assert both the dispatched argv and
 //! the in-line persisted manifest. No network, no real commands, no async
 //! runtime anywhere in this file.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -13,7 +14,7 @@ use toride_apps::apps::{
     AdoptProvenance, AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsBlocking,
     AppsError, EnsureAppOutcome, UninstallAppOutcome, UpdateOutcome,
 };
-use toride_apps::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
+use toride_apps::backends::{DistroBackend, FlatpakBackend, HomebrewBackend, NpmBackend};
 use toride_apps::manifest::{
     InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds, RecordSnapshot,
 };
@@ -122,10 +123,6 @@ fn seed_manifest(path: &Utf8PathBuf, record: InstallRecord) {
     manifest.save().expect("seed manifest saves");
 }
 
-fn brew_info_installed_spec() -> CommandSpec {
-    command("brew", ["info", "--json=v2", "--installed"])
-}
-
 fn brew_install_cask_spec() -> CommandSpec {
     command("brew", ["install", "--cask", "brave-browser"])
 }
@@ -136,6 +133,10 @@ fn brew_uninstall_cask_spec() -> CommandSpec {
 
 fn brew_versions_cask_spec() -> CommandSpec {
     command("brew", ["list", "--cask", "--versions", "brave-browser"])
+}
+
+fn brew_versions_formula_spec() -> CommandSpec {
+    command("brew", ["list", "--formula", "--versions", "brave-browser"])
 }
 
 fn brew_outdated_casks_spec() -> CommandSpec {
@@ -169,10 +170,6 @@ fn flatpak_uninstall_user_spec() -> CommandSpec {
     )
 }
 
-fn empty_brew_document() -> String {
-    r#"{"formulae":[],"casks":[]}"#.to_owned()
-}
-
 fn installed_cask_document(token: &str, version: &str) -> String {
     format!(
         r#"{{"formulae":[],"casks":[{{"token":"{token}","name":["Cask"],"version":"{version}","installed":"{version}"}}]}}"#
@@ -183,15 +180,9 @@ fn installed_cask_document(token: &str, version: &str) -> String {
 fn ensure_installed_installs_verifies_records_and_answers_present_twice() {
     let fake = FakeRunner::new().strict();
     let fake = fake
-        .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(empty_brew_document()),
-        )
+        .respond(brew_versions_formula_spec(), CommandOutput::from_stdout(""))
+        .respond(brew_versions_cask_spec(), CommandOutput::from_stdout(""))
         .respond(brew_install_cask_spec(), CommandOutput::from_stdout(""))
-        .respond(
-            brew_versions_cask_spec(),
-            CommandOutput::from_stdout("brave-browser 1.96.59\n"),
-        )
         .respond(
             brew_versions_cask_spec(),
             CommandOutput::from_stdout("brave-browser 1.96.59\n"),
@@ -251,10 +242,13 @@ fn ensure_installed_installs_verifies_records_and_answers_present_twice() {
 
 #[test]
 fn ensure_installed_keeps_a_foreign_install_as_is() {
-    let fake = FakeRunner::new().strict().respond(
-        brew_info_installed_spec(),
-        CommandOutput::from_stdout(installed_cask_document("brave-browser", "1.90.0")),
-    );
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(brew_versions_formula_spec(), CommandOutput::from_stdout(""))
+        .respond(
+            brew_versions_cask_spec(),
+            CommandOutput::from_stdout("brave-browser 1.90.0\n"),
+        );
     let path = temp_manifest_path("foreign-keep");
     let mut apps = blocking(&fake, &path);
 
@@ -320,10 +314,8 @@ fn ensure_installed_with_a_version_pins_the_versioned_token_when_the_offering_di
     );
     let fake = FakeRunner::new().strict();
     let fake = fake
-        .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(empty_brew_document()),
-        )
+        .respond(brew_versions_formula_spec(), CommandOutput::from_stdout(""))
+        .respond(brew_versions_cask_spec(), CommandOutput::from_stdout(""))
         .respond(
             brew_info_token_spec(),
             CommandOutput::from_stdout(installed_cask_document("brave-browser", "1.96.59")),
@@ -331,10 +323,6 @@ fn ensure_installed_with_a_version_pins_the_versioned_token_when_the_offering_di
         .respond(
             versioned_install_spec.clone(),
             CommandOutput::from_stdout(""),
-        )
-        .respond(
-            versioned_probe_spec.clone(),
-            CommandOutput::from_stdout("brave-browser@1.90.0 1.90.0\n"),
         )
         .respond(
             versioned_probe_spec.clone(),
@@ -413,7 +401,7 @@ fn ensure_installed_at_the_offered_version_over_a_stale_record_rides_the_manager
                     token: "brave-browser".to_owned(),
                     cask: true,
                 },
-                "the plain token — no @-joined spelling may run on a re-install"
+                "the plain token: no @-joined spelling may run on a re-install"
             );
             assert_eq!(version.as_deref(), Some("1.96.59"));
         }
@@ -504,7 +492,7 @@ fn cargo_installs_records_and_reports_status_in_line() {
     assert_eq!(
         apps.available_versions(&id("ripgrep")).unwrap(),
         Vec::<Version>::new(),
-        "cargo reports no version listing — its offering probe is singular"
+        "cargo reports no version listing: its offering probe is singular"
     );
     assert!(
         std::fs::read_to_string(path.as_std_path())
@@ -929,7 +917,7 @@ impl RecordStore for FailingStore {
         })
     }
 
-    fn save(&self, _snapshot: &RecordSnapshot) -> ManifestResult<()> {
+    fn save(&self, _records: &BTreeMap<TorideId, InstallRecord>) -> ManifestResult<()> {
         Err(ManifestError::Io(std::io::Error::other("disk full")))
     }
 }
@@ -1011,7 +999,7 @@ fn update_surfaces_a_failed_save_after_the_upgrade_itself_succeeded() {
             .find(|(record_id, _)| *record_id == &id("brave-browser"))
             .and_then(|(_, record)| record.version.as_deref()),
         Some("1.96.59"),
-        "the upgrade already succeeded — the in-memory record is rewritten"
+        "the upgrade already succeeded: the in-memory record is rewritten"
     );
 }
 
@@ -1094,15 +1082,9 @@ fn pin_and_unpin_run_the_kind_scoped_argv_and_refuse_unrecorded_ids() {
 fn blocking_wraps_and_unwraps_sharing_one_state() {
     let fake = FakeRunner::new().strict();
     let fake = fake
-        .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(empty_brew_document()),
-        )
+        .respond(brew_versions_formula_spec(), CommandOutput::from_stdout(""))
+        .respond(brew_versions_cask_spec(), CommandOutput::from_stdout(""))
         .respond(brew_install_cask_spec(), CommandOutput::from_stdout(""))
-        .respond(
-            brew_versions_cask_spec(),
-            CommandOutput::from_stdout("brave-browser 1.96.59\n"),
-        )
         .respond(
             brew_versions_cask_spec(),
             CommandOutput::from_stdout("brave-browser 1.96.59\n"),
@@ -1187,6 +1169,10 @@ fn brew_versions_cask_for(token: &str) -> CommandSpec {
     command("brew", ["list", "--cask", "--versions", token])
 }
 
+fn brew_versions_formula_for(token: &str) -> CommandSpec {
+    command("brew", ["list", "--formula", "--versions", token])
+}
+
 fn cask_app_with(slug: &str, token: &str) -> App {
     app(
         slug,
@@ -1203,8 +1189,12 @@ fn ensure_installed_many_attempts_every_app_and_reports_per_item_outcomes() {
     let fake = FakeRunner::new()
         .strict()
         .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(empty_brew_document()),
+            brew_versions_formula_for("brave-browser"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_cask_for("brave-browser"),
+            CommandOutput::from_stdout(""),
         )
         .respond(brew_install_cask_spec(), CommandOutput::from_stdout(""))
         .respond(
@@ -1212,16 +1202,24 @@ fn ensure_installed_many_attempts_every_app_and_reports_per_item_outcomes() {
             CommandOutput::from_stdout("brave-browser 1.96.59\n"),
         )
         .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(empty_brew_document()),
+            brew_versions_formula_for("ghost-cask"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_cask_for("ghost-cask"),
+            CommandOutput::from_stdout(""),
         )
         .respond(
             brew_install_cask_for("ghost-cask"),
             CommandOutput::from_stderr("Error: cask not found", 1),
         )
         .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(empty_brew_document()),
+            brew_versions_formula_for("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_cask_for("firefox"),
+            CommandOutput::from_stdout(""),
         )
         .respond(
             brew_install_cask_for("firefox"),
@@ -1272,6 +1270,100 @@ fn ensure_installed_many_attempts_every_app_and_reports_per_item_outcomes() {
         ),
         "{:?}",
         outcomes[2].result
+    );
+    let brew_info_listings = fake
+        .calls()
+        .iter()
+        .filter(|spec| {
+            spec.program == "brew"
+                && spec.args.first().map(String::as_str) == Some("info")
+                && spec.args.contains(&"--installed".to_owned())
+        })
+        .count();
+    assert_eq!(
+        brew_info_listings, 0,
+        "the batch's foreign checks keep the kind-scoped probes, never the full store listing"
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+fn npm_blocking(fake: &FakeRunner, manifest_path: &Utf8PathBuf) -> AppsBlocking {
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    Apps::builder()
+        .runner(seam.clone())
+        .target(Target::macos(toride_apps::Arch::X86_64))
+        .manifest_path(manifest_path)
+        .npm(NpmBackend::new(seam))
+        .build()
+        .expect("facade builds over the fake seam")
+        .blocking()
+}
+
+fn npm_package_app(slug: &str, package: &str) -> App {
+    app(
+        slug,
+        InstallMethod::Npm {
+            package: package.to_owned(),
+            version: None,
+        },
+    )
+}
+
+#[test]
+fn ensure_installed_many_shares_one_foreign_listing_across_the_batch() {
+    let path = temp_manifest_path("batch-install-shared-listing");
+    let npm_list = command("npm", ["list", "--global", "--depth=0", "--json"]);
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(npm_list.clone(), CommandOutput::from_stdout("{}"))
+        .respond(
+            command("npm", ["install", "-g", "typescript"]),
+            CommandOutput::from_stdout("added 1 package"),
+        )
+        .respond(
+            npm_list.clone(),
+            CommandOutput::from_stdout(r#"{"dependencies": {"typescript": {"version": "5.4.5"}}}"#),
+        )
+        .respond(
+            command("npm", ["install", "-g", "prettier"]),
+            CommandOutput::from_stdout("added 1 package"),
+        )
+        .respond(
+            npm_list.clone(),
+            CommandOutput::from_stdout(
+                r#"{"dependencies": {"typescript": {"version": "5.4.5"}, "prettier": {"version": "3.2.5"}}}"#,
+            ),
+        );
+    let mut blocking = npm_blocking(&fake, &path);
+    let typescript = npm_package_app("typescript", "typescript");
+    let prettier = npm_package_app("prettier", "prettier");
+
+    let outcomes =
+        blocking.ensure_installed_many([&typescript, &prettier], &AppInstallOptions::new());
+
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    for outcome in &outcomes {
+        assert!(
+            matches!(
+                outcome.result.as_ref().expect("every item installs"),
+                EnsureAppOutcome::Installed {
+                    backend: BackendId::Npm,
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
+    }
+    let npm_lists = fake
+        .calls()
+        .iter()
+        .filter(|spec| {
+            spec.program == "npm" && spec.args.first().map(String::as_str) == Some("list")
+        })
+        .count();
+    assert_eq!(
+        npm_lists, 3,
+        "one shared foreign listing plus one verify per install"
     );
     fake.assert_no_unmatched_calls();
 }

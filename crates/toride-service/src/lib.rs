@@ -1,4 +1,4 @@
-//! `toride-service` — shared systemd service management utilities.
+//! `toride-service`: shared systemd service management utilities.
 //!
 //! Provides a [`ServiceManager`] struct that wraps `systemctl` operations
 //! behind the [`toride_runner::Runner`] trait, plus standalone convenience
@@ -8,8 +8,9 @@
 //!
 //! The primary entry point is [`ServiceManager`], which accepts any
 //! `Box<dyn toride_runner::Runner>` and delegates all `systemctl` invocations
-//! through it. This keeps the entire call stack testable and supports dry-run
-//! mode automatically.
+//! through it. This keeps the entire call stack testable with a fake runner.
+//! Install and deploy operations always perform real writes and `systemctl`
+//! calls; there is no dry-run mode.
 //!
 //! For quick one-off queries where dependency injection is unnecessary, the
 //! free functions in [`free_functions`] use a default `DuctRunner` internally.
@@ -38,7 +39,9 @@
 
 pub mod error;
 pub mod free_functions;
+pub mod ledger;
 pub mod manager;
 
 pub use error::{Error, Result};
+pub use ledger::{ActionKind, ActionLedger, ActionRecord, LedgerError, LedgerResult};
 pub use manager::{ServiceManager, ServiceStatus};

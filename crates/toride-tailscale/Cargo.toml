@@ -14,18 +14,24 @@ categories = ["network-programming", "api-bindings"]
 # to the real client. The binary is only compiled when requested (it lives
 # behind no feature flag of its own, but it `use`s `crate::cli` which is
 # `#[cfg(feature = "cli")]`-gated, so building the bin without `cli` fails the
-# link — exactly the intent).
+# link, exactly the intent).
 [[bin]]
 name = "toride-tailscale"
 path = "src/main.rs"
 required-features = ["cli"]
 
+## The lib carries no `#[bench]` functions; criterion owns the `[[bench]]`
+## target. Disabling the lib bench target keeps `cargo bench -- <criterion
+## args>` from forwarding those args to the libtest harness, which does not
+## understand them.
+[lib]
+bench = false
+
 [features]
 default = ["client", "doctor"]
-client = ["dep:duct", "dep:reqwest", "dep:tokio", "toride-runner/duct-runner"]
+client = ["dep:duct", "dep:reqwest", "dep:tokio", "dep:serde", "toride-runner/duct-runner"]
 doctor = ["service"]
 service = ["client", "dep:toride-service"]
-serde = ["dep:serde"]
 # `cli` implies `client`, `doctor`, and `service`: the dispatch in
 # [`TailscaleArgs::dispatch`](crate::cli::TailscaleArgs::dispatch) drives the
 # real `TailscaleClient`, `Doctor`, and `TailscaleService`, so enabling `cli`
@@ -53,6 +59,13 @@ tempfile = "3"
 assert_fs = "1"
 proptest = "1"
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
+tokio = { workspace = true }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "status_parse"
+harness = false
+required-features = ["client"]
 
 [lints]
 workspace = true

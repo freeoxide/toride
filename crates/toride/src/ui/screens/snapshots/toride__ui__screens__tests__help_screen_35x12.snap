@@ -3,14 +3,14 @@ source: crates/toride/src/ui/screens/mod.rs
 expression: output
 ---
 "┌───────────── Help ──────────────┐"
+"│                                 │"
 "│              Help               │"
 "│                                 │"
 "│           Tab   Focus           │"
 "│            j/k   Move           │"
-"│           Enter   Open          │"
-"│           \   Collapse          │"
+"│          Ctrl+T   Theme         │"
+"│    Ctrl+Shift+A   Animations    │"
 "│             q   Quit            │"
-"│                                 │"
 "│                                 │"
 "│            Esc  close           │"
 "└─────────────────────────────────┘"

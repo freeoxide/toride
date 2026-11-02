@@ -100,14 +100,16 @@ pub struct AnomalyReport {
     pub timestamp: SystemTime,
     /// Individual anomaly findings.
     pub findings: Vec<AnomalyFinding>,
-    /// The monitoring snapshot that was analysed.
-    pub snapshot: MonitorReport,
+    /// The monitoring snapshot that was analysed, shared so retaining the
+    /// report next to the original snapshot costs one reference count
+    /// rather than a full [`MonitorReport`] deep copy.
+    pub snapshot: std::sync::Arc<MonitorReport>,
 }
 
 impl AnomalyReport {
     /// Create an anomaly report with no findings.
     #[must_use]
-    pub fn empty(snapshot: MonitorReport) -> Self {
+    pub fn empty(snapshot: std::sync::Arc<MonitorReport>) -> Self {
         Self {
             timestamp: SystemTime::now(),
             findings: Vec::new(),

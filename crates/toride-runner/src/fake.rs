@@ -28,7 +28,9 @@ struct ExactResponse {
 /// A [`Runner`] that returns canned responses for testing.
 ///
 /// Responses are consumed in FIFO order. If more calls are made than
-/// responses have been pushed, the last response is reused.
+/// responses have been pushed, the last response is reused; that retained
+/// tail counts as consumed for [`FakeRunner::assert_no_unmatched_calls`]
+/// once it has been served.
 ///
 /// # Modes
 ///
@@ -68,9 +70,17 @@ struct ExactResponse {
 /// let output = runner.run(&spec).unwrap();
 /// assert_eq!(output.stdout_trimmed(), "[]");
 /// ```
+/// FIFO queue state: the pending responses plus whether the retained
+/// reusable tail has been served at least once.
+#[derive(Default)]
+struct ResponseQueue {
+    queue: Vec<Result<CommandOutput>>,
+    tail_served: bool,
+}
+
 pub struct FakeRunner {
     /// FIFO response queue (used when no exact match is found).
-    responses: Arc<Mutex<Vec<Result<CommandOutput>>>>,
+    responses: Arc<Mutex<ResponseQueue>>,
     /// Exact-match responses keyed by spec.
     exact_responses: Arc<Mutex<Vec<ExactResponse>>>,
     /// All calls recorded for later inspection.
@@ -84,7 +94,7 @@ impl FakeRunner {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            responses: Arc::new(Mutex::new(Vec::new())),
+            responses: Arc::new(Mutex::new(ResponseQueue::default())),
             exact_responses: Arc::new(Mutex::new(Vec::new())),
             calls: Arc::new(Mutex::new(Vec::new())),
             strict: false,
@@ -101,17 +111,16 @@ impl FakeRunner {
     /// Add a successful response to the FIFO queue.
     #[must_use]
     pub fn push_response(self, output: CommandOutput) -> Self {
-        self.responses
-            .lock()
-            .expect("responses lock")
-            .push(Ok(output));
-        self
+        self.push_result(Ok(output))
     }
 
     /// Add a result (success or error) to the FIFO queue.
     #[must_use]
     pub fn push_result(self, result: Result<CommandOutput>) -> Self {
-        self.responses.lock().expect("responses lock").push(result);
+        let mut responses = self.responses.lock().expect("responses lock");
+        responses.queue.push(result);
+        responses.tail_served = false;
+        drop(responses);
         self
     }
 
@@ -120,9 +129,9 @@ impl FakeRunner {
     /// When a call matches the spec, this response takes priority over the
     /// FIFO queue. Matching compares `program`, `args`, `stdin`, `stdin_bytes`,
     /// `stdin_null`, `env`, `env_remove`, `clear_env`, `cwd`, `output_mode`,
-    /// `redact`, `env_precedence`, and `path_resolution`; `timeout`,
-    /// `timeout_policy`, `output_limit`, `argv_policy`, and `output_cap` are
-    /// ignored as runtime policy.
+    /// `redact`, `redact_flags`, `env_precedence`, and `path_resolution`;
+    /// `timeout`, `timeout_policy`, `output_limit`, `argv_policy`, and
+    /// `output_cap` are ignored as runtime policy.
     #[must_use]
     pub fn respond(self, spec: CommandSpec, output: CommandOutput) -> Self {
         self.exact_responses
@@ -173,11 +182,21 @@ impl FakeRunner {
 
     /// Assert that all pushed FIFO responses were consumed.
     ///
+    /// The reusable tail is exempt once served: the last pushed response is
+    /// retained so extra calls can reuse it, so it counts as consumed here
+    /// after it has been returned at least once. A response pushed but never
+    /// served still counts as remaining.
+    ///
     /// # Panics
     ///
-    /// Panics if there are unconsumed responses remaining.
+    /// Panics if responses remain that were pushed but never served.
     pub fn assert_no_unmatched_calls(&self) {
-        let remaining = self.responses.lock().expect("responses lock").len();
+        let responses = self.responses.lock().expect("responses lock");
+        let remaining = if responses.queue.len() == 1 && responses.tail_served {
+            0
+        } else {
+            responses.queue.len()
+        };
         assert_eq!(
             remaining, 0,
             "expected all FIFO responses to be consumed, but {remaining} remain"
@@ -198,7 +217,7 @@ impl FakeRunner {
     /// Get the next FIFO response, or a default.
     fn next_fifo_response(&self) -> Result<CommandOutput> {
         let mut responses = self.responses.lock().expect("responses lock");
-        if responses.is_empty() {
+        if responses.queue.is_empty() {
             if self.strict {
                 return Err(Error::Other(
                     "FakeRunner (strict): no response configured for call".to_owned(),
@@ -206,10 +225,11 @@ impl FakeRunner {
             }
             return Ok(CommandOutput::from_stdout(String::new()));
         }
-        if responses.len() == 1 {
-            return responses.first().expect("just checked").clone();
+        if responses.queue.len() == 1 {
+            responses.tail_served = true;
+            return responses.queue[0].clone();
         }
-        responses.remove(0)
+        responses.queue.remove(0)
     }
 }
 
@@ -256,7 +276,6 @@ impl Runner for FakeRunner {
 #[async_trait::async_trait]
 impl AsyncRunner for FakeRunner {
     async fn run(&self, spec: &CommandSpec) -> Result<CommandOutput> {
-        // Delegate to the sync impl — FakeRunner is in-memory, no real I/O.
         Runner::run(self, spec)
     }
 }
@@ -273,6 +292,7 @@ fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
         && a.cwd == b.cwd
         && a.output_mode == b.output_mode
         && a.redact == b.redact
+        && a.redact_flags == b.redact_flags
         && a.env_precedence == b.env_precedence
         && a.path_resolution == b.path_resolution
 }
@@ -334,6 +354,50 @@ mod tests {
         let _ = run_sync(&runner, &CommandSpec::new("c"));
         // Single response is reused, not consumed.
         assert_eq!(runner.calls().len(), 3);
+    }
+
+    /// foundations-12: a single pushed response that has been served must
+    /// count as consumed, so the reuse contract and the empty-queue
+    /// assertion no longer collide.
+    #[test]
+    fn served_single_response_counts_as_consumed() {
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("only"));
+        let output = run_sync(&runner, &CommandSpec::new("a")).unwrap();
+        assert_eq!(output.stdout_trimmed(), "only");
+        runner.assert_no_unmatched_calls();
+    }
+
+    /// The same holds for the tail of a multi-response queue: once every
+    /// pushed response has been served, nothing remains unconsumed.
+    #[test]
+    fn served_response_tail_counts_as_consumed() {
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("1"))
+            .push_response(CommandOutput::from_stdout("2"));
+        assert_eq!(
+            run_sync(&runner, &CommandSpec::new("a"))
+                .unwrap()
+                .stdout_trimmed(),
+            "1"
+        );
+        assert_eq!(
+            run_sync(&runner, &CommandSpec::new("b"))
+                .unwrap()
+                .stdout_trimmed(),
+            "2"
+        );
+        runner.assert_no_unmatched_calls();
+    }
+
+    /// A response pushed but never served still counts as remaining.
+    #[test]
+    #[should_panic(expected = "1 remain")]
+    fn unserved_pushed_response_still_counts_as_remaining() {
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("1"))
+            .push_response(CommandOutput::from_stdout("2"));
+        let _ = run_sync(&runner, &CommandSpec::new("a")).unwrap();
+        runner.assert_no_unmatched_calls();
     }
 
     #[test]
@@ -471,7 +535,7 @@ mod tests {
     }
 
     /// `stdin_null` is command construction (how the child's stdio is wired),
-    /// so a spec that forgot it must fail an exact match — same ruling as
+    /// so a spec that forgot it must fail an exact match, same ruling as
     /// `redact`. This is what pins probe-issuing callers (e.g. the installer's
     /// `Detector`) to keep carrying the flag their tests registered.
     #[test]
@@ -527,7 +591,7 @@ mod tests {
     }
 
     /// `stdin_bytes` changes what the child reads, so a spec that forgot it
-    /// must fail an exact match — same ruling as `stdin` and `stdin_null`.
+    /// must fail an exact match, same ruling as `stdin` and `stdin_null`.
     #[test]
     fn specs_match_compares_stdin_bytes() {
         let runner = FakeRunner::new().strict().respond(

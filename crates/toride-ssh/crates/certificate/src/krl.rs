@@ -26,7 +26,9 @@ pub struct KrlInfo {
     pub generated_at: Option<i64>,
     /// Comment embedded in the KRL.
     pub comment: Option<String>,
-    /// Revoked certificate serial numbers (expanded from ranges).
+    /// Revoked certificate serial numbers, expanded from ranges up to
+    /// `MAX_SERIAL_RANGE_EXPANSION` (10,000) entries per range; larger
+    /// ranges are truncated with a `tracing::warn!`.
     pub revoked_serials: Vec<u64>,
     /// Revoked certificate key IDs.
     pub revoked_key_ids: Vec<String>,

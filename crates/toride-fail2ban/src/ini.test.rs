@@ -6,15 +6,12 @@
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::fs;
-    use std::path::Path;
-    use std::str::FromStr;
-
-    use crate::Error;
     use crate::ini::{DEFAULT_NAMESPACE, IniManager, ManagedFile, ManagedFileKind};
     use crate::render;
     use crate::spec::*;
+    use std::collections::HashMap;
+    use std::fs;
+    use std::path::Path;
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -188,9 +185,9 @@ mod tests {
     #[test]
     fn backup_path_includes_bak_and_timestamp() {
         let dir = setup_config_dir();
-        let mgr = manager(&dir);
+        let _mgr = manager(&dir);
         let original = dir.path().join("jail.d/test.conf");
-        let backup = mgr.backup_path(&original);
+        let backup = IniManager::backup_path(&original);
 
         let backup_str = backup.to_str().unwrap();
         assert!(
@@ -313,7 +310,7 @@ mod tests {
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.starts_with(render::managed_header().trim_end()));
-        assert!(content.contains("[nginx-auth]"));
+        assert!(content.contains("[Definition]"));
         assert!(content.contains("failregex"));
 
         assert_eq!(report.files_written.len(), 1);
@@ -336,7 +333,7 @@ mod tests {
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.starts_with(render::managed_header().trim_end()));
-        assert!(content.contains("[my-hook]"));
+        assert!(content.contains("[Definition]"));
         assert!(content.contains("actionban"));
 
         assert_eq!(report.files_written.len(), 1);
@@ -637,7 +634,7 @@ mod tests {
         mgr.write_filter(&filter).expect("write");
 
         let content = mgr.read_filter("nginx-auth").expect("read_filter");
-        assert!(content.contains("[nginx-auth]"));
+        assert!(content.contains("[Definition]"));
         assert!(content.contains("failregex"));
     }
 
@@ -659,7 +656,7 @@ mod tests {
         mgr.write_action(&action).expect("write");
 
         let content = mgr.read_action("hook").expect("read_action");
-        assert!(content.contains("[hook]"));
+        assert!(content.contains("[Definition]"));
         assert!(content.contains("actionban"));
     }
 
@@ -778,7 +775,7 @@ mod tests {
         // Content should contain all expected sections.
         assert!(content.contains("[atomic]"));
         assert!(content.contains("enabled = true"));
-        assert!(content.contains("filter = f"));
+        assert!(content.contains("filter = managed-by-fail2ban-kit-f"));
         assert!(content.contains("bantime = 10m"));
         assert!(content.contains("findtime = 10m"));
     }
@@ -849,7 +846,7 @@ mod tests {
             "current file should have new bantime"
         );
         assert!(
-            current.contains("filter = f2"),
+            current.contains("filter = managed-by-fail2ban-kit-f2"),
             "current file should have new filter"
         );
 
@@ -1018,7 +1015,7 @@ mod tests {
         mgr.write_filter(&filter).expect("write");
 
         let content = mgr.read_filter("roundtrip").expect("read");
-        assert!(content.contains("[roundtrip]"));
+        assert!(content.contains("[Definition]"));
         assert!(content.contains("failregex = ^fail1 <HOST>$"));
         assert!(content.contains("            ^fail2 <HOST>$"));
         assert!(content.contains("prefregex = ^<F-MLFID>.*</F-MLFID>"));
@@ -1049,7 +1046,7 @@ mod tests {
         mgr.write_action(&action).expect("write");
 
         let content = mgr.read_action("roundtrip-action").expect("read");
-        assert!(content.contains("[roundtrip-action]"));
+        assert!(content.contains("[Definition]"));
         assert!(content.contains("actionstart = /usr/bin/start"));
         assert!(content.contains("actionstop = /usr/bin/stop"));
         assert!(content.contains("actioncheck = /usr/bin/check"));

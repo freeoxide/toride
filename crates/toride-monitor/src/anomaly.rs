@@ -47,12 +47,27 @@ impl AnomalyDetector {
     /// - **Port scan pattern**: unusually many unique destination ports from
     ///   a single source.
     ///
+    /// Deep-clones the report into the returned [`AnomalyReport`]; use
+    /// [`detect_into`](Self::detect_into) to move an owned snapshot instead.
+    ///
     /// # Errors
     ///
     /// This method does not return errors; anomaly detection is designed to
     /// be resilient and always produce a report. The `Result` wrapper is kept
     /// for API consistency with future extensions.
     pub fn detect(&self, report: &MonitorReport) -> Result<AnomalyReport> {
+        self.detect_into(report.clone())
+    }
+
+    /// Analyse an owned monitoring snapshot, moving it behind the report's
+    /// shared [`Arc`](std::sync::Arc) instead of cloning it.
+    ///
+    /// Runs the same checks as [`detect`](Self::detect).
+    ///
+    /// # Errors
+    ///
+    /// This method does not return errors; detection always produces a report.
+    pub fn detect_into(&self, report: MonitorReport) -> Result<AnomalyReport> {
         let mut findings = Vec::new();
 
         // Check total connection volume.
@@ -129,15 +144,15 @@ impl AnomalyDetector {
         }
 
         // Check for port scan patterns.
-        let port_scan = detect_port_scan(&report.connections);
-        if let Some((src_ip, port_count)) = port_scan {
+        let max_ports = self.thresholds.max_unique_dest_ports_per_source;
+        if let Some((src_ip, port_count)) = detect_port_scan(&report.connections, max_ports) {
             findings.push(
                 AnomalyFinding::new(
                     "anomaly.port-scan-pattern",
                     AnomalySeverity::Error,
                     "Potential port scan detected",
                     format!("{port_count} unique ports from {src_ip}"),
-                    "100 unique ports per source".to_string(),
+                    format!("{max_ports} unique ports per source"),
                 )
                 .fix("Investigate the source process and verify legitimate activity."),
             );
@@ -146,7 +161,7 @@ impl AnomalyDetector {
         Ok(AnomalyReport {
             timestamp: SystemTime::now(),
             findings,
-            snapshot: report.clone(),
+            snapshot: std::sync::Arc::new(report),
         })
     }
 }
@@ -154,7 +169,7 @@ impl AnomalyDetector {
 /// Determine severity based on how far the observed value exceeds the threshold.
 #[expect(
     clippy::cast_precision_loss,
-    reason = "ratio comparison is robust to f64 mantissa loss; values are connection/byte counts far below 2^52"
+    reason = "ratio comparison tolerates f64 mantissa loss; values are connection/byte counts far below 2^52"
 )]
 fn severity_ratio(observed: u64, threshold: u64) -> AnomalySeverity {
     let ratio = observed as f64 / threshold as f64;
@@ -167,9 +182,12 @@ fn severity_ratio(observed: u64, threshold: u64) -> AnomalySeverity {
     }
 }
 
-/// Detect a port scan pattern: a single source IP connecting to many
-/// unique destination ports.
-fn detect_port_scan(connections: &[ConnectionInfo]) -> Option<(IpAddr, usize)> {
+/// Detect a port scan pattern: a single source IP connecting to more than
+/// `max_unique_ports` unique destination ports.
+fn detect_port_scan(
+    connections: &[ConnectionInfo],
+    max_unique_ports: usize,
+) -> Option<(IpAddr, usize)> {
     use std::collections::HashMap;
 
     let mut src_ports: HashMap<IpAddr, HashSet<u16>> = HashMap::new();
@@ -177,10 +195,9 @@ fn detect_port_scan(connections: &[ConnectionInfo]) -> Option<(IpAddr, usize)> {
         src_ports.entry(conn.src).or_default().insert(conn.dst_port);
     }
 
-    // Threshold: more than 100 unique destination ports from one source.
     src_ports
         .into_iter()
-        .find(|(_, ports)| ports.len() > 100)
+        .find(|(_, ports)| ports.len() > max_unique_ports)
         .map(|(ip, ports)| (ip, ports.len()))
 }
 
@@ -218,6 +235,52 @@ mod tests {
         let detector = AnomalyDetector::default_detector();
         let report = MonitorReport::empty();
         let result = detector.detect(&report).unwrap();
+        assert!(result.is_clean());
+    }
+
+    #[test]
+    fn port_scan_threshold_is_tunable() {
+        let connections: Vec<ConnectionInfo> = (1..=5)
+            .map(|i| ConnectionInfo {
+                src: "10.0.0.1".parse().expect("src ip"),
+                src_port: 40_000,
+                dst: "192.0.2.1".parse().expect("dst ip"),
+                dst_port: 1000 + i,
+                protocol: "tcp".to_owned(),
+                state: "SYN_SENT".to_owned(),
+                bytes: None,
+                packets: None,
+            })
+            .collect();
+        let mut report = MonitorReport::empty();
+        report.connections = connections;
+        report.total_connections = 5;
+
+        let default = AnomalyDetector::default_detector();
+        assert!(
+            default.detect(&report).unwrap().is_clean(),
+            "5 ports is under the default 100 threshold"
+        );
+
+        let tuned = AnomalyDetector::new(crate::spec::AnomalyThreshold {
+            max_unique_dest_ports_per_source: 3,
+            ..crate::spec::AnomalyThreshold::default()
+        });
+        let report = tuned.detect(&report).unwrap();
+        let finding = report
+            .findings
+            .iter()
+            .find(|f| f.id == "anomaly.port-scan-pattern")
+            .expect("tuned threshold must flag 5 ports");
+        assert_eq!(finding.threshold, "3 unique ports per source");
+    }
+
+    #[test]
+    fn detect_into_shares_the_snapshot() {
+        let detector = AnomalyDetector::default_detector();
+        let report = MonitorReport::empty();
+        let result = detector.detect_into(report).unwrap();
+        assert!(std::sync::Arc::strong_count(&result.snapshot) >= 1);
         assert!(result.is_clean());
     }
 

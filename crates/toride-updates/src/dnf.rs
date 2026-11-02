@@ -43,10 +43,12 @@ impl<'a> DnfBackend<'a> {
 
     /// Check for available security updates using `dnf check-update`.
     ///
-    /// Returns `(security_updates, total_updates)`. Note that `dnf
-    /// check-update` exits with code `0` when there is nothing to do and code
-    /// `100` when updates are available; both are treated as success here and
-    /// the counts come from parsing stdout.
+    /// Returns `(security_updates, total_updates)`. The spec runs
+    /// `dnf check-update --security`, which lists only security advisories,
+    /// so every listed line is a security update and the two counts are
+    /// equal. Note that `dnf check-update` exits with code `0` when there is
+    /// nothing to do and code `100` when updates are available; both are
+    /// treated as success here and the counts come from parsing stdout.
     ///
     /// # Errors
     ///
@@ -61,7 +63,7 @@ impl<'a> DnfBackend<'a> {
             .run(&spec)
             .map_err(|e| Error::CommandFailed(format!("dnf check-update failed: {e}")))?;
         match output.exit_code {
-            Some(0 | 100) => crate::parse::parse_dnf_check(&output.stdout),
+            Some(0 | 100) => crate::parse::parse_dnf_check_security(&output.stdout),
             None => Err(Error::CommandFailed(
                 "dnf check-update produced no exit code (terminated by signal?)".to_string(),
             )),
@@ -150,6 +152,10 @@ fn apply_updates_spec() -> toride_runner::CommandSpec {
 
 /// Build the `journalctl` [`toride_runner::CommandSpec`] for the most recent
 /// dnf-automatic run.
+///
+/// `--output=cat` drops the `Mon Jun 02 06:42:11 host prog[pid]:` prefix
+/// journalctl's default format stamps on every line; without it the emitter
+/// markers never match.
 fn journal_spec() -> toride_runner::CommandSpec {
     toride_runner::CommandSpec::new("journalctl").args([
         "-u",
@@ -157,6 +163,7 @@ fn journal_spec() -> toride_runner::CommandSpec {
         "--no-pager",
         "-n",
         "50",
+        "--output=cat",
     ])
 }
 
@@ -170,15 +177,18 @@ mod tests {
     use toride_runner::fake::FakeRunner;
     use toride_runner::{CommandOutput, CommandSpec};
 
+    /// Real `dnf check-update --security` output: column-aligned
+    /// `name.arch evr repo` rows with plain repo names, no advisory prefix.
     #[test]
     fn check_updates_builds_dnf_check_update_security() {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(
             "Last metadata expiration check: 0:01:00 ago.\n\
-             kernel-core.x86_64 6.1.0-1 updates/security\n",
+             kernel-core.x86_64                   6.8.9-300.fc40             updates\n\
+             openssl-libs.x86_64                  3.2.1-1.fc40               updates\n",
         ));
         let (security, total) = DnfBackend::new(&runner).check_updates().unwrap();
-        assert_eq!(security, 1);
-        assert_eq!(total, 1);
+        assert_eq!(security, 2, "--security lists only security updates");
+        assert_eq!(total, 2);
         runner.assert_called_with(&CommandSpec::new("dnf").args(["check-update", "--security"]));
     }
 
@@ -190,8 +200,9 @@ mod tests {
             String::new(),
             Some(100),
         ));
-        let (_security, total) = DnfBackend::new(&runner).check_updates().unwrap();
+        let (security, total) = DnfBackend::new(&runner).check_updates().unwrap();
         assert_eq!(total, 1);
+        assert_eq!(security, 1, "the --security spec makes every row security");
     }
 
     #[test]
@@ -209,19 +220,22 @@ mod tests {
     }
 
     /// Real `journalctl -u dnf-automatic` sample parsed via the dnf-automatic
-    /// emitter format.
+    /// emitter format. The fixture carries journalctl's default
+    /// `Mon Jun 02 06:42:11 host prog[pid]:` prefix on every line; the
+    /// production spec passes `--output=cat` to strip it, and the parser
+    /// tolerates both shapes.
     ///
     /// Source: dnf upstream `dnf/automatic/emitter.py`:
     ///   APPLIED = "The following updates have been applied on '%s':"
-    ///   APPLIED_TIMESTAMP = "Updates completed at %s"
-    /// https://github.com/rpm-software-management/dnf/blob/master/dnf/automatic/emitter.py
+    ///   `APPLIED_TIMESTAMP` = "Updates completed at %s"
+    /// <https://github.com/rpm-software-management/dnf/blob/master/dnf/automatic/emitter.py>
     #[test]
     fn status_parses_journal_output() {
         let journal = "\
-The following updates have been applied on 'host.example.com':\n\
-    kernel-core-6.8.9-300.fc40.x86_64                    updates\n\
-    openssl-libs-3.2.1-1.fc40.x86_64                     updates\n\
-Updates completed at Mon Jun  2 06:42:11 2025\n";
+Mon Jun 02 06:41:58 host.example.com dnf-automatic[812]: The following updates have been applied on 'host.example.com':\n\
+Mon Jun 02 06:41:58 host.example.com dnf-automatic[812]:     kernel-core-6.8.9-300.fc40.x86_64                    updates\n\
+Mon Jun 02 06:41:58 host.example.com dnf-automatic[812]:     openssl-libs-3.2.1-1.fc40.x86_64                     updates\n\
+Mon Jun 02 06:42:11 host.example.com dnf-automatic[812]: Updates completed at Mon Jun  2 06:42:11 2025\n";
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(journal));
         let status = DnfBackend::new(&runner).status().unwrap();
         assert!(status.auto_updates_enabled);
@@ -233,12 +247,13 @@ Updates completed at Mon Jun  2 06:42:11 2025\n";
             "--no-pager",
             "-n",
             "50",
+            "--output=cat",
         ]));
     }
 
     #[test]
     fn status_empty_when_journal_unavailable() {
-        // journalctl failure (exit 1) is not propagated — empty status.
+        // journalctl failure (exit 1) is not propagated: empty status.
         let runner = FakeRunner::new().push_response(CommandOutput::from_stderr("No journal", 1));
         let status = DnfBackend::new(&runner).status().unwrap();
         assert_eq!(status.pending_security, 0);
@@ -266,7 +281,8 @@ Updates completed at Mon Jun  2 06:42:11 2025\n";
                 "dnf-automatic".to_owned(),
                 "--no-pager".to_owned(),
                 "-n".to_owned(),
-                "50".to_owned()
+                "50".to_owned(),
+                "--output=cat".to_owned()
             ]
         );
     }

@@ -104,7 +104,7 @@ fn snapshot_app_profile_web() {
             },
         ],
     };
-    insta::assert_snapshot!("app_profile_web", render_profile(&spec));
+    insta::assert_snapshot!("app_profile_web", render_profile(&spec).unwrap());
 }
 
 #[cfg(feature = "app-profile")]
@@ -125,7 +125,7 @@ fn snapshot_app_profile_range() {
             },
         ],
     };
-    insta::assert_snapshot!("app_profile_range", render_profile(&spec));
+    insta::assert_snapshot!("app_profile_range", render_profile(&spec).unwrap());
 }
 
 // ---------------------------------------------------------------------------

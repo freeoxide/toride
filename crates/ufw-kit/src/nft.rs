@@ -10,10 +10,6 @@ use crate::error::{Error, Result};
 use crate::spec::CommandSpec;
 use std::time::Duration;
 
-// ============================================================================
-// Types
-// ============================================================================
-
 /// A parsed nftables ruleset.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -76,10 +72,6 @@ pub struct NftSet {
     pub size: Option<usize>,
 }
 
-// ============================================================================
-// JSON parsing (lightweight, no serde_json dependency)
-// ============================================================================
-
 /// Parse nftables JSON output from `nft -j list ruleset`.
 ///
 /// This is a lightweight parser that extracts the key structural elements
@@ -93,17 +85,11 @@ pub fn parse_nft_json(json: &str) -> Result<NftRuleset> {
         return Ok(NftRuleset::default());
     }
 
-    // The nft JSON output is: {"nftables": [{"metainfo": {...}}, {"table": {...}}, ...]}
-    // We'll do a lightweight manual parse.
-
     let mut tables = Vec::new();
 
-    // Find the "nftables" array
     if let Some(arr_start) = trimmed.find("\"nftables\"") {
-        // Find the opening bracket of the array
         if let Some(bracket_start) = trimmed[arr_start..].find('[') {
             let arr_content_start = arr_start + bracket_start + 1;
-            // Find each table object
             let rest = &trimmed[arr_content_start..];
             tables = parse_nftables_array(rest);
         }
@@ -131,7 +117,6 @@ fn parse_nftables_array(content: &str) -> Vec<NftTable> {
                 if depth == 0 {
                     if let Some(start) = obj_start {
                         let obj = &content[start..=i];
-                        // Check if this object wraps a table
                         if let Some(table_str) = extract_wrapped_value(obj, "\"table\"") {
                             let table = parse_table_object(table_str);
                             tables.push(table);
@@ -152,7 +137,6 @@ fn parse_nftables_array(content: &str) -> Vec<NftTable> {
 fn extract_wrapped_value<'a>(obj: &'a str, key: &str) -> Option<&'a str> {
     let key_pos = obj.find(key)?;
     let after_key = &obj[key_pos + key.len()..];
-    // Skip whitespace and colon
     let after_colon = after_key.trim_start().strip_prefix(':')?;
     let after_colon = after_colon.trim_start();
 
@@ -160,7 +144,6 @@ fn extract_wrapped_value<'a>(obj: &'a str, key: &str) -> Option<&'a str> {
         return None;
     }
 
-    // Find matching closing brace
     let mut depth = 0;
     for (i, ch) in after_colon.char_indices() {
         match ch {
@@ -185,12 +168,10 @@ fn parse_table_object(json: &str) -> NftTable {
     let mut chains = Vec::new();
     let mut sets = Vec::new();
 
-    // Parse chains array
     if let Some(chains_str) = extract_json_array_content(json, "\"chain\"") {
         chains = parse_chains(chains_str);
     }
 
-    // Parse sets
     if let Some(sets_str) = extract_json_array_content(json, "\"set\"") {
         sets = parse_sets(sets_str);
     }
@@ -245,8 +226,6 @@ fn parse_chain_object(json: &str) -> NftChain {
 
     let mut rules = Vec::new();
 
-    // Parse rules within the chain
-    // Rules appear as {"rule": {...}} objects in the chain's array
     if let Some(rules_content) = extract_json_array_content(json, "\"rule\"") {
         rules = parse_rules(rules_content);
     }
@@ -264,7 +243,6 @@ fn parse_chain_object(json: &str) -> NftChain {
 fn parse_rules(content: &str) -> Vec<NftRule> {
     let mut rules = Vec::new();
 
-    // Each rule is a JSON object. We extract key fields.
     let mut depth = 0;
     let mut obj_start: Option<usize> = None;
 
@@ -347,6 +325,10 @@ fn parse_sets(content: &str) -> Vec<NftSet> {
 }
 
 /// Extract a JSON string value for a key.
+///
+/// Bytes are accumulated and decoded with [`String::from_utf8_lossy`] at
+/// the closing quote, so non-ASCII UTF-8 in table, chain, or comment names
+/// survives instead of decoding as Latin-1 mojibake.
 fn extract_json_string(json: &str, key: &str) -> Option<String> {
     let pos = json.find(key)?;
     let after_key = &json[pos + key.len()..];
@@ -357,27 +339,25 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
         return None;
     }
 
-    // Find the closing quote (handle escaped quotes)
     let bytes = after_colon.as_bytes();
-    let mut i = 1; // skip opening quote
-    let mut result = String::new();
+    let mut i = 1;
+    let mut result: Vec<u8> = Vec::new();
 
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => {
-                // Escaped character
                 if i + 1 < bytes.len() {
-                    result.push(bytes[i + 1] as char);
+                    result.push(bytes[i + 1]);
                     i += 2;
                 } else {
                     break;
                 }
             }
             b'"' => {
-                return Some(result);
+                return Some(String::from_utf8_lossy(&result).into_owned());
             }
             b => {
-                result.push(b as char);
+                result.push(b);
                 i += 1;
             }
         }
@@ -393,7 +373,6 @@ fn extract_json_number(json: &str, key: &str) -> Option<i64> {
     let after_colon = after_key.trim_start().strip_prefix(':')?;
     let after_colon = after_colon.trim_start();
 
-    // Read digits (possibly negative)
     let num_str: String = after_colon
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '-')
@@ -405,20 +384,16 @@ fn extract_json_number(json: &str, key: &str) -> Option<i64> {
 /// Extract a simplified expression summary from a rule object.
 fn extract_expr_summary(json: &str) -> String {
     const MAX_CHARS: usize = 200;
-    // Try to extract the "expr" array and summarize it
     if let Some(expr_pos) = json.find("\"expr\"") {
         let after = &json[expr_pos..];
-        // Cap at 500 CHARACTERS, not bytes: a raw `&after[..500]` would panic
-        // if byte 500 lands inside a multibyte codepoint (e.g. a non-ASCII nft
-        // comment), exactly the class of bug this function must avoid.
+        // Cap at 500 characters, not bytes: a raw byte slice panics when the
+        // cut lands inside a multibyte codepoint (a non-ASCII nft comment).
         let summary = after
             .chars()
             .take(500)
             .collect::<String>()
             .replace('\n', " ")
             .replace('\\', "");
-        // Truncate to a reasonable size, on a UTF-8 char boundary, by character
-        // count (never by raw byte offset).
         let char_count = summary.chars().count();
         if char_count > MAX_CHARS {
             let truncated: String = summary.chars().take(MAX_CHARS).collect();
@@ -433,15 +408,12 @@ fn extract_expr_summary(json: &str) -> String {
 
 /// Extract the content of a JSON array associated with a key.
 fn extract_json_array_content<'a>(json: &'a str, key: &str) -> Option<&'a str> {
-    // Look for "key": [ or {"key": {...
-    // For arrays within objects like "chain": [{...}, {...}]
     let pos = json.find(key)?;
     let after_key = &json[pos + key.len()..];
     let after_colon = after_key.trim_start().strip_prefix(':')?;
     let after_colon = after_colon.trim_start();
 
     if after_colon.starts_with('[') {
-        // Find matching bracket
         let mut depth = 0;
         for (i, ch) in after_colon.char_indices() {
             match ch {
@@ -456,7 +428,6 @@ fn extract_json_array_content<'a>(json: &'a str, key: &str) -> Option<&'a str> {
             }
         }
     } else if after_colon.starts_with('{') {
-        // Single object — return it
         let mut depth = 0;
         for (i, ch) in after_colon.char_indices() {
             match ch {
@@ -474,10 +445,6 @@ fn extract_json_array_content<'a>(json: &'a str, key: &str) -> Option<&'a str> {
 
     None
 }
-
-// ============================================================================
-// Inspection functions
-// ============================================================================
 
 /// Inspect nftables ruleset as structured JSON.
 ///
@@ -672,17 +639,11 @@ mod tests {
 
     #[test]
     fn extract_expr_summary_truncates_multibyte_without_panic() {
-        // Build an expr block longer than the 200-CHAR cap where byte index
-        // 200 also falls inside a multibyte (non-ASCII) codepoint. A naive
-        // `&summary[..200]` byte slice would panic at that boundary; the
-        // char-bounded truncation must not.
-        //
-        // Each "é" is 2 UTF-8 bytes; 300 of them = 600 bytes, so byte index 200
-        // is mid-codepoint, and the summary's 9 + 300 + 2 = 311 chars exceed the
-        // 200-char cap so the truncation path actually runs.
+        // 300 two-byte "é" chars put byte index 200 mid-codepoint while the
+        // 311-char summary exceeds the 200-char cap, so the truncation path
+        // runs exactly where a naive byte slice would panic.
         let multibyte = "é".repeat(300);
         let json = format!("{{\"expr\": [{multibyte}]}}");
-        // Must not panic and must be truncated to at most 200 chars + "...".
         let summary = extract_expr_summary(&json);
         assert!(
             summary.chars().count() <= 200 + "...".chars().count(),
@@ -696,10 +657,20 @@ mod tests {
     }
 
     #[test]
+    fn extract_json_string_decodes_multibyte_utf8() {
+        let json = "{\"name\": \"düpen-ft\"}";
+        let name = extract_json_string(json, "\"name\"").expect("name extracts");
+        assert_eq!(name, "düpen-ft");
+
+        let comment_json = "{\"comment\": \"fléchée → règle\"}";
+        let comment = extract_json_string(comment_json, "\"comment\"").expect("comment extracts");
+        assert_eq!(comment, "fléchée → règle");
+    }
+
+    #[test]
     fn extract_expr_summary_keeps_short_summary_intact() {
         let json = r#"{"expr": ["drop"]}"#;
         let summary = extract_expr_summary(json);
-        // Short summaries are not truncated (no trailing "...").
         assert!(!summary.ends_with("..."));
     }
 }

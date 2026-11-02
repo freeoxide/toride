@@ -1,14 +1,10 @@
 //! Service management layer for backup scheduling.
 //!
-//! Manages systemd services and timers related to backup operations.
-//! Delegates to the `toride_service` crate for systemd interactions when
-//! available.
+//! Manages systemd services and timers related to backup operations through
+//! the crate-local [`systemd`](crate::systemd) module (its own `systemctl`
+//! invocations), not the `toride-service` crate.
 
 use crate::Result;
-
-// ---------------------------------------------------------------------------
-// BackupServiceManager
-// ---------------------------------------------------------------------------
 
 /// Manages the backup-related systemd services and timers.
 ///
@@ -43,10 +39,6 @@ impl BackupServiceManager {
     pub fn service_unit(&self, name: &str) -> String {
         format!("{}{}.service", self.prefix, name)
     }
-
-    // -----------------------------------------------------------------------
-    // Lifecycle operations
-    // -----------------------------------------------------------------------
 
     /// Start the backup timer for the given job.
     ///

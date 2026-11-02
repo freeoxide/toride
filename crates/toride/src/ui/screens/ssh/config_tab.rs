@@ -496,12 +496,6 @@ impl SshTab for ConfigTab {
         self.detail_open.is_some() || self.action_modal.is_some()
     }
 
-    fn close_modal(&mut self) {
-        self.detail_open = None;
-        self.detail_modal_rect = None;
-        self.action_modal = None;
-    }
-
     fn drain_ops(&mut self) -> Vec<SshOp> {
         std::mem::take(&mut self.pending_ops)
     }
@@ -579,7 +573,6 @@ impl ConfigTab {
 
             let mut spans = Vec::new();
 
-            // Icon — accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
                 Style::new().fg(if is_selected || is_hovered {

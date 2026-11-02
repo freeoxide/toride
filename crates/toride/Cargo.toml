@@ -12,10 +12,14 @@ categories = ["command-line-utilities", "os"]
 [lib]
 name = "toride"
 path = "src/lib.rs"
+# cargo bench must pass criterion flags (--baseline pre) to the [[bench]]
+# targets below; libtest rejects them, so the lib never benches via cargo.
+bench = false
 
 [[bin]]
 name = "toride"
 path = "src/main.rs"
+bench = false
 
 [dependencies]
 ratatui = "0.30"
@@ -27,7 +31,12 @@ futures = "0.3"
 color-eyre = "0.6"
 ratatui-interact = "0.5.3"
 
-toride-ssh = { path = "../toride-ssh", version = "0.2.0", features = ["full"] }
+# Everything SshManager drives from the SSH screens (keys, config, agent,
+# known-hosts, authorized-keys, doctor, forward, certificate); exec and
+# upload stay off until the app-layer execution wiring lands.
+toride-ssh = { path = "../toride-ssh", version = "0.2.0", features = [
+    "agent", "known-hosts", "authorized-keys", "doctor", "forward", "certificate",
+] }
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
@@ -85,10 +94,32 @@ testty = "0.9"
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
 criterion = "0.8"
 
-# F01 kernel: full-frame Dashboard render cost via TestBackend (hermetic —
+# F01 kernel: full-frame Dashboard render cost via TestBackend (hermetic:
 # fixed fixture state, no terminal, no collectors).
 [[bench]]
 name = "dashboard_render"
+harness = false
+
+# tui-16: logs-section render over a fixture LogSource at both bench sizes.
+[[bench]]
+name = "logs_render"
+harness = false
+
+# tui-4: TorideStatus deep clone versus Arc clone per simulated status poll.
+[[bench]]
+name = "status_clone"
+harness = false
+
+# tui-3 / tui-14: one refresh tick's collector starts against the stub
+# fixture host; wall time plus counted subprocess spawns per tick.
+[[bench]]
+name = "collector_tick_churn"
+harness = false
+
+# tui-13 / tui-14: steady-state start+poll cycle per TTL collector with the
+# cache primed on the stub fixture host.
+[[bench]]
+name = "collector_cache_hit"
 harness = false
 
 [lints]

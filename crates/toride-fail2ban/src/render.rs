@@ -22,11 +22,7 @@
 
 use std::fmt::Write;
 
-use crate::spec::*;
-
-// ---------------------------------------------------------------------------
-// Managed header
-// ---------------------------------------------------------------------------
+use crate::spec::{ActionKind, ActionSpec, Backend, FilterSpec, JailSpec, Protocol, UseDns};
 
 /// Returns the standard header comment placed at the top of every generated
 /// `.local` file.
@@ -40,10 +36,6 @@ pub fn managed_header() -> &'static str {
     "}
 }
 
-// ---------------------------------------------------------------------------
-// Jail rendering
-// ---------------------------------------------------------------------------
-
 /// Renders a [`JailSpec`] into the contents of a jail `.local` file.
 ///
 /// The output follows Fail2Ban's INI-like format with multi-line continuation
@@ -54,9 +46,11 @@ pub fn managed_header() -> &'static str {
 /// # Arguments
 ///
 /// * `spec` - The typed jail specification to render.
-/// * `namespace` - Manager namespace used in the filter reference
-///   (`filter = <name>[<mode>]`). This is not part of the section header;
-///   the section name is always `spec.name`.
+/// * `namespace` - Manager namespace. A filter with inline `failregex` is
+///   written to `filter.d/{namespace}-{name}.local` by the config layer, so
+///   the jail references it under that namespaced name; a filter without
+///   inline patterns references the bare stock name. Custom actions are
+///   namespaced the same way.
 ///
 /// # Example output
 ///
@@ -81,78 +75,69 @@ pub fn managed_header() -> &'static str {
 pub fn render_jail_local(spec: &JailSpec, namespace: &str) -> String {
     let mut out = String::with_capacity(512);
 
-    // Header
     let _ = writeln!(out, "{}", managed_header());
 
-    // Section header
     let _ = writeln!(out, "[{}]", spec.name);
 
-    // enabled — always emit since it is the primary toggle
     let _ = writeln!(out, "enabled = {}", spec.enabled);
 
-    // filter — always required; include mode if the filter specifies one
-    if let Some(mode) = &spec.filter.mode {
-        let _ = writeln!(out, "filter = {}[mode={}]", spec.filter.name, mode);
+    let filter_ref = if spec.filter.failregex.is_empty() {
+        spec.filter.name.to_string()
     } else {
-        let _ = writeln!(out, "filter = {}", spec.filter.name);
+        format!("{namespace}-{}", spec.filter.name)
+    };
+    if let Some(mode) = &spec.filter.mode {
+        let _ = writeln!(out, "filter = {filter_ref}[mode={mode}]");
+    } else {
+        let _ = writeln!(out, "filter = {filter_ref}");
     }
 
-    // backend — emit unless it is the default (Auto)
     if spec.backend != Backend::default() {
         let _ = writeln!(out, "backend = {}", spec.backend);
     }
 
-    // logpath — one path per continuation line
     if !spec.log_paths.is_empty() {
         let _ = writeln!(out, "logpath = {}", spec.log_paths[0]);
         for path in &spec.log_paths[1..] {
-            let _ = writeln!(out, "        {}", path);
+            let _ = writeln!(out, "        {path}");
         }
     }
 
-    // journalmatch — emit each match on a continuation line
     if !spec.journal_matches.is_empty() {
         let _ = writeln!(out, "journalmatch = {}", spec.journal_matches[0]);
         for jm in &spec.journal_matches[1..] {
-            let _ = writeln!(out, "               {}", jm);
+            let _ = writeln!(out, "               {jm}");
         }
     }
 
-    // port — space-separated list of port specs
     if !spec.ports.is_empty() {
         let _ = writeln!(
             out,
             "port = {}",
             spec.ports
                 .iter()
-                .map(|p| p.to_string())
+                .map(std::string::ToString::to_string)
                 .collect::<Vec<_>>()
                 .join(", ")
         );
     }
 
-    // protocol — emit unless it is the default (Tcp)
     if spec.protocol != Protocol::default() {
         let _ = writeln!(out, "protocol = {}", spec.protocol);
     }
 
-    // bantime — always required
     let _ = writeln!(out, "bantime = {}", spec.bantime);
 
-    // findtime — always required
     let _ = writeln!(out, "findtime = {}", spec.findtime);
 
-    // maxretry — emit unless it is the default (5)
     if spec.maxretry != 5 {
         let _ = writeln!(out, "maxretry = {}", spec.maxretry);
     }
 
-    // usedns — emit unless it is the default (No), which is the secure default
     if spec.usedns != UseDns::default() {
         let _ = writeln!(out, "usedns = {}", spec.usedns);
     }
 
-    // ignoreip — space-separated list
     if !spec.ignore_ips.is_empty() {
         let _ = write!(out, "ignoreip =");
         for ip in spec.ignore_ips.iter() {
@@ -161,15 +146,12 @@ pub fn render_jail_local(spec: &JailSpec, namespace: &str) -> String {
         let _ = writeln!(out);
     }
 
-    // maxlines — only if set
     if let Some(maxlines) = spec.maxlines {
-        let _ = writeln!(out, "maxlines = {}", maxlines);
+        let _ = writeln!(out, "maxlines = {maxlines}");
     }
 
-    // actions — each action on its own line with continuation
     render_actions_section(&mut out, &spec.actions, namespace);
 
-    // extra_options — sorted for deterministic output
     let mut extras: Vec<_> = spec.extra_options.iter().collect();
     extras.sort_by_key(|(k, _)| *k);
     for (key, val) in extras {
@@ -179,20 +161,18 @@ pub fn render_jail_local(spec: &JailSpec, namespace: &str) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Filter rendering
-// ---------------------------------------------------------------------------
-
 /// Renders a [`FilterSpec`] into the contents of a filter `.local` file.
 ///
 /// Only fields that carry a value are included. The `failregex` list is
 /// rendered with Fail2Ban-style continuation lines (leading whitespace).
+/// The section is `[Definition]`, which is what Fail2Ban's filter reader
+/// requires.
 ///
 /// # Arguments
 ///
 /// * `spec` - The typed filter specification to render.
-/// * `_namespace` - Reserved for future namespace-scoped rendering; currently
-///   unused for filter files.
+/// * `_namespace` - Unused for filter bodies; the namespace appears only in
+///   the file name and the referencing jail.
 ///
 /// # Example output
 ///
@@ -200,7 +180,7 @@ pub fn render_jail_local(spec: &JailSpec, namespace: &str) -> String {
 /// # Managed by fail2ban-kit.
 /// # Do not edit manually unless you also disable this manager.
 ///
-/// [myapp-auth]
+/// [Definition]
 /// prefregex = ^<F-MLFID>.*</F-MLFID>
 /// failregex = ^Authentication failure from <HOST>$
 ///             ^Invalid user .* from <HOST>$
@@ -210,18 +190,14 @@ pub fn render_jail_local(spec: &JailSpec, namespace: &str) -> String {
 pub fn render_filter_local(spec: &FilterSpec, _namespace: &str) -> String {
     let mut out = String::with_capacity(512);
 
-    // Header
     let _ = writeln!(out, "{}", managed_header());
 
-    // Section header
-    let _ = writeln!(out, "[{}]", spec.name);
+    let _ = writeln!(out, "[Definition]");
 
-    // prefregex
     if let Some(pref) = &spec.prefregex {
-        let _ = writeln!(out, "prefregex = {}", pref);
+        let _ = writeln!(out, "prefregex = {pref}");
     }
 
-    // failregex — always present for a meaningful filter
     if !spec.failregex.is_empty() {
         let _ = writeln!(out, "failregex = {}", spec.failregex[0]);
         for re in &spec.failregex[1..] {
@@ -229,7 +205,6 @@ pub fn render_filter_local(spec: &FilterSpec, _namespace: &str) -> String {
         }
     }
 
-    // ignoreregex — continuation lines
     if !spec.ignoreregex.is_empty() {
         let _ = writeln!(out, "ignoreregex = {}", spec.ignoreregex[0]);
         for re in &spec.ignoreregex[1..] {
@@ -237,22 +212,18 @@ pub fn render_filter_local(spec: &FilterSpec, _namespace: &str) -> String {
         }
     }
 
-    // datepattern
     if let Some(dp) = &spec.datepattern {
-        let _ = writeln!(out, "datepattern = {}", dp);
+        let _ = writeln!(out, "datepattern = {dp}");
     }
 
-    // journalmatch
     if let Some(jm) = &spec.journalmatch {
-        let _ = writeln!(out, "journalmatch = {}", jm);
+        let _ = writeln!(out, "journalmatch = {jm}");
     }
 
-    // mode
     if let Some(mode) = &spec.mode {
-        let _ = writeln!(out, "mode = {}", mode);
+        let _ = writeln!(out, "mode = {mode}");
     }
 
-    // extra_options — sorted for deterministic output
     let mut extras: Vec<_> = spec.extra_options.iter().collect();
     extras.sort_by_key(|(k, _)| *k);
     for (key, val) in extras {
@@ -262,20 +233,17 @@ pub fn render_filter_local(spec: &FilterSpec, _namespace: &str) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Action rendering
-// ---------------------------------------------------------------------------
-
 /// Renders an [`ActionSpec`] into the contents of an action `.local` file.
 ///
 /// Stock actions reference a built-in action name and may include parameter
-/// overrides. Custom actions provide their own command templates.
+/// overrides. Custom actions provide their own command templates. The section
+/// is `[Definition]`, which is what Fail2Ban's action reader requires.
 ///
 /// # Arguments
 ///
 /// * `spec` - The typed action specification to render.
-/// * `_namespace` - Reserved for future namespace-scoped rendering; currently
-///   unused for action files.
+/// * `_namespace` - Unused for action bodies; the namespace appears only in
+///   the file name and the referencing jail.
 ///
 /// # Example output
 ///
@@ -283,7 +251,7 @@ pub fn render_filter_local(spec: &FilterSpec, _namespace: &str) -> String {
 /// # Managed by fail2ban-kit.
 /// # Do not edit manually unless you also disable this manager.
 ///
-/// [my-hook]
+/// [Definition]
 /// actionstart = /usr/local/bin/f2b-hook start
 /// actionstop = /usr/local/bin/f2b-hook stop
 /// actioncheck =
@@ -294,36 +262,31 @@ pub fn render_filter_local(spec: &FilterSpec, _namespace: &str) -> String {
 pub fn render_action_local(spec: &ActionSpec, _namespace: &str) -> String {
     let mut out = String::with_capacity(512);
 
-    // Header
     let _ = writeln!(out, "{}", managed_header());
 
-    // Section header
-    let _ = writeln!(out, "[{}]", spec.name);
+    let _ = writeln!(out, "[Definition]");
 
-    // Action command templates — only emit when set
     if let Some(cmd) = &spec.actionstart {
-        let _ = writeln!(out, "actionstart = {}", cmd);
+        let _ = writeln!(out, "actionstart = {cmd}");
     }
     if let Some(cmd) = &spec.actionstop {
-        let _ = writeln!(out, "actionstop = {}", cmd);
+        let _ = writeln!(out, "actionstop = {cmd}");
     }
     if let Some(cmd) = &spec.actioncheck {
-        let _ = writeln!(out, "actioncheck = {}", cmd);
+        let _ = writeln!(out, "actioncheck = {cmd}");
     }
     if let Some(cmd) = &spec.actionban {
-        let _ = writeln!(out, "actionban = {}", cmd);
+        let _ = writeln!(out, "actionban = {cmd}");
     }
     if let Some(cmd) = &spec.actionunban {
-        let _ = writeln!(out, "actionunban = {}", cmd);
+        let _ = writeln!(out, "actionunban = {cmd}");
     }
 
-    // timeout — in seconds
     if let Some(dur) = spec.timeout {
         let secs = dur.as_secs();
-        let _ = writeln!(out, "timeout = {}", secs);
+        let _ = writeln!(out, "timeout = {secs}");
     }
 
-    // parameters — sorted for deterministic output
     let mut params: Vec<_> = spec.parameters.iter().collect();
     params.sort_by_key(|(k, _)| *k);
     for (key, val) in params {
@@ -332,10 +295,6 @@ pub fn render_action_local(spec: &ActionSpec, _namespace: &str) -> String {
 
     out
 }
-
-// ---------------------------------------------------------------------------
-// Filename helpers
-// ---------------------------------------------------------------------------
 
 /// Returns the filename for a generated jail `.local` file.
 ///
@@ -382,23 +341,22 @@ pub fn render_action_filename(name: &str, namespace: &str) -> String {
     format!("{namespace}-{name}.local")
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 /// Renders the `action = ...` section of a jail config.
 ///
 /// Stock actions are rendered as their stock name, optionally with parameters.
-/// Custom actions are rendered as their action name, optionally with parameters.
-/// Each action appears on its own line, with additional actions on continuation
-/// lines indented with leading whitespace per Fail2Ban convention.
-fn render_actions_section(out: &mut String, actions: &[ActionSpec], _namespace: &str) {
+/// Custom actions are rendered under their namespaced name (the file the
+/// config layer writes for them), optionally with parameters. Each action
+/// appears on its own line, with additional actions on continuation lines
+/// indented with leading whitespace per Fail2Ban convention.
+fn render_actions_section(out: &mut String, actions: &[ActionSpec], namespace: &str) {
     if actions.is_empty() {
         return;
     }
 
-    // Build the display form for each action.
-    let rendered: Vec<String> = actions.iter().map(|a| format_action_reference(a)).collect();
+    let rendered: Vec<String> = actions
+        .iter()
+        .map(|a| format_action_reference(a, namespace))
+        .collect();
 
     let _ = writeln!(out, "action = {}", rendered[0]);
     for action_str in &rendered[1..] {
@@ -409,16 +367,17 @@ fn render_actions_section(out: &mut String, actions: &[ActionSpec], _namespace: 
 /// Formats an action into its Fail2Ban config representation.
 ///
 /// Stock actions: `stockname[param1=val1, param2=val2]`
-/// Custom actions: `name[param1=val1]`
+/// Custom actions: `{namespace}-name[param1=val1]`
 /// Parameters are sorted alphabetically for deterministic output.
-fn format_action_reference(action: &ActionSpec) -> String {
-    let display_name = action
-        .stock_name
-        .as_deref()
-        .unwrap_or_else(|| action.name.as_str());
+fn format_action_reference(action: &ActionSpec, namespace: &str) -> String {
+    let display_name = match (action.kind, action.stock_name.as_deref()) {
+        (ActionKind::Stock, Some(stock)) => stock.to_owned(),
+        (ActionKind::Custom, _) => format!("{namespace}-{}", action.name),
+        (ActionKind::Stock, None) => action.name.as_str().to_owned(),
+    };
 
     if action.parameters.is_empty() {
-        return display_name.to_owned();
+        return display_name;
     }
 
     let mut params: Vec<_> = action.parameters.iter().collect();
@@ -432,10 +391,6 @@ fn format_action_reference(action: &ActionSpec) -> String {
 
     format!("{display_name}[{param_str}]")
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "render.test.rs"]

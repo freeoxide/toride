@@ -40,9 +40,11 @@ pub struct FirewallDataBundle {
 /// long-lived [`ufw_kit::Ufw`] client carries its own read caches across ticks.
 pub struct FirewallCollector {
     client: Arc<ufw_kit::Ufw>,
-    rx: Option<oneshot::Receiver<(FirewallDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<FirewallDataBundle>, bool)>>,
     cached_findings: Option<Vec<FindingEntry>>,
     findings_fresh_at: Option<std::time::Instant>,
+    cached_bundle: Option<std::sync::Arc<FirewallDataBundle>>,
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
@@ -61,6 +63,8 @@ impl FirewallCollector {
             rx: None,
             cached_findings: None,
             findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -77,6 +81,16 @@ impl FirewallCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
+        if let (Some(bundle), Some(at)) = (&self.cached_bundle, self.bundle_fresh_at)
+            && at.elapsed() < FINDINGS_TTL
+        {
+            self.rx = Some(rx);
+            let bundle = std::sync::Arc::clone(bundle);
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
@@ -90,21 +104,24 @@ impl FirewallCollector {
                 reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
             )]
             let (bundle, used_cache) = collect_real_ufw(client, use_cache, cached_findings).await;
-            let _ = tx.send((bundle, used_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), used_cache));
         });
     }
 
     /// Returns `Some(bundle)` once the collection completes, `None` if still
-    /// pending; the freshness clock advances only when the doctor re-ran.
-    pub async fn poll(&mut self) -> Option<FirewallDataBundle> {
+    /// pending; the freshness clock advances only when the doctor re-ran, and
+    /// a cache-hit poll re-ships the cached `Arc` by refcount.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<FirewallDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
+                if let Some((ref bundle, used_cache)) = result
+                    && !used_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)
@@ -114,10 +131,11 @@ impl FirewallCollector {
     }
 
     /// Invalidate the findings cache so the next collection re-runs the doctor.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 

@@ -3,10 +3,10 @@
 //! Renders inside the dashboard's content region when
 //! [`Section::Tools`](crate::data::Section) is the active sidebar section. This
 //! integration mirrors the harden / mise templates (`HardenContent` /
-//! `MiseContent`) WITHOUT any write path — every line is read-only.
+//! `MiseContent`) WITHOUT any write path: every line is read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Summary line — `N/M tools installed` + missing-expected count.
+//! 1. Summary line: `N/M tools installed` + missing-expected count.
 //! 2. Tool rows grouped by category (stable order): glyph (✓ installed, ✗
 //!    missing), canonical name, version (or em-dash), resolved path (truncated).
 
@@ -178,7 +178,7 @@ impl ToolsContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -202,7 +202,7 @@ impl ToolsContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[allow(clippy::unused_self)]
     fn clamp_scroll(&mut self) {
@@ -259,7 +259,7 @@ impl ToolsContent {
     /// Render the degraded state when the scan could not run on this host.
     ///
     /// `available == false` is set ONLY when a collection task panicked
-    /// (`JoinError`) — the scan itself always runs otherwise. The degraded panel
+    /// (`JoinError`): the scan itself always runs otherwise. The degraded panel
     /// surfaces the panic reason (if any) so the operator sees what went wrong
     /// rather than a generic message.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
@@ -321,7 +321,6 @@ impl ToolsContent {
                 Style::new().fg(p.text).add_modifier(Modifier::BOLD),
             ),
         ]));
-        // Findings hint line — only when there are missing-expected tools.
         let missing_expected = self
             .findings
             .iter()
@@ -329,7 +328,7 @@ impl ToolsContent {
             .count();
         if missing_expected > 0 {
             lines.push(Line::from(Span::styled(
-                format!("  {missing_expected} expected tool(s) missing — see findings"),
+                format!("  {missing_expected} expected tool(s) missing: see findings"),
                 Style::new().fg(p.warn),
             )));
         }
@@ -356,8 +355,8 @@ impl ToolsContent {
         }
 
         if self.tools.is_empty() {
-            // Defensive: available == true but no tools (shouldn't happen — the
-            // catalogue is non-empty — but render a placeholder rather than a
+            // Defensive: available == true but no tools (shouldn't happen: the
+            // catalogue is non-empty: but render a placeholder rather than a
             // blank pane).
             lines.push(Line::from(Span::styled(
                 "  no tools in catalogue",
@@ -547,7 +546,7 @@ mod tests {
     fn render_unavailable_at_degenerate_height_does_not_panic() {
         let mut c = ToolsContent::new();
         c.set_unavailable_reason(Some("spawn_blocking panicked".into()));
-        // 20x5 — below the saturating_sub(3) threshold once the titled panel's
+        // 20x5: below the saturating_sub(3) threshold once the titled panel's
         // border/insets are accounted for. The render path wraps the reason,
         // so assert the leading token appears rather than the full string.
         let out = render_to_string(&mut c, 20, 5);
@@ -749,7 +748,7 @@ mod tests {
         c.set_available(true);
         c.set_tools(sample_tools());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

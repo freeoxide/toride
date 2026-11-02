@@ -7,7 +7,7 @@ and the TUI crate.
 
 ## The release set
 
-All 33 crates, dependency-first order (`cargo publish` resolves every
+All 35 crates, dependency-first order (`cargo publish` resolves every
 intra-set path dependency against the live registry, so a dependent
 cannot go up before its dependency):
 
@@ -22,31 +22,39 @@ cannot go up before its dependency):
 8. `toride-service` (depends on toride-runner)
 9. `toride-ssh-core` (depends on toride-diagnostic-types, toride-fs,
    toride-runner)
-10. `toride-status`, `toride-audit`, `toride-backup`, `toride-cloud`,
+10. `toride-ssh-exec`, `toride-ssh-upload` (each depends on
+    toride-ssh-core and toride-runner)
+11. `toride-status`, `toride-audit`, `toride-backup`, `toride-cloud`,
     `toride-fail2ban`, `toride-harden`, `toride-monitor`, `toride-proxy`,
     `toride-tailscale`, `toride-updates`, `toride-users`,
     `toride-wireguard`, `ufw-kit` (each depends on the shared crates
     above)
-11. `toride-ssh-agent`, `toride-ssh-authorized-keys`,
+12. `toride-ssh-agent`, `toride-ssh-authorized-keys`,
     `toride-ssh-certificate`, `toride-ssh-config`, `toride-ssh-forward`,
     `toride-ssh-known-hosts` (depend on toride-ssh-core; the config and
     authorized-keys crates also on toride-fs)
-12. `toride-ssh-doctor` (depends on toride-ssh-config, toride-ssh-core)
-13. `toride-ssh-key` (depends on toride-ssh-agent, toride-ssh-config,
+13. `toride-ssh-doctor` (depends on toride-ssh-config, toride-ssh-core)
+14. `toride-ssh-key` (depends on toride-ssh-agent, toride-ssh-config,
     toride-ssh-core)
-14. `ufw-kit-test-support` (depends on ufw-kit)
-15. `toride-ssh` (facade over the nine toride-ssh sub-crates)
-16. `toride` (the TUI; depends on the domain crates and toride-ssh)
+15. `ufw-kit-test-support` (depends on ufw-kit)
+16. `toride-ssh` (facade over the eleven toride-ssh sub-crates)
+17. `toride` (the TUI; depends on the domain crates and toride-ssh)
 
 The canonical machine-checked order is `PUBLISH_ORDER` in
 `.github/workflows/ci.yml`; `PUBLISH_SET` in
 `.github/workflows/publish.yml` mirrors it and drives the upload.
 
 All crates inherit `version.workspace` from the root manifest, so one
-version number is released at a time. `scripts/publish-crates.sh`
-predates the registry and apps crates (neither is in its list); the
+version number is released at a time. The
 `.github/workflows/publish.yml` workflow is the authoritative path for
 this set.
+
+Release checklist, two halves: `PUBLISH_ORDER` in
+`.github/workflows/ci.yml` (machine-checked) and the dependency
+snippets in the root `README.md` plus the crate READMEs (toride-apps,
+toride-fs, toride-installer, toride-registry, toride-runner), which
+must carry the version being published. A `0.x` caret never crosses
+`0.1` to `0.2`, so a stale snippet never resolves to the new release.
 
 ## The per-crate state machine
 
@@ -79,7 +87,7 @@ Applies to the first publish and every update alike:
 2. Update every intra-set dependency requirement in the crate
    manifests to match (`toride-xyz = { path = "...", version = "<new>" }`).
    The workflow's lockstep gate fails the run before any upload if a
-   requirement is not exactly `^<new>` — that is the "satisfiable by
+   requirement is not exactly `^<new>`: that is the "satisfiable by
    the versions published in this same run" rule; a crate needing a
    newer in-set dep than this run publishes aborts the run up front
    instead of failing halfway.
@@ -97,7 +105,7 @@ workflow):
 
 - With `dry_run` enabled, every crate is verified with
   `cargo publish --dry-run` and nothing is uploaded. The only
-  downgraded failure is the order-blocked one — an intra-set dependency
+  downgraded failure is the order-blocked one: an intra-set dependency
   absent from crates.io ("no matching package") or not yet published at
   the required version ("failed to select a version"); that becomes a
   warning because it is the expected state before a first publish.
@@ -115,7 +123,7 @@ and the lockstep/satisfiability gate.
 ## Rate limits (HTTP 429)
 
 crates.io throttles how many *new* crates an account may publish in a
-short window — the October 8, 2026 run hit it after five crates with
+short window: the October 8, 2026 run hit it after five crates with
 `429 Too Many Requests … Please try again after <timestamp>`.
 
 The workflow parses that RFC 1123 timestamp, sleeps past it (plus a
@@ -123,19 +131,19 @@ small margin), and retries the **same** crate, up to five attempts per
 crate. Multiple windows in one run are survived the same way, which is
 why the job timeout is six hours. If a crate is still rate-limited
 after five attempts, that crate is marked `failed:rate-limit`, the run
-stops in order, and the fix is simply: re-dispatch later. Everything
+stops in order, and the fix is to re-dispatch later. Everything
 already published is detected and skipped; the run resumes exactly
 where it died.
 
 Transient errors (5xx, network, timeouts) get a separate short retry:
 three attempts with growing backoff. Auth failures (401/403/credential
 problems) abort the whole run immediately with a pointer at
-`CARGO_REGISTRY_TOKEN` — retrying those is pointless.
+`CARGO_REGISTRY_TOKEN`: retrying those is pointless.
 
 ## Crash-safe resume
 
 The plan is rebuilt from the live registry on every dispatch, so a
-re-dispatch after any failure — rate limit, crash, cancelled run —
+re-dispatch after any failure: rate limit, crash, cancelled run:
 continues where the previous run stopped:
 
 - crates already at the target version are skipped,
@@ -149,8 +157,8 @@ never race the same set.
 ## Tags and the end-of-run summary
 
 After a real (non-dry) run, every crate that reached the registry in
-this run — whether published now or skipped because an earlier run
-already uploaded it — gets a `<crate>-v<version>` tag created and
+this run: whether published now or skipped because an earlier run
+already uploaded it: gets a `<crate>-v<version>` tag created and
 pushed if it does not exist. Those tags are exactly what the CHANGELOG
 `[Unreleased]: …/compare/<crate>-v<version>...HEAD` and
 `[<version>]: …/releases/tag/<crate>-v<version>` links point at.
@@ -166,7 +174,7 @@ failed or was left unattempted.
 ## Rolling back a bad version: yank
 
 There is no unpublish on crates.io; the rollback is a yank, and it is
-manual on purpose — automating it risks yanking good versions on a
+manual on purpose: automating it risks yanking good versions on a
 flaky signal. To pull a bad version:
 
 ```console
@@ -176,7 +184,7 @@ $ cargo yank toride-xyz@0.2.0
 (run with `CARGO_REGISTRY_TOKEN` set, or from a machine with
 `cargo login`). A yanked version:
 
-- cannot be newly resolved — new `cargo add` / builds picking the
+- cannot be newly resolved: new `cargo add` / builds picking the
   version fail,
 - keeps working for every existing `Cargo.lock` that already pins it,
 - leaves the version listed on crates.io, marked "yanked".
@@ -187,15 +195,15 @@ fix itself is always a new version: bump, changelog entry, dispatch.
 
 ## Verifying locally
 
-- `cargo package -p <crate> --list` — what will ship in the tarball
+- `cargo package -p <crate> --list`: what will ship in the tarball
   (pass `--allow-dirty` when the working tree has uncommitted changes).
 - `cargo publish --dry-run -p toride-diagnostic-types` (any crate
-  without intra-set deps) — full packaging verification including the
+  without intra-set deps): full packaging verification including the
   tarball build.
-- `bash scripts/test-publish-state.sh` — the classification unit
+- `bash scripts/test-publish-state.sh`: the classification unit
   tests, no network needed.
 - Name availability: `curl -s -o /dev/null -w '%{http_code}' -A
-  "toride-publish-check" https://crates.io/api/v1/crates/<name>` — 404
+  "toride-publish-check" https://crates.io/api/v1/crates/<name>`: 404
   means the name is free. A User-Agent is required; bare curl gets 403.
 
 ## Crates.io pages
@@ -209,6 +217,8 @@ fix itself is always a new version: bump, changelog entry, dispatch.
 - https://crates.io/crates/toride-apps
 - https://crates.io/crates/toride-service
 - https://crates.io/crates/toride-ssh-core
+- https://crates.io/crates/toride-ssh-exec
+- https://crates.io/crates/toride-ssh-upload
 - https://crates.io/crates/toride-status
 - https://crates.io/crates/toride-audit
 - https://crates.io/crates/toride-backup

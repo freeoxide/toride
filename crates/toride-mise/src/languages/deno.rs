@@ -9,10 +9,6 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// DenoHelper
-// ---------------------------------------------------------------------------
-
 /// Typed helper for interacting with Deno via mise.
 ///
 /// Borrows a [`Mise`] client so it can be used without taking

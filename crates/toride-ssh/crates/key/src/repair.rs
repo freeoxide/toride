@@ -2,7 +2,9 @@
 
 use std::path::Path;
 
+use toride_ssh_core::paths::pub_path_for;
 use toride_ssh_core::{CliRunner, Error, Result};
+use zeroize::Zeroizing;
 
 /// Derive and write the `.pub` file for a private key.
 ///
@@ -36,22 +38,24 @@ pub async fn repair_public_key(
     // Try the in-process path first (unencrypted keys).
     let in_process_result = tokio::task::spawn_blocking(move || {
         // Read and parse the private key
-        let private_key_data = std::fs::read_to_string(&private_path).map_err(|e| {
-            Error::KeyParseFailed(format!(
-                "failed to read private key {}: {e}",
-                private_path.display()
-            ))
-        })?;
+        let private_key_data =
+            Zeroizing::new(std::fs::read_to_string(&private_path).map_err(|e| {
+                Error::KeyParseFailed(format!(
+                    "failed to read private key {}: {e}",
+                    private_path.display()
+                ))
+            })?);
 
-        let private_key = ssh_key::PrivateKey::from_openssh(&private_key_data).map_err(|e| {
-            Error::KeyParseFailed(format!(
-                "failed to parse private key {}: {e}",
-                private_path.display()
-            ))
-        })?;
+        let private_key =
+            ssh_key::PrivateKey::from_openssh(private_key_data.as_str()).map_err(|e| {
+                Error::KeyParseFailed(format!(
+                    "failed to parse private key {}: {e}",
+                    private_path.display()
+                ))
+            })?;
 
         // Derive the public key path
-        let public_path = private_path.with_extension("pub");
+        let public_path = pub_path_for(&private_path);
 
         // Back up existing .pub file before overwriting.
         if public_path.exists() {
@@ -91,7 +95,7 @@ pub async fn repair_public_key(
         return Ok(());
     }
 
-    // In-process parse failed — likely an encrypted key. Fall back to
+    // In-process parse failed: likely an encrypted key. Fall back to
     // `ssh-keygen -y -f <path>` which can handle passphrase-protected keys.
     tracing::debug!(
         "in-process key parse failed ({}), falling back to ssh-keygen",
@@ -118,7 +122,7 @@ pub async fn repair_public_key(
     };
 
     // Derive the public key path and write the output.
-    let public_path = private_key_path.with_extension("pub");
+    let public_path = pub_path_for(private_key_path);
     // Only the Unix branch restores private-key permissions (no POSIX modes
     // elsewhere), so the binding exists solely on Unix.
     #[cfg(unix)]

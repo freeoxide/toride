@@ -20,8 +20,8 @@ pub struct KnownHostEntry {
     pub key_type: String,
     /// Base64-encoded public key blob.
     pub public_key: String,
-    /// Optional trailing comment on the line (everything after the base64 key,
-    /// excluding any `#`-delimited note).
+    /// Optional trailing comment on the line: everything after the base64
+    /// key, including any `#`-delimited note.
     pub comment: Option<String>,
     /// 1-based line number within the file.
     pub line_number: usize,
@@ -143,7 +143,7 @@ fn parse_known_hosts_sync(path: &Path) -> Result<Vec<KnownHostEntry>> {
 /// The marker is an optional `@cert-authority` or `@revoked` prefixed token.
 /// Only one marker is supported per OpenSSH `known_hosts` format.
 pub(crate) fn parse_line(line: &str, line_number: usize) -> Result<KnownHostEntry> {
-    // Skip full-line comments — these are filtered at the sync level,
+    // Skip full-line comments, these are filtered at the sync level,
     // but parse_line should handle them gracefully if called directly.
     if line.trim_start().starts_with('#') {
         return Err(Error::KnownHostsParseFailed(format!(
@@ -163,27 +163,29 @@ pub(crate) fn parse_line(line: &str, line_number: usize) -> Result<KnownHostEntr
         (vec![], line)
     };
 
-    // 2. Split into remaining whitespace-separated fields.
-    //    We expect at least: hosts  keytype  base64key
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    if fields.len() < 3 {
-        return Err(Error::KnownHostsParseFailed(format!(
-            "line {line_number}: expected at least 3 fields (hosts, key-type, key), got {}",
-            fields.len()
-        )));
-    }
+    // 2. Consume the three leading whitespace-separated fields, then keep
+    //    the remainder as the comment.
+    let mut fields = rest.split_whitespace();
+    let short = |got: usize| {
+        Error::KnownHostsParseFailed(format!(
+            "line {line_number}: expected at least 3 fields (hosts, key-type, key), got {got}"
+        ))
+    };
 
-    let hosts_str = fields[0];
+    let hosts_str = fields.next().ok_or_else(|| short(0))?;
+    let key_type = fields.next().ok_or_else(|| short(1))?.to_owned();
+    let public_key = fields.next().ok_or_else(|| short(2))?.to_owned();
+
     let hosts: Vec<String> = hosts_str.split_terminator(',').map(str::to_owned).collect();
 
-    let key_type = fields[1].to_owned();
-    let public_key = fields[2].to_owned();
-
-    let comment = if fields.len() > 3 {
-        Some(fields[3..].join(" "))
-    } else {
-        None
-    };
+    let mut comment = String::new();
+    for field in fields {
+        if !comment.is_empty() {
+            comment.push(' ');
+        }
+        comment.push_str(field);
+    }
+    let comment = (!comment.is_empty()).then_some(comment);
 
     Ok(KnownHostEntry {
         markers,

@@ -8,15 +8,16 @@ use std::path::Path;
 
 /// Create a new user account.
 ///
-/// Executes `useradd` with the specified options. The command is run via
-/// `duct` with a configurable timeout.
+/// Executes `useradd` with the specified options. The command's merged
+/// output and exit code are captured even on failure, and `useradd`'s
+/// documented exit 9 (name already in use) maps to [`Error::UserExists`].
 ///
 /// # Errors
 ///
 /// - [`Error::Validation`] if the username is invalid (e.g. starts with `-`).
 /// - [`Error::BinaryNotFound`] if `useradd` is not on `$PATH`.
-/// - [`Error::UserExists`] if the username is already taken.
-/// - [`Error::CommandFailed`] if `useradd` returns a non-zero exit code.
+/// - [`Error::UserExists`] if the username is already taken (exit 9).
+/// - [`Error::CommandFailed`] if `useradd` returns any other non-zero exit.
 #[cfg(feature = "client")]
 pub fn create_user(
     username: &str,
@@ -52,29 +53,26 @@ pub fn create_user(
     // Username
     args.push(username.to_owned());
 
-    let cmd = duct::cmd(&useradd, &args)
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "useradd".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
+    let output = crate::capture::run_captured("useradd", &useradd, &args)?;
+    if !output.status.success() {
+        return Err(user_management_error("useradd", username, &output));
+    }
 
-    tracing::info!("created user {username}: {cmd}");
+    tracing::info!("created user {username}");
     Ok(())
 }
 
 /// Modify an existing user account.
 ///
-/// Executes `usermod` with the specified options.
+/// Executes `usermod` with the specified options; `usermod`'s documented
+/// exit 6 for a missing user maps to [`Error::UserNotFound`].
 ///
 /// # Errors
 ///
 /// - [`Error::Validation`] if the username is invalid (e.g. starts with `-`).
 /// - [`Error::BinaryNotFound`] if `usermod` is not on `$PATH`.
-/// - [`Error::UserNotFound`] if the user does not exist.
-/// - [`Error::CommandFailed`] if `usermod` returns a non-zero exit code.
+/// - [`Error::UserNotFound`] if the user does not exist (exit 6).
+/// - [`Error::CommandFailed`] if `usermod` returns any other non-zero exit.
 #[cfg(feature = "client")]
 pub fn modify_user(
     username: &str,
@@ -106,14 +104,10 @@ pub fn modify_user(
 
     args.push(username.to_owned());
 
-    duct::cmd(&usermod, &args)
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "usermod".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
+    let output = crate::capture::run_captured("usermod", &usermod, &args)?;
+    if !output.status.success() {
+        return Err(user_management_error("usermod", username, &output));
+    }
 
     tracing::info!("modified user {username}");
     Ok(())
@@ -121,14 +115,16 @@ pub fn modify_user(
 
 /// Delete a user account.
 ///
-/// Executes `userdel -r` to remove the user and their home directory.
+/// Executes `userdel -r` to remove the user and their home directory;
+/// `userdel`'s documented exit 6 for a missing user maps to
+/// [`Error::UserNotFound`].
 ///
 /// # Errors
 ///
 /// - [`Error::Validation`] if the username is invalid (e.g. starts with `-`).
 /// - [`Error::BinaryNotFound`] if `userdel` is not on `$PATH`.
-/// - [`Error::UserNotFound`] if the user does not exist.
-/// - [`Error::CommandFailed`] if `userdel` returns a non-zero exit code.
+/// - [`Error::UserNotFound`] if the user does not exist (exit 6).
+/// - [`Error::CommandFailed`] if `userdel` returns any other non-zero exit.
 #[cfg(feature = "client")]
 pub fn delete_user(username: &str, remove_home: bool) -> Result<()> {
     // Validate before building argv: a leading `-` would be parsed by
@@ -142,17 +138,35 @@ pub fn delete_user(username: &str, remove_home: bool) -> Result<()> {
     }
     args.push(username.to_owned());
 
-    duct::cmd(&userdel, &args)
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "userdel".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
+    let output = crate::capture::run_captured("userdel", &userdel, &args)?;
+    if !output.status.success() {
+        return Err(user_management_error("userdel", username, &output));
+    }
 
     tracing::info!("deleted user {username}");
     Ok(())
+}
+
+/// Map a failed shadow-utils run to a typed error: `useradd`'s exit 9
+/// (name already in use) becomes [`Error::UserExists`], exit 6 (the shadow
+/// "not found" code documented by userdel(8)/usermod(8)) becomes
+/// [`Error::UserNotFound`]; everything else is [`Error::CommandFailed`]
+/// carrying the real exit code and merged output.
+#[cfg(feature = "client")]
+pub(crate) fn user_management_error(
+    program: &str,
+    username: &str,
+    output: &std::process::Output,
+) -> Error {
+    match (program, output.status.code()) {
+        ("useradd", Some(9)) => Error::UserExists(username.to_owned()),
+        (_, Some(6)) => Error::UserNotFound(username.to_owned()),
+        (_, code) => Error::CommandFailed {
+            program: program.to_owned(),
+            code,
+            stderr: crate::capture::merged_output_text(output),
+        },
+    }
 }
 
 /// Check if a user exists in the given `passwd` file.
@@ -249,5 +263,60 @@ svc:x:1002:1002::/opt/svc:/bin/false
             get_shell(&passwd, "ghost"),
             Err(Error::UserNotFound(_))
         ));
+    }
+
+    /// The documented exit codes must reach the typed variants: useradd 9
+    /// (name already in use), shadow's 6 (user not found), and the real exit
+    /// code carried on [`Error::CommandFailed`].
+    #[cfg(all(feature = "client", unix))]
+    #[test]
+    fn user_management_error_maps_documented_exit_codes() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{ExitStatus, Output};
+
+        fn output_with(code: i32, text: &str) -> Output {
+            Output {
+                status: ExitStatus::from_raw(code << 8),
+                stdout: text.as_bytes().to_vec(),
+                stderr: Vec::new(),
+            }
+        }
+
+        let err = user_management_error(
+            "useradd",
+            "alice",
+            &output_with(9, "useradd: user 'alice' already exists\n"),
+        );
+        assert!(
+            matches!(err, Error::UserExists(ref u) if u == "alice"),
+            "got {err:?}"
+        );
+
+        for program in ["usermod", "userdel"] {
+            let err =
+                user_management_error(program, "ghost", &output_with(6, "user does not exist\n"));
+            assert!(
+                matches!(err, Error::UserNotFound(ref u) if u == "ghost"),
+                "{program} exit 6 must map to UserNotFound, got {err:?}"
+            );
+        }
+
+        let err = user_management_error(
+            "useradd",
+            "bob",
+            &output_with(12, "useradd: can't create home directory\n"),
+        );
+        match err {
+            Error::CommandFailed {
+                program,
+                code,
+                stderr,
+            } => {
+                assert_eq!(program, "useradd");
+                assert_eq!(code, Some(12), "the real exit code must be carried");
+                assert_eq!(stderr, "useradd: can't create home directory");
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
     }
 }

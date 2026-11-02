@@ -37,10 +37,6 @@
     )
 )]
 
-// ---------------------------------------------------------------------------
-// Module declarations -- always compiled
-// ---------------------------------------------------------------------------
-
 pub mod borg;
 pub mod error;
 pub mod parse;
@@ -53,10 +49,6 @@ pub mod schedule;
 pub mod spec;
 pub mod systemd;
 pub mod validate;
-
-// ---------------------------------------------------------------------------
-// Module declarations -- feature-gated
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "client")]
 pub mod client;
@@ -72,9 +64,5 @@ pub mod config;
 
 #[cfg(feature = "cli")]
 pub mod cli;
-
-// ---------------------------------------------------------------------------
-// Error types -- re-exported from the `error` module (unified source of truth)
-// ---------------------------------------------------------------------------
 
 pub use error::{Error, Result};

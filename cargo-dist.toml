@@ -1,7 +1,7 @@
 [dist]
 # Installers
 installers = ["shell"]
-# Target platforms — musl-static Linux builds
+# Target platforms: musl-static Linux builds
 targets = [
     "x86_64-unknown-linux-musl",
     "aarch64-unknown-linux-musl",

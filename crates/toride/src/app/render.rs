@@ -74,7 +74,7 @@ impl App {
                 self.current_screen().view_foreground(frame, *p);
             }
 
-            // Check completion — reconstitute transition only if not done
+            // Check completion: reconstitute transition only if not done
             if ts.is_done() {
                 let to_screen = Screen::from_key(ts.to);
                 if ts.reverse {
@@ -91,7 +91,7 @@ impl App {
             self.current_screen().view(frame, *p);
         }
 
-        // Help modal overlay — rendered on top of whatever is behind it
+        // Help modal overlay: rendered on top of whatever is behind it
         if self.help_modal.is_visible() {
             let viewport = Viewport::from_area(frame.area());
             self.help_modal.render(frame, *p, |frame, content_area| {

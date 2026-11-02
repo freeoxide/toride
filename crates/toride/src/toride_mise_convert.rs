@@ -1,7 +1,7 @@
 //! Convert `toride-mise` library types to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that imports `toride_mise`
-//! types — mirroring [`fail2ban_convert`](crate::fail2ban_convert)'s role as the
+//! types: mirroring [`fail2ban_convert`](crate::fail2ban_convert)'s role as the
 //! single boundary between backend and presentation. Each function handles
 //! errors gracefully: malformed input is skipped with a `tracing::warn!` and a
 //! placeholder, never propagated (the read-only section must never crash the
@@ -15,12 +15,12 @@ use crate::ui::screens::toride_mise::{MiseFindingEntry, MiseOutdatedEntry, MiseT
 /// the kind is mapped to the closest severity band so findings can be grouped
 /// by the content pane like the fail2ban / Tailscale sections.
 ///
-/// - "error"   — `BinaryMissing`, `VersionUnsupported`, `InvalidConfig`,
+/// - "error"  : `BinaryMissing`, `VersionUnsupported`, `InvalidConfig`,
 ///   `NetworkIssue`, `PermissionIssue` (these block mise from working).
-/// - "warning" — `PathMissing`, `ConfigNotFound`, `ConfigUntrusted`,
+/// - "warning": `PathMissing`, `ConfigNotFound`, `ConfigUntrusted`,
 ///   `LockfileMissing`, `MissingTools`, `OutdatedTools` (advisories the
 ///   operator should act on but which do not block basic operation).
-/// - "info"    — `Other`.
+/// - "info"   : `Other`.
 fn kind_severity(kind: &toride_mise::diagnostics::DiagnosticKind) -> &'static str {
     use toride_mise::diagnostics::DiagnosticKind;
     match kind {
@@ -261,7 +261,7 @@ mod tests {
     }
 
     // NOTE: `convert_outdated` / `convert_outdated_tools` (the legacy
-    // Vec<OutdatedTool> shape) were removed — the collector has exclusively used
+    // Vec<OutdatedTool> shape) were removed: the collector has exclusively used
     // `convert_outdated_map` (the JSON-object shape emitted by
     // `mise outdated --json`) since the map-vs-array parse fix. The only tests
     // for the removed functions are deleted alongside them; the map path below

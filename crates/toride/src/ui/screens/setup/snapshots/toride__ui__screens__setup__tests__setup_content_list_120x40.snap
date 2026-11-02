@@ -2,8 +2,8 @@
 source: crates/toride/src/ui/screens/setup/mod.rs
 expression: out
 ---
-"╭ SETUP · 37 suggestions · 8 bundles ──────────────────────────────────────────────────────────────────────────────────╮"
-"│ 37 suggestions across 8 bundles                                                                                      │"
+"╭ SETUP · 38 suggestions · 9 bundles ──────────────────────────────────────────────────────────────────────────────────╮"
+"│ 38 suggestions across 9 bundles                                                                                      │"
 "│                                                                                                                      │"
 "│ Rust build tools                                                                                                     │"
 "│ ▸ · sccache            free  Caches Rust compilations across projects.                                               │"

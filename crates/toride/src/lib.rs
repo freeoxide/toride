@@ -1,4 +1,4 @@
-//! Toride — terminal user interface for hardened Linux host management.
+//! Toride: terminal user interface for hardened Linux host management.
 //!
 //! This crate implements the Elm-inspired TUI app: an [`app::App`] orchestrator
 //! that owns all screen instances and drives the main event loop, plus the
@@ -40,6 +40,8 @@ pub mod templates_data;
 pub mod tools_convert;
 pub mod tools_data;
 pub use toride_status as status;
+#[cfg(test)]
+mod test_env;
 pub mod toride_audit_convert;
 pub mod toride_audit_data;
 pub mod toride_backup_convert;

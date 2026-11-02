@@ -4,7 +4,7 @@ use super::*;
 fn parse_algorithm_ed25519() {
     assert_eq!(
         parse_key_type_from_algorithm("ssh-ed25519"),
-        Some(KeyType::Ed25519)
+        Some((KeyType::Ed25519, false))
     );
 }
 
@@ -12,7 +12,31 @@ fn parse_algorithm_ed25519() {
 fn parse_algorithm_ecdsa() {
     assert_eq!(
         parse_key_type_from_algorithm("ecdsa-sha2-nistp384"),
-        Some(KeyType::EcdsaP384)
+        Some((KeyType::EcdsaP384, false))
+    );
+}
+
+#[test]
+fn parse_algorithm_certificate_types_keep_base_and_flag() {
+    assert_eq!(
+        parse_key_type_from_algorithm("ssh-rsa-cert-v01@openssh.com"),
+        Some((KeyType::Rsa { bits: 0 }, true))
+    );
+    assert_eq!(
+        parse_key_type_from_algorithm("ssh-ed25519-cert-v01@openssh.com"),
+        Some((KeyType::Ed25519, true))
+    );
+    assert_eq!(
+        parse_key_type_from_algorithm("ecdsa-sha2-nistp256-cert-v01@openssh.com"),
+        Some((KeyType::EcdsaP256, true))
+    );
+    assert_eq!(
+        parse_key_type_from_algorithm("sk-ssh-ed25519-cert-v01@openssh.com"),
+        Some((KeyType::SkEd25519, true))
+    );
+    assert_eq!(
+        parse_key_type_from_algorithm("sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"),
+        Some((KeyType::SkEcdsaP256, true))
     );
 }
 
@@ -30,32 +54,35 @@ fn parse_algorithm_empty_string_returns_none() {
 fn parse_algorithm_all_known_types() {
     assert_eq!(
         parse_key_type_from_algorithm("ssh-ed25519"),
-        Some(KeyType::Ed25519)
+        Some((KeyType::Ed25519, false))
     );
     assert_eq!(
         parse_key_type_from_algorithm("ssh-rsa"),
-        Some(KeyType::Rsa { bits: 0 })
+        Some((KeyType::Rsa { bits: 0 }, false))
     );
     assert_eq!(
         parse_key_type_from_algorithm("ecdsa-sha2-nistp256"),
-        Some(KeyType::EcdsaP256)
+        Some((KeyType::EcdsaP256, false))
     );
     assert_eq!(
         parse_key_type_from_algorithm("ecdsa-sha2-nistp384"),
-        Some(KeyType::EcdsaP384)
+        Some((KeyType::EcdsaP384, false))
     );
     assert_eq!(
         parse_key_type_from_algorithm("ecdsa-sha2-nistp521"),
-        Some(KeyType::EcdsaP521)
+        Some((KeyType::EcdsaP521, false))
     );
-    assert_eq!(parse_key_type_from_algorithm("ssh-dss"), Some(KeyType::Dsa));
+    assert_eq!(
+        parse_key_type_from_algorithm("ssh-dss"),
+        Some((KeyType::Dsa, false))
+    );
     assert_eq!(
         parse_key_type_from_algorithm("sk-ssh-ed25519@openssh.com"),
-        Some(KeyType::SkEd25519)
+        Some((KeyType::SkEd25519, false))
     );
     assert_eq!(
         parse_key_type_from_algorithm("sk-ecdsa-sha2-nistp256@openssh.com"),
-        Some(KeyType::SkEcdsaP256)
+        Some((KeyType::SkEcdsaP256, false))
     );
 }
 
@@ -120,6 +147,45 @@ fn parse_ssh_add_dsa() {
 }
 
 #[test]
+fn parse_ssh_add_rsa_cert() {
+    let line = "2048 SHA256:AAAA user@host (RSA-CERT)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert!(matches!(key.key_type, KeyType::Rsa { .. }));
+    assert!(key.has_certificate);
+}
+
+#[test]
+fn parse_ssh_add_ed25519_cert() {
+    let line = "256 SHA256:AAAA user@host (ED25519-CERT)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.key_type, KeyType::Ed25519);
+    assert!(key.has_certificate);
+}
+
+#[test]
+fn parse_ssh_add_ecdsa_sk_cert() {
+    let line = "256 SHA256:AAAA user@host (ECDSA-SK-CERT)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.key_type, KeyType::SkEcdsaP256);
+    assert!(key.has_certificate);
+}
+
+#[test]
+fn parse_ssh_add_ed25519_sk_cert() {
+    let line = "256 SHA256:AAAA user@host (ED25519-SK-CERT)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.key_type, KeyType::SkEd25519);
+    assert!(key.has_certificate);
+}
+
+#[test]
+fn parse_ssh_add_plain_keys_are_not_certificates() {
+    let line = "256 SHA256:AAAA user@host (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert!(!key.has_certificate);
+}
+
+#[test]
 fn parse_ssh_add_agent_source() {
     let line = "256 SHA256:AAAA comment (ED25519)";
     let key = parse_ssh_add_line(line).unwrap();
@@ -144,10 +210,6 @@ fn parse_ssh_add_path_is_agent_identifier() {
     let key = parse_ssh_add_line(line).unwrap();
     assert!(key.path.to_str().unwrap().starts_with("agent:"));
 }
-
-// ---------------------------------------------------------------------------
-// Weird edge-case tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_ssh_add_line_with_unicode_comment() {
@@ -213,24 +275,18 @@ fn parse_algorithm_whitespace_around() {
 
 #[test]
 fn parse_algorithm_prefix_only() {
-    // Just the prefix without the full algorithm name
     assert_eq!(parse_key_type_from_algorithm("ssh-"), None);
     assert_eq!(parse_key_type_from_algorithm("ecdsa"), None);
 }
 
 #[test]
 fn parse_ssh_add_line_with_extra_spaces() {
-    // Multiple spaces between fields
     let line = "256  SHA256:AAAA  comment  (ED25519)";
-    // This should fail because split_once(' ') expects single space
-    let result = parse_ssh_add_line(line);
-    // May return None due to parsing failure
-    let _ = result;
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.key_type, KeyType::Ed25519);
+    assert_eq!(key.comment.as_deref(), Some("comment"));
+    assert_eq!(key.fingerprint.unwrap().hash, "AAAA");
 }
-
-// ---------------------------------------------------------------------------
-// Production-grade weird edge cases
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_ssh_add_line_with_tab_in_comment() {
@@ -241,12 +297,13 @@ fn parse_ssh_add_line_with_tab_in_comment() {
 
 #[test]
 fn parse_ssh_add_line_with_newline_in_comment() {
-    // Newline in comment would break the line format
     let line = "256 SHA256:AAAA comment\nextra (ED25519)";
-    // This should fail because the line is split at \n
-    let result = parse_ssh_add_line(line);
-    // May parse the first part or fail
-    let _ = result;
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(
+        key.comment.as_deref(),
+        Some("comment\nextra"),
+        "the parser is line-oriented; callers must split ssh-add output on \\n first"
+    );
 }
 
 #[test]
@@ -347,15 +404,11 @@ fn parse_ssh_add_line_unknown_type_in_parens() {
     assert!(result.is_none());
 }
 
-// ---------------------------------------------------------------------------
-// parse_key_type_from_display tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn parse_display_ed25519() {
     assert_eq!(
         parse_key_type_from_display("ED25519"),
-        Some(KeyType::Ed25519)
+        Some((KeyType::Ed25519, false))
     );
 }
 
@@ -363,7 +416,7 @@ fn parse_display_ed25519() {
 fn parse_display_ed25519_sk() {
     assert_eq!(
         parse_key_type_from_display("ED25519-SK"),
-        Some(KeyType::SkEd25519)
+        Some((KeyType::SkEd25519, false))
     );
 }
 
@@ -371,7 +424,7 @@ fn parse_display_ed25519_sk() {
 fn parse_display_rsa() {
     assert_eq!(
         parse_key_type_from_display("RSA"),
-        Some(KeyType::Rsa { bits: 0 })
+        Some((KeyType::Rsa { bits: 0 }, false))
     );
 }
 
@@ -379,7 +432,7 @@ fn parse_display_rsa() {
 fn parse_display_ecdsa() {
     assert_eq!(
         parse_key_type_from_display("ECDSA"),
-        Some(KeyType::EcdsaP256)
+        Some((KeyType::EcdsaP256, false))
     );
 }
 
@@ -387,28 +440,55 @@ fn parse_display_ecdsa() {
 fn parse_display_ecdsa_sk() {
     assert_eq!(
         parse_key_type_from_display("ECDSA-SK"),
-        Some(KeyType::SkEcdsaP256)
+        Some((KeyType::SkEcdsaP256, false))
     );
 }
 
 #[test]
 fn parse_display_dsa() {
-    assert_eq!(parse_key_type_from_display("DSA"), Some(KeyType::Dsa));
+    assert_eq!(
+        parse_key_type_from_display("DSA"),
+        Some((KeyType::Dsa, false))
+    );
+}
+
+#[test]
+fn parse_display_cert_forms_keep_base_and_flag() {
+    assert_eq!(
+        parse_key_type_from_display("RSA-CERT"),
+        Some((KeyType::Rsa { bits: 0 }, true))
+    );
+    assert_eq!(
+        parse_key_type_from_display("ED25519-CERT"),
+        Some((KeyType::Ed25519, true))
+    );
+    assert_eq!(
+        parse_key_type_from_display("ECDSA-CERT"),
+        Some((KeyType::EcdsaP256, true))
+    );
+    assert_eq!(
+        parse_key_type_from_display("ED25519-SK-CERT"),
+        Some((KeyType::SkEd25519, true))
+    );
+    assert_eq!(
+        parse_key_type_from_display("ECDSA-SK-CERT"),
+        Some((KeyType::SkEcdsaP256, true))
+    );
 }
 
 #[test]
 fn parse_display_case_insensitive() {
     assert_eq!(
         parse_key_type_from_display("ed25519"),
-        Some(KeyType::Ed25519)
+        Some((KeyType::Ed25519, false))
     );
     assert_eq!(
         parse_key_type_from_display("rsa"),
-        Some(KeyType::Rsa { bits: 0 })
+        Some((KeyType::Rsa { bits: 0 }, false))
     );
     assert_eq!(
         parse_key_type_from_display("Ed25519-Sk"),
-        Some(KeyType::SkEd25519)
+        Some((KeyType::SkEd25519, false))
     );
 }
 
@@ -422,10 +502,6 @@ fn parse_display_unknown() {
 fn parse_display_whitespace() {
     assert_eq!(parse_key_type_from_display("  "), None);
 }
-
-// ---------------------------------------------------------------------------
-// Agent-only keys (listing without filesystem presence)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agent_keys_parsed_from_ssh_add_output() {
@@ -501,10 +577,6 @@ fn agent_keys_mixed_types_from_output() {
     assert_eq!(keys[5].key_type, KeyType::Dsa);
 }
 
-// ---------------------------------------------------------------------------
-// destination_constrained_add validation tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn destination_constrained_host_separator() {
     // Verify the > separator convention used by ssh-add -h.
@@ -525,4 +597,47 @@ fn destination_constrained_hosts_with_ports() {
     let hosts = ["example.com:2222", "10.0.0.1:22"];
     let constraint = hosts.join(">");
     assert_eq!(constraint, "example.com:2222>10.0.0.1:22");
+}
+
+#[tokio::test]
+async fn destination_constrained_add_rejects_leading_dash_host() {
+    let runner = toride_ssh_core::MockCliRunner::new();
+    let err = destination_constrained_add(
+        std::path::Path::new("/tmp/key"),
+        &["-oProxyCommand=evil"],
+        &runner,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, toride_ssh_core::Error::InvalidHost(_)));
+}
+
+#[cfg(all(unix, feature = "native"))]
+#[tokio::test]
+async fn connect_maps_dead_socket_to_agent_not_available() {
+    use std::os::unix::net::UnixListener;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("dead.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    drop(listener);
+
+    let original = std::env::var("SSH_AUTH_SOCK").ok();
+    // SAFETY: test-only env mutation; no other test in this binary reads it.
+    unsafe { std::env::set_var("SSH_AUTH_SOCK", &sock) };
+    let result = connect().await;
+    // SAFETY: restoring the original value.
+    unsafe {
+        if let Some(original) = original {
+            std::env::set_var("SSH_AUTH_SOCK", original);
+        } else {
+            std::env::remove_var("SSH_AUTH_SOCK");
+        }
+    }
+
+    match result {
+        Err(Error::AgentNotAvailable) => {}
+        Ok(_) => panic!("expected AgentNotAvailable for a dead socket, got Ok"),
+        Err(e) => panic!("expected AgentNotAvailable for a dead socket, got: {e}"),
+    }
 }

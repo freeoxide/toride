@@ -1,6 +1,6 @@
 //! Toride status subsystem.
 //!
-//! Provides [`TorideStatus`] — a point-in-time snapshot of every monitored
+//! Provides [`TorideStatus`], a point-in-time snapshot of every monitored
 //! subsystem (OS metrics, daemon liveness, SSH health).
 
 pub mod capabilities;
@@ -37,7 +37,7 @@ pub use units::{Bytes, Celsius, Hertz, Rpm, Volts, Watts};
 
 /// Top-level aggregated status snapshot.
 ///
-/// Each sub-status is independent — a failure in one subsystem does not
+/// Each sub-status is independent: a failure in one subsystem does not
 /// prevent the others from being collected.
 ///
 /// # Examples
@@ -94,6 +94,20 @@ impl TorideStatus {
         status
     }
 
+    /// Collect a snapshot filtered by the given [`Preset`], refreshing a
+    /// retained sysinfo handle instead of building a new one.
+    ///
+    /// The handle is refreshed by
+    /// [`SystemStatus::collect_with_system`](system::SystemStatus::collect_with_system);
+    /// polling callers avoid the per-call handle construction and CPU
+    /// warm-up sleep of [`collect_with_preset`](Self::collect_with_preset).
+    #[must_use]
+    pub fn collect_with_preset_and_system(preset: Preset, sys: &mut sysinfo::System) -> Self {
+        let mut status = Self::collect_all_with_system(sys);
+        status.apply_preset(preset);
+        status
+    }
+
     /// Collect a snapshot with privacy-aware redaction applied (default
     /// preset); the [`PrivacyMode`] controls which fields are redacted.
     ///
@@ -133,7 +147,13 @@ impl TorideStatus {
     }
 
     fn collect_all() -> Self {
-        let system = SystemStatus::collect();
+        let mut system = SystemStatus::new_system();
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        Self::collect_all_with_system(&mut system)
+    }
+
+    fn collect_all_with_system(sys: &mut sysinfo::System) -> Self {
+        let system = SystemStatus::collect_with_system(sys);
         let daemon = DaemonStatus::collect();
         let ssh = SshStatus::collect();
         let capabilities = Capabilities::detect();
@@ -256,7 +276,10 @@ impl TorideStatus {
         if !redactor.should_show_username() {
             for proc in &mut self.system.processes.processes {
                 proc.user = None;
+                proc.executable_path = None;
+                proc.working_dir = None;
             }
+            self.system.os_info.current_user = None;
         }
 
         if let Some(ref serial) = self.system.static_info.hardware.system_serial {
@@ -1128,6 +1151,7 @@ mod tests {
             Preset::Diagnostics,
             Preset::ServerMonitoring,
             Preset::PrivacySafeBugReport,
+            Preset::HardwareInventory,
         ];
 
         for preset in presets {
@@ -1164,6 +1188,32 @@ mod tests {
             status.system.hostname, "[redacted]",
             "Safe mode must redact hostname"
         );
+    }
+
+    /// Enumerates every username-bearing field: under Safe none may survive.
+    #[test]
+    fn collect_with_privacy_safe_clears_every_username_bearing_field() {
+        let status = TorideStatus::collect_with_privacy(PrivacyMode::Safe);
+        assert_eq!(status.system.hostname, "[redacted]");
+        assert_eq!(
+            status.system.static_info.hostname, "[redacted]",
+            "static_info hostname is redacted too"
+        );
+        assert!(
+            status.system.os_info.current_user.is_none(),
+            "os_info.current_user embeds the username"
+        );
+        for proc in &status.system.processes.processes {
+            assert!(proc.user.is_none(), "process user must be dropped");
+            assert!(
+                proc.executable_path.is_none(),
+                "executable paths embed /home/<user>"
+            );
+            assert!(
+                proc.working_dir.is_none(),
+                "working directories embed /home/<user>"
+            );
+        }
     }
 
     #[test]
@@ -1275,6 +1325,7 @@ mod tests {
             Preset::Diagnostics,
             Preset::ServerMonitoring,
             Preset::PrivacySafeBugReport,
+            Preset::HardwareInventory,
         ];
         let modes = [
             PrivacyMode::Safe,

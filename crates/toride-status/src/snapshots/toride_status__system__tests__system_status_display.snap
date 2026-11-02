@@ -1,5 +1,6 @@
 ---
 source: crates/toride-status/src/system.rs
+assertion_line: 3953
 expression: "format!(\"{}\", status)"
 ---
 System:
@@ -10,16 +11,16 @@ System:
   CPU cores:
     cpu0: 45.0% (3200 MHz)
     cpu1: 40.0% (3200 MHz)
-  Memory: 8.0 GiB / 16.0 GiB (50.0%)
-  Swap: 512.0 MiB / 2.0 GiB (25.0%)
-  Disk: 500.0 GiB / 1.0 TiB (50.0%)
+  Memory: 8.00 GiB / 16.00 GiB (50.0%)
+  Swap: 512.0 MiB / 2.00 GiB (25.0%)
+  Disk: 500.00 GiB / 1.00 TiB (50.0%)
   Disks:
-    / (Macintosh HD) [apfs]: 500.0 GiB / 1.0 TiB (50.0%)
-    /Volumes/External (External) [exfat]: 100.0 GiB / 500.0 GiB (20.0%)
-  Network: 50.0 GiB sent, 100.0 GiB received
+    / (Macintosh HD) [apfs]: 500.00 GiB / 1.00 TiB (50.0%)
+    /Volumes/External (External) [exfat]: 100.00 GiB / 500.00 GiB (20.0%)
+  Network: 50.00 GiB sent, 100.00 GiB received
   Network interfaces:
-    en0: 30.0 GiB sent, 60.0 GiB received
-    lo0: 20.0 GiB sent, 40.0 GiB received
+    en0: 30.00 GiB sent, 60.00 GiB received
+    lo0: 20.00 GiB sent, 40.00 GiB received
   Load: 2.50 / 3.00 / 3.50
   Sensors:
     CPU: 55.5°C

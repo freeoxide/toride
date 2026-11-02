@@ -403,12 +403,12 @@ fn write_doctor_report<W: std::io::Write>(writer: &mut W, report: &DoctorReport)
         match &finding.fix {
             Some(fix) => writeln!(
                 writer,
-                "[{}] {} — {} (fix: {fix})",
+                "[{}] {}: {} (fix: {fix})",
                 finding.severity, finding.id, finding.message
             ),
             None => writeln!(
                 writer,
-                "[{}] {} — {}",
+                "[{}] {}: {}",
                 finding.severity, finding.id, finding.message
             ),
         }
@@ -487,7 +487,7 @@ fn dispatch_service<W: std::io::Write>(
 /// Tailscale ACL policies are HuJSON (JSON with comments/trailing commas),
 /// but strict JSON is a valid subset, so a `serde_json` parse is a useful
 /// first-pass sanity check for files authored as plain JSON. HuJSON-specific
-/// syntax is not rejected here — a parse failure is reported, but the document
+/// syntax is not rejected here: a parse failure is reported, but the document
 /// is still forwarded to [`AclManager::apply`] so the real backend can render
 /// the final verdict.
 fn validate_policy_is_json(policy: &str) -> Result<()> {
@@ -517,7 +517,7 @@ mod tests {
 
     /// Dispatch `service status` against a FakeRunner-backed service and assert
     /// the runner saw both the `systemctl is-active tailscaled` probe AND the
-    /// `tailscale status --json` call — proving the parsed `TailscaleArgs`
+    /// `tailscale status --json` call: proving the parsed `TailscaleArgs`
     /// reaches the real `TailscaleService` methods (not a stub).
     #[tokio::test]
     async fn dispatch_service_status_hits_real_systemctl_and_status_json() {

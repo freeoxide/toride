@@ -36,8 +36,8 @@ pub struct ToolsDataBundle {
 ///
 /// A 60s TTL cache covers the whole sweep (rows, counts, findings).
 pub struct ToolsCollector {
-    rx: Option<oneshot::Receiver<(ToolsDataBundle, bool)>>,
-    cached_bundle: Option<ToolsDataBundle>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<ToolsDataBundle>, bool)>>,
+    cached_bundle: Option<std::sync::Arc<ToolsDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -84,8 +84,14 @@ impl ToolsCollector {
             self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
         let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
-        let handle =
-            tokio::spawn(async move { collect_real_tools(use_cache, cached_bundle).await });
+        // TTL hit: re-ship the cached Arc by refcount, no scan task.
+        if use_cache && let Some(bundle) = cached_bundle {
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
+        let handle = tokio::spawn(async move { collect_real_tools(false, None).await });
         tokio::spawn(async move {
             let result = handle.await;
             let (bundle, reused_cache) = match result {
@@ -98,15 +104,17 @@ impl ToolsCollector {
                     )
                 }
             };
-            let _ = tx.send((bundle, reused_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache));
         });
     }
 
     /// Poll for a completed collection result.
     ///
     /// Returns `Some(bundle)` on completion, `None` while pending or failed.
-    /// A degraded (panic) bundle is never cached.
-    pub async fn poll(&mut self) -> Option<ToolsDataBundle> {
+    /// A degraded (panic) bundle is never cached. A cache-hit poll re-ships
+    /// the cached `Arc` by refcount, so an unchanged bundle keeps the pointer
+    /// it had last tick.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<ToolsDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
@@ -114,7 +122,7 @@ impl ToolsCollector {
                     && bundle.available
                     && !used_cache
                 {
-                    self.cached_bundle = Some(bundle.clone());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
                     self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
@@ -125,7 +133,6 @@ impl ToolsCollector {
     }
 
     /// Invalidate the sweep cache so the next collection re-runs the scan.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_bundle = None;
         self.bundle_fresh_at = None;
@@ -359,7 +366,7 @@ mod tests {
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = ToolsCollector::new();
-        collector.cached_bundle = Some(available_empty_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(available_empty_bundle()));
         collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
         assert!(collector.cached_bundle.is_none());
@@ -582,7 +589,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn cache_hit_returns_cached_bundle_without_resweeping() {
         let mut collector = ToolsCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 
@@ -625,7 +632,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = ToolsCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 

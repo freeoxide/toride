@@ -1131,4 +1131,61 @@ mod tests {
         assert_eq!(calls[0].1, vec!["set", "sshd", "banip", "1.2.3.4"]);
         assert_eq!(calls[1].1, vec!["set", "sshd", "unbanip", "1.2.3.4"]);
     }
+
+    fn assert_validation_rejected<T>(result: &crate::Result<T>) {
+        assert!(
+            matches!(result, Err(crate::Error::Validation(_))),
+            "expected Error::Validation, got: {:?}",
+            result.as_ref().map(|_| "()")
+        );
+    }
+
+    #[test]
+    fn jail_name_operands_are_rejected_before_any_spawn() {
+        let fake = FakeRunner::new();
+        let client = Fail2BanClient::with_binary(&fake, binary());
+
+        assert_validation_rejected(&client.reload_jail("-h"));
+        assert_validation_rejected(&client.restart_jail("-delete", false));
+        assert_validation_rejected(&client.status_jail("my jail"));
+        assert_validation_rejected(&client.ban_ip("../escape", "1.2.3.4"));
+        assert_validation_rejected(&client.unban_ip("sshd;x", "1.2.3.4"));
+        assert_validation_rejected(&client.add_ignore_ip("$jail", "10.0.0.0/8"));
+        assert_validation_rejected(&client.remove_ignore_ip("a\tb", "10.0.0.1"));
+
+        assert!(
+            fake.calls().is_empty(),
+            "a rejected operand must never reach fail2ban-client argv"
+        );
+    }
+
+    #[test]
+    fn ip_operands_are_rejected_before_any_spawn() {
+        let fake = FakeRunner::new();
+        let client = Fail2BanClient::with_binary(&fake, binary());
+
+        assert_validation_rejected(&client.ban_ip("sshd", "not-an-ip"));
+        assert_validation_rejected(&client.unban_ip("sshd", "-oProxyCommand=touch /tmp/x"));
+        assert_validation_rejected(&client.banned_ip("999.1.2.3"));
+        assert_validation_rejected(&client.add_ignore_ip("sshd", "10.0.0.0/99"));
+        assert_validation_rejected(&client.remove_ignore_ip("sshd", "10.0.0.0/33"));
+
+        assert!(
+            fake.calls().is_empty(),
+            "a rejected operand must never reach fail2ban-client argv"
+        );
+    }
+
+    #[test]
+    fn valid_jail_and_ip_operands_still_reach_the_runner() {
+        let fake = FakeRunner::new();
+        let client = Fail2BanClient::with_binary(&fake, binary());
+
+        client.ban_ip("sshd", "203.0.113.5").unwrap();
+        client.ban_ip("sshd", "::ffff:203.0.113.6").unwrap();
+        client.add_ignore_ip("sshd", "10.0.0.0/8").unwrap();
+        client.reload_jail("sshd-2").unwrap();
+
+        assert_eq!(fake.calls().len(), 4);
+    }
 }

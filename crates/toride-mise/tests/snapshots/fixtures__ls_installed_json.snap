@@ -2,15 +2,18 @@
 source: crates/toride-mise/tests/fixtures.rs
 expression: pretty
 ---
-[
-  {
-    "active": true,
-    "install_path": "/home/user/.local/share/mise/installs/node/22.0.0",
-    "name": "node",
-    "source": {
-      "path": ".mise.toml",
-      "requested": "22"
-    },
-    "version": "22.0.0"
-  }
-]
+{
+  "node": [
+    {
+      "active": true,
+      "install_path": "/home/user/.local/share/mise/installs/node/22.0.0",
+      "installed": true,
+      "requested_version": "22",
+      "source": {
+        "path": ".mise.toml",
+        "type": "mise.toml"
+      },
+      "version": "22.0.0"
+    }
+  ]
+}

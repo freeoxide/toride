@@ -24,10 +24,6 @@
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// LockRequest
-// ---------------------------------------------------------------------------
-
 /// Describes a `mise lock` operation.
 ///
 /// Construct with [`LockRequest::new`] and chain builder methods to set
@@ -134,10 +130,6 @@ impl LockRequest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Output types
-// ---------------------------------------------------------------------------
-
 /// Summary returned by a successful `mise lock` invocation.
 #[derive(Debug, Clone)]
 pub struct LockReport {
@@ -157,10 +149,6 @@ pub struct InstallReport {
     /// Raw stdout from the mise command.
     pub raw_output: String,
 }
-
-// ---------------------------------------------------------------------------
-// Mise impl — lockfile methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// Execute `mise lock` according to the given [`LockRequest`].
@@ -244,10 +232,6 @@ impl Mise {
         })
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
     /// Build the argument list for `mise lock` from a [`LockRequest`].
     fn build_lock_args(req: &LockRequest, force_dry_run: bool) -> Vec<String> {
         let mut args = vec!["lock".to_owned()];
@@ -285,10 +269,6 @@ impl Mise {
         args
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

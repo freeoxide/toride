@@ -46,7 +46,8 @@ mod duration_secs {
 pub struct LoggingRule {
     /// Human-readable name for this rule.
     pub name: String,
-    /// Destination CIDR or host to match (e.g. `"0.0.0.0/0"` for all).
+    /// Destination CIDR or bare IP to match (e.g. `"0.0.0.0/0"` for all);
+    /// validated by [`crate::validate::validate_logging_rule`] before apply.
     pub destination: String,
     /// Destination port to match, or `None` for any port.
     #[cfg_attr(
@@ -84,9 +85,23 @@ pub struct AnomalyThreshold {
     pub max_bytes: u64,
     /// Maximum packets per second before flagging.
     pub max_packets_per_second: u64,
+    /// Maximum unique destination ports from one source before the port-scan
+    /// detector flags it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default = "default_max_unique_dest_ports_per_source")
+    )]
+    pub max_unique_dest_ports_per_source: usize,
     /// Duration of the sliding sampling window, in seconds.
     #[cfg_attr(feature = "serde", serde(with = "duration_secs"))]
     pub window: Duration,
+}
+
+/// Serde default for [`AnomalyThreshold::max_unique_dest_ports_per_source`],
+/// matching [`AnomalyThreshold::default`].
+#[cfg(feature = "serde")]
+fn default_max_unique_dest_ports_per_source() -> usize {
+    100
 }
 
 impl Default for AnomalyThreshold {
@@ -96,6 +111,7 @@ impl Default for AnomalyThreshold {
             max_unique_destinations: 200,
             max_bytes: 100 * 1024 * 1024, // 100 MB
             max_packets_per_second: 10_000,
+            max_unique_dest_ports_per_source: 100,
             window: Duration::from_mins(1),
         }
     }

@@ -1,4 +1,4 @@
-//! Repology oracle — resolves toride ids ↔ per-source ids and quality-
+//! Repology oracle: resolves toride ids ↔ per-source ids and quality-
 //! filters repology project data. Parse-only in wave 1: it is NOT an
 //! [`Adapter`](crate::adapter::Adapter) impl (no search/browse surface,
 //! installs nothing); its output feeds the alias index (DESIGN.md §5).
@@ -7,10 +7,10 @@
 //!
 //! - **Parse half** (pure, `&str` in → candidates out, fixture-tested
 //!   offline): [`parse_repology_project`] over `/api/v1/project/<name>`
-//!   payloads — bare JSON arrays whose only mandatory fields are `repo`
+//!   payloads: bare JSON arrays whose only mandatory fields are `repo`
 //!   and `version`; everything else is parsed with defaults and never
 //!   relied on (`name` was serialized only ≤2023, `families` is never
-//!   serialized upstream — both are tolerated as ignored keys).
+//!   serialized upstream: both are tolerated as ignored keys).
 //!   [`select_source_id`] states the repo-class id rule the alias index's
 //!   insertion applies, and [`status_is_ignored`] names the statuses the
 //!   index drops at build time.
@@ -22,7 +22,7 @@
 //!   fair-use policy (repology.md §4).
 //!
 //! repology.org is unreachable from the wave-1 sandbox (re-verified
-//! 2026-09-28: `curl -s -m 10` → HTTP 000, exit 7, connection refused —
+//! 2026-09-28: `curl -s -m 10` → HTTP 000, exit 7, connection refused:
 //! DNS pinned; DESIGN.md §0), so offline tests run exclusively against the
 //! synthetic fixture `tests/fixtures/repology/project-brave-browser.json`
 //! (provenance in its sibling `_meta.json`). Live tests are gated behind
@@ -35,21 +35,21 @@
 //!
 //! ## Design
 //!
-//! 1. **Parse** — one [`AliasCandidate`] per payload entry, even when both
+//! 1. **Parse**: one [`AliasCandidate`] per payload entry, even when both
 //!    name slots are set (the fixture's `arch` entry carries
 //!    `srcname brave-browser` + `binname brave` and yields ONE candidate).
 //!    Both names are kept so the index can be rebuilt under a different
 //!    selection rule without re-fetching. (Wave-1 deviation, recorded for
 //!    the gate phase: DESIGN.md §3.1 places [`AliasCandidate`] in
 //!    `src/alias.rs`, which the scaffold never created, so it is defined
-//!    here next to its only producer — see its struct docs.)
-//! 2. **Classify** — the alias index (not this module) inserts rows; this
+//!    here next to its only producer: see its struct docs.)
+//! 2. **Classify**: the alias index (not this module) inserts rows; this
 //!    module owns the repology-specific rules it applies: which of
 //!    `srcname`/`binname` keys the row per repo class, which
 //!    [`DistroFamily`] a repo id maps to, whether that family's row is
-//!    provisional (only Arch and Alpine have no wave-1 adapter — DESIGN.md
+//!    provisional (only Arch and Alpine have no wave-1 adapter: DESIGN.md
 //!    §5), and which statuses are ignorable.
-//! 3. **Fetch** — the client returns raw body text, so live payloads and
+//! 3. **Fetch**: the client returns raw body text, so live payloads and
 //!    the fixture flow through the same parse signature. All requests
 //!    share one rate-limit gate; payloads and resolutions are cached for
 //!    `CACHE_TTL` (≥ 1 day, DESIGN.md §5).
@@ -71,13 +71,13 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
-// Parse half — pure, no clock/no network/no client (DESIGN.md §3.1)
+// Parse half: pure, no clock/no network/no client (DESIGN.md §3.1)
 // ---------------------------------------------------------------------------
 
 /// One repology project entry → alias-index row input.
 ///
 /// DESIGN.md §3.1 declares this as an alias-layer type owned by
-/// `src/alias.rs` (deliberately NOT in `model.rs` — it never crosses the
+/// `src/alias.rs` (deliberately NOT in `model.rs`: it never crosses the
 /// adapter boundary to downstream), with `sources/repology.rs` as its only
 /// producer. The scaffold phase never created `src/alias.rs`, so wave 1
 /// defines it here, next to that producer; the post-join alias/gate phase
@@ -92,7 +92,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AliasCandidate {
     /// Repology repo id (`homebrew`, `debian_13`, `fedora_rawhide`,
-    /// `arch`, `alpine_edge` — all verified-real repo ids) →
+    /// `arch`, `alpine_edge`: all verified-real repo ids) →
     /// `SourceRef.repo`.
     pub repo: String,
     /// Entry-level: every name below shares this version.
@@ -106,7 +106,7 @@ pub struct AliasCandidate {
     /// Source-package name, where the repo publishes one.
     pub srcname: Option<String>,
     /// Binary-package name, where the repo publishes one (`arch`:
-    /// `brave` ≠ the project name `brave-browser` — the case this oracle
+    /// `brave` ≠ the project name `brave-browser`: the case this oracle
     /// exists for).
     pub binname: Option<String>,
 }
@@ -115,7 +115,7 @@ pub struct AliasCandidate {
 ///
 /// The declared parse signature takes only the payload text, so a
 /// structurally broken payload cannot name the project it came from; the
-/// endpoint shape stands in (diagnostic only — the caller that fetched the
+/// endpoint shape stands in (diagnostic only: the caller that fetched the
 /// payload knows the project name).
 const PARSE_ERROR_ID: &str = "(repology project payload)";
 
@@ -124,8 +124,8 @@ const PARSE_ERROR_ID: &str = "(repology project payload)";
 /// Upstream marks only `repo` and `version` mandatory; the 2017→master
 /// serializer also emitted `subrepo`, `visiblename`, `categories`,
 /// `licenses`, `maintainers`, `vulnerable`, plus era-dependent `name`
-/// (≤2023) and long-gone `keyname`/`www`/`downloads`. All of those — and
-/// `families`, which no serializer revision ever serialized into an entry —
+/// (≤2023) and long-gone `keyname`/`www`/`downloads`. All of those: and
+/// `families`, which no serializer revision ever serialized into an entry:
 /// are tolerated by serde's default ignore-unknown behavior and
 /// deliberately not modeled: parse with defaults, rely on neither
 /// (`#[serde(default)]` on the struct makes every field optional, the
@@ -135,12 +135,12 @@ const PARSE_ERROR_ID: &str = "(repology project payload)";
 struct RepologyEntry {
     /// Repology repo id (`homebrew`, `debian_13`, `fedora_rawhide`,
     /// `arch`, `alpine_edge`). Mandatory upstream, yet only serialized
-    /// when truthy — `None` marks an entry the contract violated.
+    /// when truthy: `None` marks an entry the contract violated.
     repo: Option<String>,
     /// Source-package name, where the repo has one.
     srcname: Option<String>,
     /// Binary-package name, where the repo has one (`arch`:
-    /// `brave` ≠ project name `brave-browser` — the case this oracle
+    /// `brave` ≠ project name `brave-browser`: the case this oracle
     /// exists for).
     binname: Option<String>,
     /// Sanitized version. Mandatory upstream, same truthy-only caveat as
@@ -152,7 +152,7 @@ struct RepologyEntry {
     origversion: Option<String>,
     /// Raw package status; upstream serializes it unconditionally, but
     /// `Option` keeps an absent OR null field from being fatal
-    /// (`#[serde(default)]` covers absent keys only) — it defaults to the
+    /// (`#[serde(default)]` covers absent keys only): it defaults to the
     /// empty string in the candidate. Quality filtering happens at
     /// index-build time via [`status_is_ignored`], not here.
     status: Option<String>,
@@ -165,12 +165,12 @@ struct RepologyEntry {
 ///
 /// The payload is a bare JSON **array** of package entries (repology.md
 /// §1). One entry yields one [`AliasCandidate`] even when both name
-/// slots are set — the fixture's `arch` entry (`srcname brave-browser` +
+/// slots are set: the fixture's `arch` entry (`srcname brave-browser` +
 /// `binname brave`) is ONE candidate; the alias index later picks a single
 /// id per candidate via [`select_source_id`]. Each candidate's
 /// [`Version`] carries `version` as
 /// `Version::value` and `origversion` as `Version::original`
-/// (`Version::published_unix` stays `None` — repology publishes no
+/// (`Version::published_unix` stays `None`: repology publishes no
 /// per-entry timestamps).
 ///
 /// Entries violating the mandatory-field contract (no `repo`, no
@@ -180,7 +180,7 @@ struct RepologyEntry {
 ///
 /// # Errors
 ///
-/// [`Error::Parse`] when the payload is not a JSON array of objects — an
+/// [`Error::Parse`] when the payload is not a JSON array of objects: an
 /// HTML error page, or the `/api/v1/projects/` envelope (a JSON *object*,
 /// a different endpoint).
 ///
@@ -216,7 +216,7 @@ pub fn parse_repology_project(payload: &str) -> Result<Vec<AliasCandidate>> {
 /// map rides in a `targets` key next to the `_comment` note.
 #[derive(Debug, Deserialize)]
 struct AmbiguousRedirectBody {
-    /// Every matching `project → url` binding; required — a body without
+    /// Every matching `project → url` binding; required: a body without
     /// it is not the documented shape.
     targets: BTreeMap<String, String>,
 }
@@ -263,28 +263,28 @@ fn candidate_from_entry(entry: RepologyEntry) -> Option<AliasCandidate> {
 }
 
 // ---------------------------------------------------------------------------
-// Repology-side alias classification — the rules the AliasIndex insertion
+// Repology-side alias classification: the rules the AliasIndex insertion
 // applies to a candidate (repology.md §3; DESIGN.md §3.1, §5)
 // ---------------------------------------------------------------------------
 
-/// Whether `repo` installs prebuilt binaries only (`arch`, `alpine_*` —
+/// Whether `repo` installs prebuilt binaries only (`arch`, `alpine_*`:
 /// pacman/apk know the binary package name), as opposed to source-based
 /// repos (`homebrew`, `debian_*`, `fedora_*`, …).
 ///
 /// Any repo id this crate has not classified defaults to `false`:
 /// repology adds repos continuously, and source-first is the safe default
-/// (with `binname` as the fallback — see [`select_source_id`]).
+/// (with `binname` as the fallback: see [`select_source_id`]).
 fn repo_prefers_binname(repo: &str) -> bool {
     repo == "arch" || repo.starts_with("alpine_")
 }
 
-/// Pick the per-source id the alias index inserts for `candidate` — ONE
+/// Pick the per-source id the alias index inserts for `candidate`: ONE
 /// `SourceRef.id` per candidate, chosen by repo class (DESIGN.md §3.1):
 ///
 /// - source-based repos (`debian_*`, `fedora_*`, `homebrew`, and any
-///   unclassified id) prefer `srcname` — the name the source catalog
+///   unclassified id) prefer `srcname`: the name the source catalog
 ///   publishes is the stable join key;
-/// - binary-install repos (`arch`, `alpine_*`) prefer `binname` — the only
+/// - binary-install repos (`arch`, `alpine_*`) prefer `binname`: the only
 ///   name the family's manager knows (arch: `brave`, not the project name
 ///   `brave-browser`);
 /// - each falls back to the other when its preferred slot is `None`.
@@ -305,11 +305,11 @@ pub fn select_source_id(candidate: &AliasCandidate) -> Option<String> {
 /// its packages (`debian_*` → apt, `fedora_*` → dnf, `arch` → pacman,
 /// `alpine_*` → apk).
 ///
-/// `homebrew` maps to `None` — not a distro; the Homebrew adapters mint
+/// `homebrew` maps to `None`: not a distro; the Homebrew adapters mint
 /// those identity rows themselves. `ubuntu_*` → [`DistroFamily::Ubuntu`]
 /// is included for forward compatibility although the wave-1 tracked-repo
 /// list (DESIGN.md §5) does not track it. Any other id (flathub has no
-/// verified repology repo id — DESIGN.md §5 bridging note) is `None`.
+/// verified repology repo id: DESIGN.md §5 bridging note) is `None`.
 pub fn repo_distro_family(repo: &str) -> Option<DistroFamily> {
     if repo == "arch" {
         Some(DistroFamily::Arch)
@@ -327,7 +327,7 @@ pub fn repo_distro_family(repo: &str) -> Option<DistroFamily> {
 }
 
 /// Whether a repology-minted [`Distro`](crate::model::SourceKind::Distro)
-/// row for `family` is *provisional* — minted from repology because the
+/// row for `family` is *provisional*: minted from repology because the
 /// family has no adapter of its own, and to be replaced by
 /// `provisional: false` rows once a real adapter parses that family's own
 /// catalog (DESIGN.md §5).
@@ -342,7 +342,7 @@ pub fn family_row_is_provisional(family: DistroFamily) -> bool {
     matches!(family, DistroFamily::Arch | DistroFamily::Alpine)
 }
 
-/// Whether `status` is one of repology's "ignored-ish" values —
+/// Whether `status` is one of repology's "ignored-ish" values:
 /// `ignored`, `incorrect`, `untrusted`, `noscheme`, `rolling`
 /// (`package.py::is_ignored`, repology.md §2).
 ///
@@ -358,7 +358,7 @@ pub fn status_is_ignored(status: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch half — thin client (DESIGN.md §3.1/§3.2; fair-use: repology.md §4)
+// Fetch half: thin client (DESIGN.md §3.1/§3.2; fair-use: repology.md §4)
 // ---------------------------------------------------------------------------
 
 /// Base URL of the Repology API.
@@ -381,7 +381,7 @@ const USER_AGENT: &str = concat!(
 /// Upstream fair-use policy (repology.md §4, verbatim): "Bulk clients must
 /// not do more than one request per second. Miscomplying clients will be
 /// blocked." [`RepologyClient`] serializes every request behind one gate
-/// and stamps the gate *after* completion — the conservative reading, so a
+/// and stamps the gate *after* completion: the conservative reading, so a
 /// slow response delays the next request further. 403/429 responses mean
 /// the client was blocked: surface as [`Error::Http`], there is no
 /// documented Retry-After to honor.
@@ -397,7 +397,7 @@ const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(feature = "http")]
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Which name slot of a repology entry a reverse lookup addresses — the
+/// Which name slot of a repology entry a reverse lookup addresses: the
 /// exact `name_type` options of `/tools/project-by`
 /// (`templates/tools/project-by.html:43-44`, repology.md §3).
 #[cfg(feature = "http")]
@@ -426,10 +426,10 @@ impl NameType {
 #[cfg(feature = "http")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectResolution {
-    /// 302 — an unambiguous project. The client's redirect policy follows
+    /// 302: an unambiguous project. The client's redirect policy follows
     /// the redirect to `target_page=api_v1_project`, so the project name
     /// is read off the final URL; the project payload itself is *not*
-    /// returned here (call [`RepologyClient::fetch_project`] for it —
+    /// returned here (call [`RepologyClient::fetch_project`] for it:
     /// `resolve_by_name` stores the followed payload in the client's
     /// payload cache, so that fetch hits the cache instead of the
     /// network).
@@ -438,7 +438,7 @@ pub enum ProjectResolution {
         /// input).
         project: String,
     },
-    /// 300 — ambiguous: multiple projects match the name. All candidate
+    /// 300: ambiguous: multiple projects match the name. All candidate
     /// project names, sorted; decide by homepage match later (DESIGN.md
     /// §5). Only reachable when upstream emits 300 despite autoresolve
     /// (the client does not pass `noautoresolve`, but the arm is handled
@@ -447,7 +447,7 @@ pub enum ProjectResolution {
         /// Every matching project name, sorted for determinism.
         candidates: Vec<String>,
     },
-    /// 404 — unknown repo or no match; the caller falls back to rule 2 of
+    /// 404: unknown repo or no match; the caller falls back to rule 2 of
     /// the canonical-id derivation (DESIGN.md §5).
     Unknown,
 }
@@ -468,7 +468,7 @@ type CacheMap<T> = Mutex<HashMap<String, CacheEntry<T>>>;
 
 /// Thin fetch client for the Repology oracle (DESIGN.md §3.1).
 ///
-/// Returns raw body text — never deserialized values — so live payloads
+/// Returns raw body text (never deserialized values) so live payloads
 /// and the frozen fixture flow through the same parse signature
 /// ([`parse_repology_project`]). All requests are serialized behind one
 /// rate-limit gate (`MIN_REQUEST_INTERVAL`) and every payload/resolution
@@ -494,7 +494,7 @@ pub struct RepologyClient {
 #[cfg(feature = "http")]
 impl RepologyClient {
     /// Build a client with the shared HTTP posture (descriptive UA,
-    /// redirects, timeouts — DESIGN.md §3.2, shared via `crate::http`)
+    /// redirects, timeouts: DESIGN.md §3.2, shared via `crate::http`)
     /// and empty caches.
     #[must_use]
     pub fn new() -> Self {
@@ -515,7 +515,7 @@ impl RepologyClient {
     /// # Errors
     ///
     /// [`Error::Http`] on transport failure, timeout, or a non-success
-    /// status (403/429 = blocked per repology.md §4 — back off hard, there
+    /// status (403/429 = blocked per repology.md §4: back off hard, there
     /// is no documented Retry-After).
     pub async fn fetch_project(&self, project: &str) -> Result<String> {
         if let Some(hit) = Self::cache_get(&self.payloads, project) {
@@ -586,7 +586,7 @@ impl RepologyClient {
                 })?;
                 // The followed response IS the `/api/v1/project/<name>`
                 // payload a follow-up [`Self::fetch_project`] would request
-                // — store it so that call hits the payload cache instead
+                //: store it so that call hits the payload cache instead
                 // of spending a second rate-limited request (repology.md §4).
                 let final_url = response.url().to_string();
                 let body = response.text().await.map_err(|error| Error::Http {
@@ -621,7 +621,7 @@ impl RepologyClient {
     /// [`MIN_REQUEST_INTERVAL`] has passed since the previous request
     /// completed, then send, then stamp the gate.
     ///
-    /// Holding the gate across the send is the point — requests are fully
+    /// Holding the gate across the send is the point: requests are fully
     /// serialized, which is both the fair-use requirement and protection
     /// against duplicate concurrent fetches.
     async fn send(
@@ -713,7 +713,7 @@ mod tests {
     use crate::error::Error;
     use crate::model::DistroFamily;
 
-    /// Fixture path helper — manifest-dir anchored so tests are
+    /// Fixture path helper: manifest-dir anchored so tests are
     /// cwd-independent (conventions.md §7; DESIGN.md §9).
     fn fixture_path(rel: &str) -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -881,7 +881,7 @@ mod tests {
 
     #[test]
     fn non_array_payload_is_a_parse_error() {
-        // The /api/v1/projects/ envelope is an object — a different
+        // The /api/v1/projects/ envelope is an object: a different
         // endpoint; an HTML error page likewise. Both must Err, not
         // silently produce zero candidates.
         for payload in [r#"{"brave-browser": [{"repo": "arch"}]}"#, "not json", ""] {
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn select_source_id_prefers_binname_for_binary_repos() {
         // The fixture's arch entry (srcname brave-browser + binname brave)
-        // keys on `brave` — the name pacman knows.
+        // keys on `brave`: the name pacman knows.
         let candidates =
             parse_repology_project(&read_fixture("repology/project-brave-browser.json"))
                 .expect("fixture parses");
@@ -990,7 +990,7 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// Live tests — env-gated AND http-gated, skipped by default (DESIGN.md §0,
+// Live tests: env-gated AND http-gated, skipped by default (DESIGN.md §0,
 // §9: repology.org unreachable from the wave-1 sandbox)
 // ---------------------------------------------------------------------------
 
@@ -1037,14 +1037,14 @@ mod integration_tests {
             parse_repology_project(&body).expect("live payload parses as a JSON array");
 
         // §3.1 compared invariant set, adapted to oracle output (candidates
-        // are AliasIndex inputs, not Apps) — NEVER field-for-field equality
+        // are AliasIndex inputs, not Apps): NEVER field-for-field equality
         // against the synthetic fixture, whose values are invented.
         assert!(!candidates.is_empty(), "live project has entries");
         for candidate in &candidates {
             // (1) the mandatory fields are populated;
             assert_ne!(candidate.repo, "");
             assert_ne!(candidate.version.value, "");
-            // (2) the index can insert — an id is selectable per entry;
+            // (2) the index can insert: an id is selectable per entry;
             assert!(
                 select_source_id(candidate).is_some(),
                 "entry for {} carries neither srcname nor binname",

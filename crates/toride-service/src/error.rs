@@ -36,6 +36,44 @@ pub enum Error {
     #[error("service not installed: {0}")]
     NotInstalled(String),
 
+    /// A unit file name was rejected by validation.
+    #[error("invalid unit name: {0}")]
+    InvalidUnitName(String),
+
+    /// A pre-install backup of a unit file could not be written.
+    #[error("unit backup failed: {0}")]
+    BackupFailed(String),
+
+    /// A deployment failed after the unit file was written and the previous
+    /// on-disk state was successfully restored.
+    #[error("deployment of unit {unit} failed and was rolled back: {cause}")]
+    DeployRolledBack {
+        /// The unit whose deployment failed.
+        unit: String,
+        /// The failure that triggered the rollback.
+        #[source]
+        cause: Box<Error>,
+    },
+
+    /// A deployment failed and the attempted rollback failed as well, so the
+    /// on-disk unit state is uncertain.
+    #[error(
+        "deployment of unit {unit} failed ({cause}) and the rollback failed too: {rollback_error}"
+    )]
+    DeployRollbackFailed {
+        /// The unit whose deployment failed.
+        unit: String,
+        /// The failure that triggered the rollback.
+        #[source]
+        cause: Box<Error>,
+        /// The error raised while restoring the previous on-disk state.
+        rollback_error: Box<Error>,
+    },
+
+    /// A filesystem operation delegated to `toride-fs` failed.
+    #[error("filesystem error: {0}")]
+    Filesystem(#[from] toride_fs::Error),
+
     /// A generic catch-all error for cases that do not fit a specific variant.
     #[error("{0}")]
     Other(String),

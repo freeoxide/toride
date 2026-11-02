@@ -6,7 +6,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// All errors produced by ufw-kit.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
-    // ── Command runner ────────────────────────────────────────────────
     /// The `ufw` binary could not be located on the system.
     #[error("ufw binary not found: {0}")]
     UfwNotFound(String),
@@ -41,7 +40,6 @@ pub enum Error {
     #[error("failed to spawn command: {0}")]
     CommandSpawnFailed(String),
 
-    // ── Validation ────────────────────────────────────────────────────
     /// Port number out of valid range.
     #[error("invalid port: {0} (port 0 is not valid)")]
     InvalidPort(u16),
@@ -83,7 +81,6 @@ pub enum Error {
     #[error("validation error: {0}")]
     Validation(String),
 
-    // ── Rule operations ───────────────────────────────────────────────
     /// Could not add a rule.
     #[error("failed to add rule: {0}")]
     RuleAddFailed(String),
@@ -96,7 +93,6 @@ pub enum Error {
     #[error("failed to insert rule: {0}")]
     RuleInsertFailed(String),
 
-    // ── Status parsing ────────────────────────────────────────────────
     /// Status output could not be parsed.
     #[error("failed to parse UFW status: {0}")]
     StatusParseFailed(String),
@@ -105,7 +101,6 @@ pub enum Error {
     #[error("failed to parse show report: {0}")]
     ShowParseFailed(String),
 
-    // ── Policy operations ─────────────────────────────────────────────
     /// Could not set default policy.
     #[error("failed to set default policy: {0}")]
     PolicySetFailed(String),
@@ -114,7 +109,6 @@ pub enum Error {
     #[error("failed to set logging level: {0}")]
     LoggingSetFailed(String),
 
-    // ── Enable / disable ──────────────────────────────────────────────
     /// SSH lockout risk detected; refusing to enable.
     #[error("refusing to enable UFW: {0}\nAdd an allow rule first or pass explicit override.")]
     SshLockoutRisk(String),
@@ -145,7 +139,6 @@ pub enum Error {
     #[error("failed to reset UFW: {0}")]
     ResetFailed(String),
 
-    // ── App profiles ──────────────────────────────────────────────────
     /// App profile not found.
     #[error("app profile not found: {0}")]
     AppProfileNotFound(String),
@@ -158,7 +151,6 @@ pub enum Error {
     #[error("app update failed: {0}")]
     AppUpdateFailed(String),
 
-    // ── Config files ──────────────────────────────────────────────────
     /// Config file not found.
     #[error("config file not found: {0}")]
     ConfigNotFound(String),
@@ -171,7 +163,6 @@ pub enum Error {
     #[error("config write error: {0}")]
     ConfigWriteFailed(String),
 
-    // ── Framework ─────────────────────────────────────────────────────
     /// Framework file not found.
     #[error("framework file not found: {0}")]
     FrameworkNotFound(String),
@@ -180,7 +171,6 @@ pub enum Error {
     #[error("framework block error: {0}")]
     FrameworkBlockError(String),
 
-    // ── Backup ────────────────────────────────────────────────────────
     /// Backup failed.
     #[error("backup failed: {0}")]
     BackupFailed(String),
@@ -189,17 +179,14 @@ pub enum Error {
     #[error("restore failed: {0}")]
     RestoreFailed(String),
 
-    // ── IO ────────────────────────────────────────────────────────────
     /// Generic I/O error.
     #[error("io error: {0}")]
     Io(String),
 
-    // ── Doctor ────────────────────────────────────────────────────────
     /// Doctor check encountered an error.
     #[error("doctor check failed: {0}")]
     DoctorCheckFailed(String),
 
-    // ── Generic ───────────────────────────────────────────────────────
     /// Catch-all for other errors.
     #[error("{0}")]
     Other(String),

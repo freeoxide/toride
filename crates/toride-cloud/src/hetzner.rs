@@ -8,7 +8,7 @@
 //! Commands are built as [`toride_runner::CommandSpec`]s and executed through a
 //! [`toride_runner::Runner`]. The `hcloud` CLI authenticates from its own
 //! config/env (`HCLOUD_TOKEN`), so none of these commands carry a secret
-//! inline — they are therefore not redacted.
+//! inline: they are therefore not redacted.
 //!
 //! JSON shapes mirror the Hetzner Cloud API:
 //! - `list -o=json`: an array of Firewall objects.
@@ -24,7 +24,7 @@ use std::sync::Arc;
 use toride_runner::{CommandOutput, CommandSpec, DuctRunner, Runner};
 
 // ---------------------------------------------------------------------------
-// JSON deserialization helpers (file-local — do not touch parse.rs)
+// JSON deserialization helpers (file-local: do not touch parse.rs)
 // ---------------------------------------------------------------------------
 
 /// Mirrors a single Hetzner firewall rule as returned by the API/CLI.
@@ -77,7 +77,7 @@ pub struct HetznerClient {
     /// Hetzner Cloud API token (uses `hcloud` config if `None`).
     ///
     /// Kept for callers that want to set `HCLOUD_TOKEN` explicitly, but is not
-    /// required — `hcloud` reads its own context when unset.
+    /// required: `hcloud` reads its own context when unset.
     pub api_token: Option<String>,
     runner: Arc<dyn Runner>,
 }
@@ -680,7 +680,7 @@ mod tests {
 
     /// Build a `FakeRunner` pre-configured so that the internal `describe`
     /// call (issued by `add_rules`/`remove_rules`) returns a single `Firewall`
-    /// object — the first firewall of `LIST_JSON` — while other calls fall
+    /// object: the first firewall of `LIST_JSON`, while other calls fall
     /// through to a successful empty response. The returned runner is ready to
     /// share with the client via `with_arc_runner`.
     fn runner_with_describe_single() -> Arc<FakeRunner> {

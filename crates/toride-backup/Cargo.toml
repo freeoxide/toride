@@ -13,6 +13,7 @@ categories = ["os", "filesystem"]
 [lib]
 name = "toride_backup"
 path = "src/lib.rs"
+bench = false
 
 [[bin]]
 name = "toride-backup"
@@ -37,7 +38,7 @@ service = ["client"]
 
 ## Config parsing, spec validation, retention policy management.
 ## Implies `client` because config operations use the command runner.
-config = ["client", "dep:regex"]
+config = ["client"]
 
 ## Serde serialization for specs and reports.
 serde = ["dep:serde", "dep:serde_json"]
@@ -61,11 +62,9 @@ which = { workspace = true }
 tempfile = { workspace = true }
 
 # --- Optional (feature-gated) ---
-toride-service = { path = "../toride-service", version = "0.2.0", optional = true }
 duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
-regex = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]
@@ -75,7 +74,7 @@ proptest = "1"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 # parse_kernels: the restic/borg output parsers over committed fixtures
-# (snapshots text table / check / borg list). Hermetic — no restic/borg
+# (snapshots text table / check / borg list). Hermetic: no restic/borg
 # binaries, no repository access. Builds under plain default features: the
 # JSON parse arm needs the non-default `serde` feature and is deliberately
 # NOT benched (enabling it would change default build behavior).

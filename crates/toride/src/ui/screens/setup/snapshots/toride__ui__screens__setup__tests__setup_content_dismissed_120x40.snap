@@ -2,8 +2,8 @@
 source: crates/toride/src/ui/screens/setup/mod.rs
 expression: out
 ---
-"╭ SETUP · 36 suggestions · 8 bundles ──────────────────────────────────────────────────────────────────────────────────╮"
-"│ 36 suggestions across 8 bundles                                                                                      │"
+"╭ SETUP · 37 suggestions · 9 bundles ──────────────────────────────────────────────────────────────────────────────────╮"
+"│ 37 suggestions across 9 bundles                                                                                      │"
 "│ 1 dismissed this session                                                                                             │"
 "│                                                                                                                      │"
 "│ Rust build tools                                                                                                     │"

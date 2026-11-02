@@ -7,7 +7,7 @@ CommandSpec {
     args: [
         "ls-remote",
         "node",
-        "--output=json",
+        "--json",
     ],
     stdin: None,
     stdin_bytes: None,
@@ -20,6 +20,7 @@ CommandSpec {
     cwd: None,
     output_mode: Capture,
     redact: false,
+    redact_flags: [],
     output_limit: None,
     env_precedence: ExplicitWins,
     path_resolution: OsSearch,

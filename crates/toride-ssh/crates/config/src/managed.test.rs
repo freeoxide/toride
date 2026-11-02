@@ -78,8 +78,9 @@ fn remove_managed_block_works() {
 }
 
 #[test]
-fn upsert_unclosed_block_is_cleaned_up() {
-    // Config with an opening marker but no closing marker.
+fn upsert_unclosed_block_keeps_following_content() {
+    // Config with an opening marker but no closing marker: only the orphan
+    // marker line may be dropped; the nodes after it are user content.
     let mut ast = parse_ast(
         "\
 Host foo
@@ -88,26 +89,29 @@ Host foo
 # >>> toride orphan
     HostName old.com
     User old
+
+Host after
+    HostName after.com
 ",
     );
 
-    // The unclosed block should be detected and cleaned up.
     upsert_managed_block(
         &mut ast,
         "orphan",
         vec![("HostName".to_owned(), "new.com".to_owned())],
     );
 
-    // Should have exactly one managed block with the new content.
+    // Exactly one well-formed managed block with the new content.
     let block = extract_managed_block(&ast, "orphan").unwrap();
     assert_eq!(block.nodes.len(), 1);
     assert_eq!(block.nodes[0].as_directive().unwrap().1, "new.com");
-
-    // The old content should be gone — no duplicate blocks.
     let output = ast.to_string_lossless();
     assert_eq!(output.matches("# >>> toride orphan").count(), 1);
     assert_eq!(output.matches("# <<< toride orphan").count(), 1);
-    assert!(!output.contains("old.com"));
+
+    // The previously-drained content must survive the upsert.
+    assert!(output.contains("Host after"));
+    assert!(output.contains("after.com"));
 }
 
 #[test]
@@ -133,7 +137,10 @@ Host other
     assert!(output.contains("Host other"));
     assert!(output.contains("other.com"));
     assert!(output.contains("fixed.com"));
-    assert!(!output.contains("stale.com"));
+    // The stale directive followed the orphan marker, so it is user
+    // content that must survive too (only the marker line is removed).
+    assert!(output.contains("stale.com"));
+    assert_eq!(output.matches("# >>> toride broken").count(), 1);
 }
 
 #[test]

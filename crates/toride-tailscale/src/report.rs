@@ -41,7 +41,7 @@ pub struct TailscaleReport {
     /// Tailscale IP addresses assigned to this node.
     pub ip_addresses: Vec<String>,
 
-    /// The exit node this node is using, if any.
+    /// The IP of the exit node this node actively routes through, if any.
     pub exit_node: Option<String>,
 
     /// Whether MagicDNS is enabled.
@@ -92,7 +92,9 @@ pub struct PeerInfo {
     /// Whether the peer is currently online and reachable.
     pub online: bool,
 
-    /// Whether the peer is an exit node.
+    /// Whether the peer is available as an exit node (advertised via
+    /// `ExitNodeOption`). Availability is not active use; the node this
+    /// machine routes through is [`TailscaleReport::exit_node`].
     pub exit_node: bool,
 }
 

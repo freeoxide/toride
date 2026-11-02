@@ -9,10 +9,6 @@ use crate::error::{Error, Result};
 use crate::spec::CommandSpec;
 use std::time::Duration;
 
-// ============================================================================
-// Types
-// ============================================================================
-
 /// A parsed iptables ruleset.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -87,10 +83,6 @@ pub struct IptablesRuleComponents {
     pub comment: Option<String>,
 }
 
-// ============================================================================
-// Parsing
-// ============================================================================
-
 /// Parse iptables-save output into a structured ruleset.
 pub fn parse_iptables_save(output: &str) -> Result<IptablesRuleset> {
     let mut tables = Vec::new();
@@ -99,14 +91,11 @@ pub fn parse_iptables_save(output: &str) -> Result<IptablesRuleset> {
     for line in output.lines() {
         let trimmed = line.trim();
 
-        // Skip empty lines and comments
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
 
-        // Table header: *filter, *nat, *mangle, *raw
         if let Some(table_name) = trimmed.strip_prefix('*') {
-            // Save previous table
             if let Some(table) = current_table.take() {
                 tables.push(table);
             }
@@ -117,7 +106,6 @@ pub fn parse_iptables_save(output: &str) -> Result<IptablesRuleset> {
             continue;
         }
 
-        // COMMIT ends the current table
         if trimmed == "COMMIT" {
             if let Some(table) = current_table.take() {
                 tables.push(table);
@@ -125,7 +113,6 @@ pub fn parse_iptables_save(output: &str) -> Result<IptablesRuleset> {
             continue;
         }
 
-        // Chain definition: :CHAIN_NAME POLICY [PACKETS:BYTES]
         if let Some(rest) = trimmed.strip_prefix(':') {
             if let Some(table) = &mut current_table {
                 if let Some(chain) = parse_chain_definition(rest) {
@@ -135,11 +122,9 @@ pub fn parse_iptables_save(output: &str) -> Result<IptablesRuleset> {
             continue;
         }
 
-        // Rule: -A CHAIN [options]
         if let Some(rest) = trimmed.strip_prefix("-A ") {
             if let Some(table) = &mut current_table {
                 if let Some(rule) = parse_rule_line(rest) {
-                    // Add the rule to the matching chain
                     if let Some(chain) = table.chains.iter_mut().find(|c| c.name == rule.chain) {
                         chain.rules.push(rule);
                     }
@@ -148,7 +133,6 @@ pub fn parse_iptables_save(output: &str) -> Result<IptablesRuleset> {
         }
     }
 
-    // Handle case where output doesn't end with COMMIT
     if let Some(table) = current_table.take() {
         tables.push(table);
     }
@@ -158,7 +142,6 @@ pub fn parse_iptables_save(output: &str) -> Result<IptablesRuleset> {
 
 /// Parse a chain definition line like "ufw-before-input - [0:0]".
 fn parse_chain_definition(line: &str) -> Option<IptablesChain> {
-    // Format: "CHAIN POLICY [PACKETS:BYTES]"
     let parts: Vec<&str> = line.splitn(3, ' ').collect();
     if parts.is_empty() {
         return None;
@@ -166,8 +149,6 @@ fn parse_chain_definition(line: &str) -> Option<IptablesChain> {
 
     let name = parts[0].to_string();
 
-    // Built-in chains have a policy (ACCEPT, DROP, etc.)
-    // User-defined chains have "-"
     let (policy, counters, is_builtin) = if parts.len() >= 3 {
         let policy_str = parts[1].trim();
         let counter_str = parts[2].trim();
@@ -206,12 +187,10 @@ fn parse_counters(s: &str) -> Option<(u64, u64)> {
 
 /// Parse a rule line (after `-A `).
 fn parse_rule_line(line: &str) -> Option<IptablesRule> {
-    // Format: "CHAIN -s 10.0.0.0/24 -j MASQUERADE"
     let space_pos = line.find(' ')?;
     let chain = line[..space_pos].to_string();
     let spec = line[space_pos..].trim().to_string();
 
-    // Parse counters if present: [12345:67890] -s ...
     let (counters, remaining) = if spec.starts_with('[') {
         let bracket_end = spec.find(']')?;
         let counter_str = &spec[..=bracket_end];
@@ -306,9 +285,7 @@ fn parse_rule_components(spec: &str) -> IptablesRuleComponents {
                 }
             }
             "--comment" if i + 1 < tokens.len() => {
-                // Comments may be quoted
                 let mut comment = tokens[i + 1].to_string();
-                // Handle quoted comments that got split
                 if comment.starts_with('"') && !comment.ends_with('"') {
                     let mut j = i + 2;
                     while j < tokens.len() {
@@ -332,10 +309,6 @@ fn parse_rule_components(spec: &str) -> IptablesRuleComponents {
 
     components
 }
-
-// ============================================================================
-// Inspection
-// ============================================================================
 
 /// Inspect iptables-save output as structured data.
 pub fn inspect_iptables_structured(runner: &dyn CommandRunner) -> Result<IptablesRuleset> {
@@ -515,7 +488,6 @@ COMMIT
 
         assert_eq!(input.rules.len(), 4);
 
-        // Check SSH rule
         let ssh_rule = input
             .rules
             .iter()
@@ -557,7 +529,6 @@ COMMIT
     fn find_public_accept_rules_should_find_exposed_ports() {
         let result = parse_iptables_save(SAMPLE_IPTABLES_SAVE).unwrap();
         let public = find_public_accept_rules(&result);
-        // Rules with ACCEPT + --dport in filter table
         assert!(!public.is_empty());
     }
 

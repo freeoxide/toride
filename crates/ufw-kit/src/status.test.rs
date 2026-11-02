@@ -262,6 +262,122 @@ fn parse_status_verbose_should_parse_accept_as_allow() {
 }
 
 // ---------------------------------------------------------------------------
+// Column extraction (To / From), comments, ipv6, route markers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_rule_line_should_populate_to_and_from_columns() {
+    let rule = parse_rule_line("22/tcp                     ALLOW IN    Anywhere", false).unwrap();
+    assert_eq!(rule.to.as_deref(), Some("22/tcp"));
+    assert_eq!(rule.from.as_deref(), Some("Anywhere"));
+    assert_eq!(rule.protocol, Some(crate::spec::Protocol::Tcp));
+}
+
+#[test]
+fn parse_rule_line_should_keep_destination_address_in_to_column() {
+    let rule = parse_rule_line("10.0.0.10 22/tcp           ALLOW IN    10.0.0.1", false).unwrap();
+    assert_eq!(rule.to.as_deref(), Some("10.0.0.10 22/tcp"));
+    assert_eq!(rule.from.as_deref(), Some("10.0.0.1"));
+}
+
+#[test]
+fn parse_rule_line_should_strip_v6_suffix_into_flag() {
+    let rule =
+        parse_rule_line("22/tcp (v6)               ALLOW IN    Anywhere (v6)", false).unwrap();
+    assert!(rule.ipv6);
+    assert_eq!(rule.to.as_deref(), Some("22/tcp"));
+    assert_eq!(rule.from.as_deref(), Some("Anywhere"));
+}
+
+#[test]
+fn parse_rule_line_should_not_flag_v6_inside_words() {
+    let rule = parse_rule_line("Apache lv6                 ALLOW IN    Anywhere", false).unwrap();
+    assert!(!rule.ipv6);
+}
+
+#[test]
+fn parse_rule_line_should_extract_comment_at_marker_token() {
+    let rule = parse_rule_line(
+        "10015,10016/tcp                  ALLOW IN    Anywhere comment web tier 5",
+        false,
+    )
+    .unwrap();
+    assert_eq!(rule.comment.as_deref(), Some("web tier 5"));
+    assert_eq!(rule.from.as_deref(), Some("Anywhere"));
+}
+
+#[test]
+fn parse_rule_line_should_not_treat_commentary_host_as_comment() {
+    let rule = parse_rule_line(
+        "443/tcp                    ALLOW IN    commentary.example.com",
+        false,
+    )
+    .unwrap();
+    assert_eq!(rule.comment, None);
+    assert_eq!(rule.from.as_deref(), Some("commentary.example.com"));
+}
+
+#[test]
+fn parse_rule_line_should_not_flag_router_profile_as_route() {
+    let rule = parse_rule_line("Router                     ALLOW IN    Anywhere", false).unwrap();
+    assert!(!rule.is_route);
+    let route_rule = parse_rule_line(
+        "Anywhere on eth0           ROUTE ALLOW FWD   Anywhere on eth1",
+        false,
+    )
+    .unwrap();
+    assert!(route_rule.is_route);
+}
+
+#[test]
+fn parse_status_should_not_skip_profile_starting_with_to() {
+    let output = "\
+Status: active
+
+To                         Action      From
+--                         ------      ----
+Tomcat                     ALLOW IN    Anywhere
+";
+    let status = parse_status(output).unwrap();
+    assert_eq!(status.rules.len(), 1);
+    assert_eq!(status.rules[0].to.as_deref(), Some("Tomcat"));
+}
+
+// ---------------------------------------------------------------------------
+// Structural matching helpers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn column_targets_port_should_not_match_prefix_ports() {
+    assert!(!column_targets_port("8022/tcp", 22));
+    assert!(!column_targets_port("2222/tcp", 22));
+}
+
+#[test]
+fn column_targets_port_should_match_exact_tokens_lists_and_ranges() {
+    assert!(column_targets_port("22/tcp", 22));
+    assert!(column_targets_port("22", 22));
+    assert!(column_targets_port("10015,10016/tcp", 10015));
+    assert!(column_targets_port("20:30/tcp", 22));
+    assert!(!column_targets_port("8022/tcp", 22));
+    assert!(!column_targets_port("19000/tcp", 9000));
+    assert!(!column_targets_port("Anywhere", 22));
+    assert!(!column_targets_port("10.0.0.10 22/tcp", 23));
+}
+
+#[test]
+fn column_matches_address_should_not_match_prefix_addresses() {
+    use crate::spec::Address;
+    let needle: std::net::IpAddr = "10.0.0.1".parse().unwrap();
+    assert!(column_matches_address("10.0.0.1", &Address::Ip(needle)));
+    assert!(!column_matches_address("10.0.0.10", &Address::Ip(needle)));
+    assert!(!column_matches_address("Anywhere", &Address::Ip(needle)));
+    let net: ipnet::IpNet = "10.0.0.0/8".parse().unwrap();
+    assert!(column_matches_address("10.0.0.0/8", &Address::Net(net)));
+    assert!(!column_matches_address("10.0.0.0/16", &Address::Net(net)));
+}
+
+// ---------------------------------------------------------------------------
 // Realistic UFW output (action token mid-line, not at line start)
 // ---------------------------------------------------------------------------
 

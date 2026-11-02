@@ -39,7 +39,24 @@ fn nft_ready_runner() -> FakeRunner {
     fake.with_response("nft", &["--version"], ok_output("nftables v1.0.6"));
     fake.with_response(
         "nft",
-        &["list", "set", "inet", NFT_TABLE, IPTABLES_CHAIN],
+        &[
+            "list",
+            "set",
+            "inet",
+            NFT_TABLE,
+            &nft_set_name_for_jail("sshd"),
+        ],
+        ok_output(""),
+    );
+    fake.with_response(
+        "nft",
+        &[
+            "list",
+            "set",
+            "inet",
+            NFT_TABLE,
+            &nft_set6_name_for_jail("sshd"),
+        ],
         ok_output(""),
     );
     fake
@@ -51,7 +68,11 @@ fn nft_ready_runner() -> FakeRunner {
 fn iptables_ready_runner() -> FakeRunner {
     let mut fake = FakeRunner::new();
     fake.with_response("iptables", &["--version"], ok_output("iptables v1.8.9"));
-    fake.with_response("iptables", &["-n", "-L", IPTABLES_CHAIN], ok_output(""));
+    fake.with_response(
+        "iptables",
+        &["-n", "-L", &iptables_chain_name_for_jail("sshd")],
+        ok_output(""),
+    );
     fake.with_response("ip6tables", &["--version"], ok_output("ip6tables v1.8.9"));
     fake
 }
@@ -212,16 +233,26 @@ fn check_nft_set_not_exists() {
 }
 
 #[test]
-fn check_nft_set_default_chain_exists() {
+fn check_nft_set_queries_the_stock_fail2ban_table_and_set_name() {
     let mut fake = FakeRunner::new();
     fake.with_response(
         "nft",
-        &["list", "set", "inet", NFT_TABLE, IPTABLES_CHAIN],
+        &[
+            "list",
+            "set",
+            "inet",
+            NFT_TABLE,
+            &nft_set_name_for_jail("sshd"),
+        ],
         ok_output(""),
     );
 
     let checker = FirewallChecker::new(&fake);
-    assert!(checker.check_nft_set(IPTABLES_CHAIN).unwrap());
+    assert!(
+        checker
+            .check_nft_set(&nft_set_name_for_jail("sshd"))
+            .unwrap()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -253,10 +284,18 @@ fn check_iptables_chain_not_exists() {
 #[test]
 fn check_iptables_chain_default_f2b_exists() {
     let mut fake = FakeRunner::new();
-    fake.with_response("iptables", &["-n", "-L", IPTABLES_CHAIN], ok_output(""));
+    fake.with_response(
+        "iptables",
+        &["-n", "-L", &iptables_chain_name_for_jail("sshd")],
+        ok_output(""),
+    );
 
     let checker = FirewallChecker::new(&fake);
-    assert!(checker.check_iptables_chain(IPTABLES_CHAIN).unwrap());
+    assert!(
+        checker
+            .check_iptables_chain(&iptables_chain_name_for_jail("sshd"))
+            .unwrap()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -267,7 +306,7 @@ fn check_iptables_chain_default_f2b_exists() {
 fn diagnose_no_firewall_action_produces_info() {
     let fake = FakeRunner::new();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["sendmail".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["sendmail".to_string()]);
 
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].severity, Severity::Info);
@@ -279,7 +318,7 @@ fn diagnose_no_firewall_action_produces_info() {
 fn diagnose_empty_actions_produces_info() {
     let fake = FakeRunner::new();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&[]);
+    let findings = checker.diagnose(&["sshd".to_string()], &[]);
 
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].severity, Severity::Info);
@@ -290,11 +329,14 @@ fn diagnose_empty_actions_produces_info() {
 fn diagnose_unrelated_actions_produces_info() {
     let fake = FakeRunner::new();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&[
-        "sendmail".to_string(),
-        "complain".to_string(),
-        "bsd-mail".to_string(),
-    ]);
+    let findings = checker.diagnose(
+        &["sshd".to_string()],
+        &[
+            "sendmail".to_string(),
+            "complain".to_string(),
+            "bsd-mail".to_string(),
+        ],
+    );
 
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].severity, Severity::Info);
@@ -308,7 +350,7 @@ fn diagnose_unrelated_actions_produces_info() {
 fn diagnose_nftables_action_with_nft_available_and_set_present() {
     let fake = nft_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["nftables".to_string()]);
 
     assert!(findings.iter().any(|f| f.id == "firewall.nft.set-present"));
     let set_present = findings
@@ -323,7 +365,7 @@ fn diagnose_nftables_action_with_nft_available_and_set_present() {
 fn diagnose_nftables_multiport_variant_matches() {
     let fake = nft_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables-multiport".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["nftables-multiport".to_string()]);
 
     assert!(findings.iter().any(|f| f.id == "firewall.nft.set-present"));
 }
@@ -332,7 +374,7 @@ fn diagnose_nftables_multiport_variant_matches() {
 fn diagnose_nftables_action_case_insensitive() {
     let fake = nft_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["NfTaBleS".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["NfTaBleS".to_string()]);
 
     assert!(findings.iter().any(|f| f.id.contains("nft")));
 }
@@ -347,12 +389,18 @@ fn diagnose_nftables_set_missing_produces_warning() {
     fake.with_response("nft", &["--version"], ok_output("nftables v1.0.6"));
     fake.with_response(
         "nft",
-        &["list", "set", "inet", NFT_TABLE, IPTABLES_CHAIN],
+        &[
+            "list",
+            "set",
+            "inet",
+            NFT_TABLE,
+            &nft_set_name_for_jail("sshd"),
+        ],
         fail_output("Error: no such set", 1),
     );
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["nftables".to_string()]);
 
     assert!(findings.iter().any(|f| f.id == "firewall.nft.set-missing"));
     let set_missing = findings
@@ -374,7 +422,7 @@ fn diagnose_nftables_nft_missing_produces_critical() {
     fake.with_response("nft", &["--version"], fail_output("nft: not found", 127));
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["nftables".to_string()]);
 
     assert!(findings.iter().any(|f| f.id == "firewall.nft.missing"));
     let missing = findings
@@ -395,7 +443,7 @@ fn diagnose_nftables_nft_missing_produces_critical() {
 fn diagnose_iptables_action_all_ok() {
     let fake = iptables_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     assert!(
         findings
@@ -427,7 +475,7 @@ fn diagnose_iptables_action_all_ok() {
 fn diagnose_iptables_multiport_variant_matches() {
     let fake = iptables_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables-multiport".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables-multiport".to_string()]);
 
     assert!(
         findings
@@ -446,13 +494,13 @@ fn diagnose_iptables_chain_missing_produces_warning() {
     fake.with_response("iptables", &["--version"], ok_output("iptables v1.8.9"));
     fake.with_response(
         "iptables",
-        &["-n", "-L", IPTABLES_CHAIN],
+        &["-n", "-L", &iptables_chain_name_for_jail("sshd")],
         fail_output("iptables: No chain/target/match by that name.", 1),
     );
     fake.with_response("ip6tables", &["--version"], ok_output("ip6tables v1.8.9"));
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     assert!(
         findings
@@ -482,7 +530,7 @@ fn diagnose_iptables_missing_binary_produces_critical() {
     );
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     assert!(findings.iter().any(|f| f.id == "firewall.iptables.missing"));
     let missing = findings
@@ -502,7 +550,11 @@ fn diagnose_iptables_missing_binary_produces_critical() {
 fn diagnose_ip6tables_missing_produces_warning() {
     let mut fake = FakeRunner::new();
     fake.with_response("iptables", &["--version"], ok_output("iptables v1.8.9"));
-    fake.with_response("iptables", &["-n", "-L", IPTABLES_CHAIN], ok_output(""));
+    fake.with_response(
+        "iptables",
+        &["-n", "-L", &iptables_chain_name_for_jail("sshd")],
+        ok_output(""),
+    );
     fake.with_response(
         "ip6tables",
         &["--version"],
@@ -510,7 +562,7 @@ fn diagnose_ip6tables_missing_produces_warning() {
     );
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     // iptables chain should be present (Ok).
     assert!(
@@ -542,11 +594,18 @@ fn diagnose_mixed_actions_checks_both_backends() {
     let mut fake = nft_ready_runner();
     // Add iptables responses on top of nftables ones.
     fake.with_response("iptables", &["--version"], ok_output("iptables v1.8.9"));
-    fake.with_response("iptables", &["-n", "-L", IPTABLES_CHAIN], ok_output(""));
+    fake.with_response(
+        "iptables",
+        &["-n", "-L", &iptables_chain_name_for_jail("sshd")],
+        ok_output(""),
+    );
     fake.with_response("ip6tables", &["--version"], ok_output("ip6tables v1.8.9"));
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string(), "iptables".to_string()]);
+    let findings = checker.diagnose(
+        &["sshd".to_string()],
+        &["nftables".to_string(), "iptables".to_string()],
+    );
 
     // Should have at least one nft finding and one iptables finding.
     assert!(findings.iter().any(|f| f.id.contains("nft")));
@@ -566,7 +625,10 @@ fn diagnose_mixed_actions_nft_ok_iptables_missing() {
     );
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string(), "iptables".to_string()]);
+    let findings = checker.diagnose(
+        &["sshd".to_string()],
+        &["nftables".to_string(), "iptables".to_string()],
+    );
 
     // nft should be fine.
     assert!(findings.iter().any(|f| f.id == "firewall.nft.set-present"));
@@ -583,7 +645,7 @@ fn diagnose_mixed_actions_nft_ok_iptables_missing() {
 fn diagnose_action_matching_is_case_insensitive() {
     let fake = nft_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["NFTABLES".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["NFTABLES".to_string()]);
 
     assert!(findings.iter().any(|f| f.id == "firewall.nft.set-present"));
 }
@@ -598,12 +660,18 @@ fn diagnose_nftables_dispatches_correct_commands() {
     // Also register the set check so it does not fall through to the default.
     fake.with_response(
         "nft",
-        &["list", "set", "inet", NFT_TABLE, IPTABLES_CHAIN],
+        &[
+            "list",
+            "set",
+            "inet",
+            NFT_TABLE,
+            &nft_set_name_for_jail("sshd"),
+        ],
         ok_output(""),
     );
 
     let checker = FirewallChecker::new(&fake);
-    let _findings = checker.diagnose(&["nftables".to_string()]);
+    let _findings = checker.diagnose(&["sshd".to_string()], &["nftables".to_string()]);
 
     let calls = fake.calls();
     assert!(
@@ -611,6 +679,8 @@ fn diagnose_nftables_dispatches_correct_commands() {
             .iter()
             .any(|(cmd, args)| { cmd == "nft" && args == &["--version".to_string()] })
     );
+    // The probe pins the exact stock fail2ban set name for the jail:
+    // `nft list set inet f2b-table addr-set-sshd`.
     assert!(calls.iter().any(|(cmd, args)| {
         cmd == "nft"
             && args
@@ -619,7 +689,18 @@ fn diagnose_nftables_dispatches_correct_commands() {
                     "set".to_string(),
                     "inet".to_string(),
                     NFT_TABLE.to_string(),
-                    IPTABLES_CHAIN.to_string(),
+                    nft_set_name_for_jail("sshd"),
+                ]
+    }));
+    assert!(calls.iter().any(|(cmd, args)| {
+        cmd == "nft"
+            && args
+                == &[
+                    "list".to_string(),
+                    "set".to_string(),
+                    "inet".to_string(),
+                    NFT_TABLE.to_string(),
+                    nft_set6_name_for_jail("sshd"),
                 ]
     }));
 }
@@ -628,7 +709,7 @@ fn diagnose_nftables_dispatches_correct_commands() {
 fn diagnose_iptables_dispatches_correct_commands() {
     let fake = iptables_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let _findings = checker.diagnose(&["iptables".to_string()]);
+    let _findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     let calls = fake.calls();
     assert!(
@@ -642,7 +723,7 @@ fn diagnose_iptables_dispatches_correct_commands() {
                 == &[
                     "-n".to_string(),
                     "-L".to_string(),
-                    IPTABLES_CHAIN.to_string(),
+                    iptables_chain_name_for_jail("sshd"),
                 ]
     }));
     assert!(
@@ -660,7 +741,7 @@ fn diagnose_iptables_dispatches_correct_commands() {
 fn diagnose_no_firewall_action_severity_is_info() {
     let fake = FakeRunner::new();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["some-action".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["some-action".to_string()]);
 
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].severity, Severity::Info);
@@ -670,7 +751,7 @@ fn diagnose_no_firewall_action_severity_is_info() {
 fn diagnose_nft_set_present_severity_is_ok() {
     let fake = nft_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["nftables".to_string()]);
 
     let f = findings
         .iter()
@@ -685,7 +766,7 @@ fn diagnose_nft_missing_severity_is_critical() {
     fake.with_response("nft", &["--version"], fail_output("not found", 127));
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["nftables".to_string()]);
 
     let f = findings
         .iter()
@@ -700,12 +781,18 @@ fn diagnose_nft_set_missing_severity_is_warning() {
     fake.with_response("nft", &["--version"], ok_output("nftables v1.0.6"));
     fake.with_response(
         "nft",
-        &["list", "set", "inet", NFT_TABLE, IPTABLES_CHAIN],
+        &[
+            "list",
+            "set",
+            "inet",
+            NFT_TABLE,
+            &nft_set_name_for_jail("sshd"),
+        ],
         fail_output("Error: no such set", 1),
     );
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["nftables".to_string()]);
 
     let f = findings
         .iter()
@@ -718,7 +805,7 @@ fn diagnose_nft_set_missing_severity_is_warning() {
 fn diagnose_iptables_chain_present_severity_is_ok() {
     let fake = iptables_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     let f = findings
         .iter()
@@ -733,7 +820,7 @@ fn diagnose_iptables_missing_severity_is_critical() {
     fake.with_response("iptables", &["--version"], fail_output("not found", 127));
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     let f = findings
         .iter()
@@ -748,13 +835,13 @@ fn diagnose_iptables_chain_missing_severity_is_warning() {
     fake.with_response("iptables", &["--version"], ok_output("iptables v1.8.9"));
     fake.with_response(
         "iptables",
-        &["-n", "-L", IPTABLES_CHAIN],
+        &["-n", "-L", &iptables_chain_name_for_jail("sshd")],
         fail_output("No chain/target/match", 1),
     );
     fake.with_response("ip6tables", &["--version"], ok_output("ip6tables v1.8.9"));
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     let f = findings
         .iter()
@@ -767,7 +854,7 @@ fn diagnose_iptables_chain_missing_severity_is_warning() {
 fn diagnose_ip6tables_available_severity_is_ok() {
     let fake = iptables_ready_runner();
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     let f = findings
         .iter()
@@ -780,11 +867,15 @@ fn diagnose_ip6tables_available_severity_is_ok() {
 fn diagnose_ip6tables_missing_severity_is_warning() {
     let mut fake = FakeRunner::new();
     fake.with_response("iptables", &["--version"], ok_output("iptables v1.8.9"));
-    fake.with_response("iptables", &["-n", "-L", IPTABLES_CHAIN], ok_output(""));
+    fake.with_response(
+        "iptables",
+        &["-n", "-L", &iptables_chain_name_for_jail("sshd")],
+        ok_output(""),
+    );
     fake.with_response("ip6tables", &["--version"], fail_output("not found", 127));
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     let f = findings
         .iter()
@@ -803,7 +894,7 @@ fn diagnose_nft_missing_finding_has_detail_and_fix() {
     fake.with_response("nft", &["--version"], fail_output("not found", 127));
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["nftables".to_string()]);
 
     let f = findings
         .iter()
@@ -820,12 +911,18 @@ fn diagnose_nft_set_missing_finding_has_detail_and_fix() {
     fake.with_response("nft", &["--version"], ok_output("nftables v1.0.6"));
     fake.with_response(
         "nft",
-        &["list", "set", "inet", NFT_TABLE, IPTABLES_CHAIN],
+        &[
+            "list",
+            "set",
+            "inet",
+            NFT_TABLE,
+            &nft_set_name_for_jail("sshd"),
+        ],
         fail_output("no such set", 1),
     );
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["nftables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["nftables".to_string()]);
 
     let f = findings
         .iter()
@@ -841,7 +938,7 @@ fn diagnose_iptables_missing_finding_has_detail_and_fix() {
     fake.with_response("iptables", &["--version"], fail_output("not found", 127));
 
     let checker = FirewallChecker::new(&fake);
-    let findings = checker.diagnose(&["iptables".to_string()]);
+    let findings = checker.diagnose(&["sshd".to_string()], &["iptables".to_string()]);
 
     let f = findings
         .iter()

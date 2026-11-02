@@ -21,10 +21,6 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-// ---------------------------------------------------------------------------
-// mise ls --json
-// ---------------------------------------------------------------------------
-
 /// Output of `mise ls --json`.
 ///
 /// The top-level is a map from tool name to a list of version entries.
@@ -64,9 +60,13 @@ pub struct LsToolEntry {
     /// The binary path for this tool version, if applicable.
     #[serde(default)]
     pub bin_path: Option<String>,
-    /// The requested version string as written in config.
-    #[serde(default)]
+    /// The requested version string as written in config. Real mise
+    /// (2026.6.14) emits this as `requested_version` on `ls --current --json`.
+    #[serde(default, alias = "requested_version")]
     pub requested: Option<String>,
+    /// Whether this version is installed on disk.
+    #[serde(default)]
+    pub installed: Option<bool>,
 }
 
 /// Source information for a tool version entry.
@@ -80,10 +80,6 @@ pub struct LsSource {
     #[serde(default)]
     pub path: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// mise registry --json
-// ---------------------------------------------------------------------------
 
 /// Output of `mise registry --json`.
 ///
@@ -119,10 +115,6 @@ pub struct RegistryToolEntry {
     #[serde(default)]
     pub aliases: Option<Vec<String>>,
 }
-
-// ---------------------------------------------------------------------------
-// mise outdated --json
-// ---------------------------------------------------------------------------
 
 /// Output of `mise outdated --json`.
 ///
@@ -160,10 +152,6 @@ pub struct OutdatedToolEntry {
     pub backend: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// mise env --json
-// ---------------------------------------------------------------------------
-
 /// Output of `mise env --json`.
 ///
 /// A flat map of environment variable names to their resolved values.
@@ -192,10 +180,6 @@ pub struct EnvExtendedEntry {
 /// A map from environment variable name to an [`EnvExtendedEntry`].
 /// Real mise outputs: `{"PATH": {"value": "/usr/bin:/bin"}}`.
 pub type EnvExtendedOutput = BTreeMap<String, EnvExtendedEntry>;
-
-// ---------------------------------------------------------------------------
-// mise doctor --json
-// ---------------------------------------------------------------------------
 
 /// Output of `mise doctor --json`.
 ///
@@ -357,10 +341,6 @@ pub struct DoctorToolEntry {
     pub install_path: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// mise settings ls --json
-// ---------------------------------------------------------------------------
-
 /// Output of `mise settings ls --json`.
 ///
 /// A map from setting key to its current value. Values may be strings, numbers,
@@ -370,7 +350,8 @@ pub type SettingsOutput = BTreeMap<String, serde_json::Value>;
 
 /// Output of `mise settings ls --json-extended`.
 ///
-/// Each setting includes its value and the source it was defined in.
+/// Each setting includes its value, type, description, and the source it
+/// was defined in (verified on mise 2026.6.14).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SettingsExtendedEntry {
     /// The resolved value of the setting.
@@ -379,14 +360,16 @@ pub struct SettingsExtendedEntry {
     /// The source file that defined this setting.
     #[serde(default)]
     pub source: Option<String>,
+    /// The setting's declared type (`"boolean"`, `"integer"`, …).
+    #[serde(default, rename = "type")]
+    pub setting_type: Option<String>,
+    /// The setting's human-readable description.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Extended settings output (with sources) from `mise settings ls --json-extended`.
 pub type SettingsExtendedOutput = BTreeMap<String, SettingsExtendedEntry>;
-
-// ---------------------------------------------------------------------------
-// mise --version
-// ---------------------------------------------------------------------------
 
 /// Output of `mise --version`.
 ///
@@ -400,7 +383,7 @@ pub struct VersionOutput {
     /// The full version string (e.g. `"2024.12.1 macos-arm64 (2024-12-15)"`).
     #[serde(default)]
     pub version: Option<String>,
-    /// Just the semver-like portion, if extractable.
+    /// Only the semver-like portion, if extractable.
     #[serde(default)]
     pub semver: Option<String>,
     /// The target triple, if included in the version output.
@@ -454,10 +437,6 @@ impl VersionOutput {
     }
 }
 
-// ---------------------------------------------------------------------------
-// mise version --json
-// ---------------------------------------------------------------------------
-
 /// Output of `mise version --json`.
 ///
 /// Real mise (2026.x) outputs:
@@ -489,10 +468,6 @@ pub struct MiseVersionJson {
     #[serde(default)]
     pub build_time: Option<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

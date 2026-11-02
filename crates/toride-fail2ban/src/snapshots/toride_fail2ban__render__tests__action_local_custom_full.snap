@@ -1,12 +1,12 @@
 ---
 source: crates/toride-fail2ban/src/render.test.rs
-assertion_line: 1006
+assertion_line: 1039
 expression: out
 ---
 # Managed by fail2ban-kit.
 # Do not edit manually unless you also disable this manager.
 
-[my-hook]
+[Definition]
 actionstart = /usr/local/bin/f2b-hook start
 actionstop = /usr/local/bin/f2b-hook stop
 actioncheck = /usr/local/bin/f2b-hook check

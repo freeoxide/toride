@@ -7,16 +7,16 @@
 //! [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector).
 //!
 //! This is the TEMPLATE read-only integration. It mirrors `Fail2banCollector` MINUS the
-//! entire write path — there are no operations, no optimistic updates, no cooldown gate,
+//! entire write path: there are no operations, no optimistic updates, no cooldown gate,
 //! and no loading spinner. Every call to the backend is a pure read.
 //!
 //! ## Async / network
 //!
 //! Unlike fail2ban/cloud (which shell out synchronously and so use `spawn_blocking`), the
 //! Tailscale backend talks to the local daemon over HTTP (`localhost:41642`) via async
-//! `reqwest`. So `TailscaleClient::new` (a sync ctor — it only builds the HTTP client,
+//! `reqwest`. So `TailscaleClient::new` (a sync ctor: it only builds the HTTP client,
 //! no network) is built ONCE per collection and its async methods are awaited directly
-//! inside the spawned `tokio::spawn(async move { ... })` task — NOT inside
+//! inside the spawned `tokio::spawn(async move { ... })` task: NOT inside
 //! `spawn_blocking`. This mirrors `ssh_data`'s direct-async pattern (the SSH services are
 //! also async).
 //!
@@ -26,7 +26,7 @@
 //! `dns_config`, `Doctor::run`) is wrapped in [`tokio::time::timeout`] with a ~3s budget.
 //! An absent `tailscaled` (the common case on a dev box without Tailscale) will refuse
 //! the connection quickly, but a hung/blackholed `localhost:41642` must not stall the
-//! collector task — the timeout caps each probe independently. A timed-out or errored
+//! collector task: the timeout caps each probe independently. A timed-out or errored
 //! probe degrades that field but the collector keeps going; the section stays
 //! `available == true` whenever ANY probe succeeded or the doctor produced findings, so
 //! the operator sees what is wrong rather than a blank panel. Only a task panic (`JoinError`)
@@ -36,7 +36,7 @@
 //!
 //! `Doctor::run` is expensive (it itself fans out to `is_connected` / `dns_config` /
 //! `which::which`, each of which is a network call or binary lookup) and changes slowly,
-//! so findings are cached for 60s — exactly like the fail2ban / cloud findings caches.
+//! so findings are cached for 60s: exactly like the fail2ban / cloud findings caches.
 
 use std::time::Duration;
 
@@ -55,7 +55,7 @@ const NET_TIMEOUT: Duration = Duration::from_secs(3);
 #[derive(Clone, Debug)]
 pub struct TailscaleDataBundle {
     /// Whether the Tailscale backend was reachable at all. `false` is reserved for the
-    /// panic case (a `tokio::spawn` `JoinError`) — an absent daemon degrades individual
+    /// panic case (a `tokio::spawn` `JoinError`): an absent daemon degrades individual
     /// probes but the doctor surfaces that as a `critical` finding, keeping
     /// `available == true` so the operator SEES the finding rather than a blank panel.
     pub available: bool,
@@ -71,7 +71,7 @@ pub struct TailscaleDataBundle {
     pub findings: Vec<TailscaleFindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
     /// `available == false` because a collection task panicked (`JoinError`). `None`
-    /// otherwise — notably also `None` for a freshly-constructed empty bundle before any
+    /// otherwise: notably also `None` for a freshly-constructed empty bundle before any
     /// collection has run. Surfaced to the UI so the degraded panel can show what
     /// actually went wrong instead of guessing.
     pub unavailable_reason: Option<String>,
@@ -90,11 +90,13 @@ pub struct TailscaleCollector {
     /// (`used_cache == false`); otherwise every cache-hit poll would reset the TTL clock
     /// with the SAME (already-cached) findings and the cache would never expire for the
     /// lifetime of the app.
-    rx: Option<oneshot::Receiver<(TailscaleDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<TailscaleDataBundle>, bool)>>,
     /// Cached doctor findings from the last collection.
     cached_findings: Option<Vec<TailscaleFindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
+    cached_bundle: Option<std::sync::Arc<TailscaleDataBundle>>,
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
@@ -108,6 +110,8 @@ impl TailscaleCollector {
             rx: None,
             cached_findings: None,
             findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -126,19 +130,29 @@ impl TailscaleCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
+        if let (Some(bundle), Some(at)) = (&self.cached_bundle, self.bundle_fresh_at)
+            && at.elapsed() < FINDINGS_TTL
+        {
+            self.rx = Some(rx);
+            let bundle = std::sync::Arc::clone(bundle);
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
                 .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
-        // The backend client is built OUTSIDE the hot loop (a sync ctor — no network),
+        // The backend client is built OUTSIDE the hot loop (a sync ctor: no network),
         // and its async methods are awaited directly inside the spawned task. reqwest is
-        // async, so (unlike fail2ban/cloud) there is NO spawn_blocking here — mirroring
+        // async, so (unlike fail2ban/cloud) there is NO spawn_blocking here: mirroring
         // ssh_data's direct-async pattern. The inner task body is itself spawned and
         // awaited so a JoinError (panic inside `collect_real_tailscale` / `doctor_run`)
         // is matched here and surfaced as a degraded `available == false` bundle with a
-        // reason — mirroring the spawn_blocking JoinError path in fail2ban/cloud/etc.
+        // reason: mirroring the spawn_blocking JoinError path in fail2ban/cloud/etc.
         // Without this wrap a panic would drop `tx`, `rx.await` would return `Err`, and
         // poll() would map that to `None`, leaving the dashboard showing stale last-good
         // data indefinitely with no degraded-state signal.
@@ -158,7 +172,7 @@ impl TailscaleCollector {
                     )
                 }
             };
-            let _ = tx.send((bundle, reused_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache));
         });
     }
 
@@ -167,22 +181,19 @@ impl TailscaleCollector {
     /// Returns `Some(bundle)` if the collection completed, `None` if still pending or if
     /// the collection failed. On success the cached findings are updated to the
     /// freshly-returned findings, but the freshness timestamp is only advanced when the
-    /// doctor was actually re-run (not on a cache-hit poll) — otherwise the 60s TTL
+    /// doctor was actually re-run (not on a cache-hit poll): otherwise the 60s TTL
     /// would be re-armed forever with the same cached data on every 2s refresh.
-    pub async fn poll(&mut self) -> Option<TailscaleDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<TailscaleDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
+                if let Some((ref bundle, used_cache)) = result
+                    && !used_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    // Only advance the freshness clock when the doctor was actually
-                    // re-run. On a cache-hit poll the findings are the SAME data we
-                    // already cached, so resetting the TTL here would let the cache live
-                    // forever as long as the 2s refresh tick keeps firing inside the TTL
-                    // window.
-                    if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)
@@ -192,10 +203,11 @@ impl TailscaleCollector {
     }
 
     /// Invalidate the findings cache so the next collection re-runs the doctor.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -211,9 +223,9 @@ impl Default for TailscaleCollector {
 ///
 /// All probes run concurrently via `tokio::join!`. Each network call is individually
 /// wrapped in [`tokio::time::timeout(NET_TIMEOUT)`] so an absent or hung `tailscaled`
-/// cannot stall the task — a timed-out probe degrades its field but the collection keeps
+/// cannot stall the task: a timed-out probe degrades its field but the collection keeps
 /// going. Doctor findings may be reused from the cache. On ANY panic (`JoinError` from the
-/// outer `tokio::spawn` — the inner probes cannot panic because they use `?`/match)
+/// outer `tokio::spawn`: the inner probes cannot panic because they use `?`/match)
 /// returns [`empty_bundle_with_reason`] with `available = false`.
 ///
 /// `use_cache` / `cached_findings` mirror the fail2ban findings cache: when the cache is
@@ -231,8 +243,8 @@ async fn collect_real_tailscale(
     use_cache: bool,
     cached_findings: Option<Vec<TailscaleFindingEntry>>,
 ) -> (TailscaleDataBundle, bool) {
-    // Build the client once (sync ctor, no network). Construction cannot fail today —
-    // `TailscaleClient::new` only allocates a reqwest client — so there is no
+    // Build the client once (sync ctor, no network). Construction cannot fail today:
+    // `TailscaleClient::new` only allocates a reqwest client: so there is no
     // construction-error branch; the first network call below surfaces a missing daemon.
     let client = toride_tailscale::TailscaleClient::new();
 
@@ -240,16 +252,20 @@ async fn collect_real_tailscale(
     // probe cannot block the others. A timed-out or errored probe yields `None` for its
     // subsystem and the bundle is assembled from whatever succeeded.
     //
+    // Status and topology come from ONE LocalAPI fetch via status_and_topology;
+    // separate calls would fetch and parse the same status document twice per tick.
+    //
     // The doctor is skipped when the cache is fresh; its slot is computed after the join
     // from either the cache or the freshly-run report.
-    let (status_r, topology_r, netcheck_r, dns_r, doctor_r) = tokio::join!(
+    let (status_topology_r, netcheck_r, dns_r, doctor_r) = tokio::join!(
         timeout_probe(async {
             client
-                .status_report()
+                .status_and_topology()
                 .await
-                .map(toride_tailscale_convert::convert_status)
+                .map(|(report, topology)| {
+                    (toride_tailscale_convert::convert_status(report), topology)
+                })
         }),
-        timeout_probe(async { client.topology().await }),
         timeout_probe(async {
             client
                 .netcheck()
@@ -272,8 +288,11 @@ async fn collect_real_tailscale(
     );
 
     // ── Assemble the bundle from whatever probes returned ───────────────────
-    let status = status_r.unwrap_or_else(empty_status);
-    // topology_r is Option<TailnetTopology> — timeout_probe already collapsed
+    let (status, topology_r) = match status_topology_r {
+        Some((status, topology)) => (status, Some(topology)),
+        None => (empty_status(), None),
+    };
+    // topology_r is Option<TailnetTopology>: timeout_probe already collapsed
     // Result/timeout into None.
     let (peers, topology_ok) = match topology_r {
         Some(topo) => (toride_tailscale_convert::convert_peers(topo.peers()), true),
@@ -284,7 +303,7 @@ async fn collect_real_tailscale(
     let dns = dns_r.unwrap_or_else(empty_dns);
 
     // Findings: cache-hit when use_cache (reused below), otherwise from the doctor probe.
-    // doctor_r is Option<Option<DoctorReport>> — the outer Option is "did we run the
+    // doctor_r is Option<Option<DoctorReport>>: the outer Option is "did we run the
     // doctor at all" (None when use_cache), the inner Option is "did the doctor probe
     // succeed" (None on timeout/error, already collapsed by timeout_probe).
     let (findings, used_cache) = if use_cache {
@@ -292,7 +311,7 @@ async fn collect_real_tailscale(
     } else {
         let f = match doctor_r {
             Some(Some(report)) => toride_tailscale_convert::convert_findings(report.findings),
-            // doctor ran but the probe timed out / errored — timeout_probe already
+            // doctor ran but the probe timed out / errored: timeout_probe already
             // logged the failure, so there is nothing to surface beyond an empty list.
             Some(None) | None => Vec::new(),
         };
@@ -303,7 +322,7 @@ async fn collect_real_tailscale(
     // The section is "available" whenever the daemon answered ANY probe OR the doctor
     // produced any finding. A host with tailscaled absent fails every probe AND the
     // doctor yields a `critical` finding (via the binary/connected checks, which do not
-    // need the HTTP API for the binary check) — so an absent daemon still surfaces the
+    // need the HTTP API for the binary check): so an absent daemon still surfaces the
     // findings and stays `available == true`. Only a task panic flips this to `false`,
     // and that case never reaches this point: the panic is caught as a JoinError in
     // `start()`'s outer spawn, which returns [`empty_bundle_with_reason`] instead of
@@ -404,7 +423,7 @@ fn empty_dns() -> DnsInfo {
     }
 }
 
-/// Empty bundle used when the collection task panicked (`tokio::spawn` `JoinError`) —
+/// Empty bundle used when the collection task panicked (`tokio::spawn` `JoinError`):
 /// mirrors [`fail2ban_data::empty_bundle`] and the sibling collectors. `available = false`
 /// signals the UI to render the degraded panel; no reason is attached because none is
 /// known at this point (the `JoinError` reason is added by [`empty_bundle_with_reason`]).
@@ -423,7 +442,7 @@ fn empty_bundle() -> TailscaleDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when the spawned collection
-/// task panicked (`JoinError`) — the reason string is rendered by the UI's degraded panel
+/// task panicked (`JoinError`): the reason string is rendered by the UI's degraded panel
 /// so the operator sees what actually went wrong, mirroring the `spawn_blocking` `JoinError`
 /// path in fail2ban/cloud/etc.
 fn empty_bundle_with_reason(reason: String) -> TailscaleDataBundle {

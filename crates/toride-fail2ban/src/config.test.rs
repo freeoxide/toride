@@ -86,7 +86,6 @@ fn global_config_has_expected_defaults() {
     let gc = GlobalConfig::default();
     assert_eq!(gc.scan_interval, 10);
     assert_eq!(gc.log_level, "info");
-    assert!(gc.pid_file.is_none());
     assert_eq!(gc.max_history, 1000);
 }
 
@@ -95,17 +94,12 @@ fn global_config_serialization_roundtrip() {
     let gc = GlobalConfig {
         scan_interval: 30,
         log_level: "debug".into(),
-        pid_file: Some("/var/run/f2b.pid".into()),
         max_history: 500,
     };
     let json = serde_json::to_string(&gc).unwrap();
     let restored: GlobalConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.scan_interval, 30);
     assert_eq!(restored.log_level, "debug");
-    assert_eq!(
-        restored.pid_file,
-        Some(std::path::PathBuf::from("/var/run/f2b.pid"))
-    );
     assert_eq!(restored.max_history, 500);
 }
 

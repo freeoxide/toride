@@ -1,4 +1,4 @@
-//! UFW client — typed wrapper around the `ufw` command. Reads are cached
+//! UFW client: typed wrapper around the `ufw` command. Reads are cached
 //! (`status` 10 s, `--version` client lifetime); mutations invalidate status.
 
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use crate::command::{CommandRunner, DuctRunner};
 use crate::error::{Error, Result};
 use crate::rule;
 use crate::spec::{
-    Action, AppDefaultPolicy, CommandSpec, DeleteOptions, Direction, DisableOptions, EnableOptions,
+    AppDefaultPolicy, CommandSpec, DeleteOptions, Direction, DisableOptions, EnableOptions,
     LoggingLevel, Policy, ResetOptions, RouteRuleSpec, RuleSpec, UfwReport, UfwStatus,
 };
 use crate::status;
@@ -19,8 +19,8 @@ const STATUS_CACHE_TTL: Duration = Duration::from_secs(10);
 struct DocCache {
     status_ttl_override: Option<Duration>,
     version: Option<String>,
-    status: Option<(Instant, UfwStatus)>,
-    status_verbose: Option<(Instant, UfwStatus)>,
+    status: Option<(Instant, Arc<UfwStatus>)>,
+    status_verbose: Option<(Instant, Arc<UfwStatus>)>,
 }
 
 impl DocCache {
@@ -28,9 +28,9 @@ impl DocCache {
         self.status_ttl_override.unwrap_or(STATUS_CACHE_TTL)
     }
 
-    fn fresh(doc: Option<&(Instant, UfwStatus)>, ttl: Duration) -> Option<UfwStatus> {
+    fn fresh(doc: Option<&(Instant, Arc<UfwStatus>)>, ttl: Duration) -> Option<Arc<UfwStatus>> {
         doc.filter(|(fetched_at, _)| fetched_at.elapsed() < ttl)
-            .map(|(_, status)| status.clone())
+            .map(|(_, status)| Arc::clone(status))
     }
 }
 
@@ -64,13 +64,28 @@ impl Ufw {
         }
     }
 
+    /// Create a UFW client with a custom command runner and a status-cache
+    /// TTL override (for tests and benches that need deterministic cache
+    /// behavior without waiting out the default TTL).
+    #[must_use]
+    pub fn with_runner_and_status_ttl(runner: impl CommandRunner + 'static, ttl: Duration) -> Self {
+        let cache = DocCache {
+            status_ttl_override: Some(ttl),
+            ..DocCache::default()
+        };
+        Self {
+            runner: Arc::new(runner),
+            cache: std::sync::Mutex::new(cache),
+        }
+    }
+
     fn lock_cache(&self) -> std::sync::MutexGuard<'_, DocCache> {
         self.cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn cached_doc(&self, slot: CacheSlot) -> Option<UfwStatus> {
+    fn cached_doc(&self, slot: CacheSlot) -> Option<Arc<UfwStatus>> {
         let cache = self.lock_cache();
         let ttl = cache.status_ttl();
         match slot {
@@ -79,15 +94,15 @@ impl Ufw {
         }
     }
 
-    fn store_doc(&self, slot: CacheSlot, result: &Result<UfwStatus>) {
-        if let Ok(status) = result {
-            let mut cache = self.lock_cache();
-            let slot_doc = match slot {
-                CacheSlot::Status => &mut cache.status,
-                CacheSlot::StatusVerbose => &mut cache.status_verbose,
-            };
-            *slot_doc = Some((Instant::now(), status.clone()));
-        }
+    fn store_doc(&self, slot: CacheSlot, status: UfwStatus) -> Arc<UfwStatus> {
+        let arc = Arc::new(status);
+        let mut cache = self.lock_cache();
+        let slot_doc = match slot {
+            CacheSlot::Status => &mut cache.status,
+            CacheSlot::StatusVerbose => &mut cache.status_verbose,
+        };
+        *slot_doc = Some((Instant::now(), Arc::clone(&arc)));
+        arc
     }
 
     fn invalidate_status_cache(&self) {
@@ -101,10 +116,14 @@ impl Ufw {
         self.lock_cache().status_ttl_override = Some(ttl);
     }
 
+    /// Resolve the `ufw` binary name.
+    ///
+    /// The runner's presence probe is authoritative (an injected runner may
+    /// forward to another host, where local `which` resolution is wrong), so
+    /// the bare name is returned and PATH resolution happens at spawn time.
     pub fn find_ufw(&self) -> Result<String> {
         if self.runner.binary_exists("ufw") {
-            Ok(which::which("ufw")
-                .map_or_else(|_| "ufw".into(), |p| p.to_string_lossy().into_owned()))
+            Ok("ufw".into())
         } else {
             Err(Error::UfwNotFound("ufw binary not found on system".into()))
         }
@@ -131,27 +150,36 @@ impl Ufw {
     /// Get UFW status (non-verbose); a successful fetch is reused for 10 s and
     /// every mutating command invalidates the cache. Failures are never cached.
     pub fn status(&self) -> Result<UfwStatus> {
-        if let Some(cached) = self.cached_doc(CacheSlot::Status) {
-            return Ok(cached);
-        }
-        let result = self
-            .run_ufw(&["status"])
-            .and_then(|r| status::parse_status(&r.stdout));
-        self.store_doc(CacheSlot::Status, &result);
-        result
+        self.status_arc().map(|cached| (*cached).clone())
     }
 
     /// Get verbose status (defaults, logging); cached independently of
     /// [`status`](Self::status) with the same TTL semantics.
     pub fn status_verbose(&self) -> Result<UfwStatus> {
+        self.status_verbose_arc().map(|cached| (*cached).clone())
+    }
+
+    /// Status accessor that shares the cached document instead of cloning it.
+    ///
+    /// Doctor sweeps read the status repeatedly per run; this variant hands
+    /// out the cached [`Arc`] so those reads do not deep-copy the ruleset.
+    pub(crate) fn status_arc(&self) -> Result<Arc<UfwStatus>> {
+        if let Some(cached) = self.cached_doc(CacheSlot::Status) {
+            return Ok(cached);
+        }
+        self.run_ufw(&["status"])
+            .and_then(|r| status::parse_status(&r.stdout))
+            .map(|status| self.store_doc(CacheSlot::Status, status))
+    }
+
+    /// Verbose-status variant of [`status_arc`](Self::status_arc).
+    pub(crate) fn status_verbose_arc(&self) -> Result<Arc<UfwStatus>> {
         if let Some(cached) = self.cached_doc(CacheSlot::StatusVerbose) {
             return Ok(cached);
         }
-        let result = self
-            .run_ufw(&["status", "verbose"])
-            .and_then(|r| status::parse_status_verbose(&r.stdout));
-        self.store_doc(CacheSlot::StatusVerbose, &result);
-        result
+        self.run_ufw(&["status", "verbose"])
+            .and_then(|r| status::parse_status_verbose(&r.stdout))
+            .map(|status| self.store_doc(CacheSlot::StatusVerbose, status))
     }
 
     pub fn status_numbered(&self) -> Result<UfwStatus> {
@@ -183,8 +211,12 @@ impl Ufw {
         };
 
         let result = self.run_ufw_root(&args)?;
-        let has_marker = result.stdout.contains("active") || result.stdout.contains("enabled");
-        let exit_ok = matches!(result.exit_code, Some(0) | None);
+        // "inactive" contains "active", so require a positive marker that
+        // cannot appear in a failure message and treat a missing exit code
+        // as failure.
+        let has_marker = (result.stdout.contains("is active") || result.stdout.contains("enabled"))
+            && !result.stdout.contains("inactive");
+        let exit_ok = result.exit_code == Some(0);
         if !has_marker || !exit_ok {
             let message = if result.stderr.is_empty() {
                 format!(
@@ -235,7 +267,8 @@ impl Ufw {
     }
 
     /// Reset UFW (destructive); with `backup_first`, a pre-reset backup is
-    /// written to a fresh temporary directory.
+    /// written under a fresh 0700 tempfile directory with an unpredictable
+    /// name (persisted, not cleaned up).
     pub fn reset(&self, opts: &ResetOptions) -> Result<()> {
         if !opts.force {
             return Err(Error::ResetRequiresForce);
@@ -243,24 +276,18 @@ impl Ufw {
 
         if opts.backup_first {
             let paths = crate::paths::UfwPaths::default();
-            let backup_dir = std::env::temp_dir().join(format!(
-                "ufw-kit-backup-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_secs())
-            ));
+            let backup_dir = tempfile::tempdir()
+                .map_err(|e| Error::BackupFailed(format!("create backup dir: {e}")))?;
             let bundle = crate::backup::create_backup(&paths)
                 .map_err(|e| Error::BackupFailed(format!("pre-reset backup: {e}")))?;
-            crate::backup::write_backup(&bundle, &backup_dir)
+            crate::backup::write_backup(&bundle, backup_dir.path())
                 .map_err(|e| Error::BackupFailed(format!("write pre-reset backup: {e}")))?;
-            tracing::info!("Backup created at {}", backup_dir.display());
+            tracing::info!("Backup created at {}", backup_dir.path().display());
+            // Persist the backup: dropping the TempDir would delete it.
+            let _ = backup_dir.keep();
         }
 
-        let args = if opts.force {
-            vec!["--force", "reset"]
-        } else {
-            vec!["reset"]
-        };
+        let args = vec!["--force", "reset"];
 
         let result = self.run_ufw_root(&args)?;
         if !result.stderr.is_empty() && result.exit_code != Some(0) {
@@ -323,7 +350,7 @@ impl Ufw {
         Ok(())
     }
 
-    /// Delete a rule by number (dangerous — numbers shift).
+    /// Delete a rule by number (dangerous: numbers shift).
     pub fn delete_rule_number(&self, number: u32, opts: &DeleteOptions) -> Result<()> {
         if !opts.allow_numbered_delete {
             return Err(Error::Validation(
@@ -405,7 +432,7 @@ impl Ufw {
     }
 
     /// Update an application profile; does not invalidate the status caches
-    /// (profile refresh only — the status documents are unchanged).
+    /// (profile refresh only: the status documents are unchanged).
     pub fn app_update(&self, name: &str) -> Result<()> {
         let result = self.run_ufw(&["app", "update", name])?;
         if !result.stderr.is_empty() && result.exit_code != Some(0) {
@@ -559,9 +586,11 @@ impl Ufw {
     }
 
     /// Structured SSH lockout check: a rule counts when it is inbound (or
-    /// direction unparsed), Allow/Limit, and targets `ssh` or one of `ssh_ports`.
+    /// direction unparsed), Allow/Limit, and its To column targets `ssh` or
+    /// one of `ssh_ports` (token equality, so `8022/tcp` or a comment
+    /// mentioning ssh never satisfies the guard).
     pub fn check_ssh_lockout_structured(&self, ssh_ports: &[u16]) -> crate::spec::SshCheckResult {
-        let Ok(status) = self.status() else {
+        let Ok(status) = self.status_arc() else {
             return crate::spec::SshCheckResult {
                 has_incoming_ssh_allow: false,
                 matching_rules: Vec::new(),
@@ -574,35 +603,15 @@ impl Ufw {
         let mut interface_scoped = false;
 
         for rule in &status.rules {
-            let is_allow = matches!(rule.action, Some(Action::Allow | Action::Limit));
-            if !is_allow {
-                let raw_lower = rule.raw.to_lowercase();
-                if !raw_lower.contains("allow") && !raw_lower.contains("limit") {
-                    continue;
-                }
-            }
-
-            let is_incoming = match rule.direction {
-                Some(Direction::In) => true,
-                Some(Direction::Out | Direction::Routed) => false,
-                None => {
-                    let raw_lower = rule.raw.to_lowercase();
-                    !raw_lower.contains(" out ")
-                        && !raw_lower.contains(" out\t")
-                        && !raw_lower.contains("out on")
-                }
-            };
-            if !is_incoming {
+            if !status::rule_is_allow(rule) || !status::rule_is_inbound(rule) {
                 continue;
             }
 
-            let targets_ssh = rule_targets_ssh(rule, ssh_ports);
-            if !targets_ssh {
+            if !status::rule_targets_ssh(rule, ssh_ports) {
                 continue;
             }
 
-            let raw_lower = rule.raw.to_lowercase();
-            if raw_lower.contains(" in on ") || raw_lower.contains(" on ") {
+            if column_names_interface(rule.to.as_ref(), rule.from.as_ref()) {
                 interface_scoped = true;
             }
 
@@ -620,37 +629,26 @@ impl Ufw {
     }
 }
 
-fn rule_targets_ssh(rule: &crate::spec::ParsedRule, ssh_ports: &[u16]) -> bool {
-    let raw_lower = rule.raw.to_lowercase();
-
-    if raw_lower.contains("ssh") {
-        return true;
-    }
-
-    for &port in ssh_ports {
-        if raw_lower.contains(&format!("{port}/tcp")) || raw_lower.contains(&format!("{port}/udp"))
-        {
-            return true;
-        }
-
-        for token in raw_lower.split_whitespace() {
-            if token == port.to_string() {
-                return true;
-            }
-            if let Some(slash_pos) = token.find('/') {
-                if token[..slash_pos] == port.to_string() {
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
+/// Whether either table column carries a standalone `on <interface>` clause.
+fn column_names_interface(
+    to: Option<&std::sync::Arc<str>>,
+    from: Option<&std::sync::Arc<str>>,
+) -> bool {
+    let has_on = |column: &str| {
+        column
+            .split_whitespace()
+            .any(|t| t.eq_ignore_ascii_case("on"))
+    };
+    to.is_some_and(|c| has_on(c)) || from.is_some_and(|c| has_on(c))
 }
 
-#[allow(clippy::unnested_or_patterns)]
+/// Structural spec-vs-parsed-rule match for [`Ufw::ensure_rule`].
+///
+/// Ports and addresses are compared by token equality against the parsed To
+/// and From columns; the raw substring scan is only a fallback for rules the
+/// parser could not split into columns.
 fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool {
-    use crate::spec::{Address, PortSpec, ProtocolFilter};
+    use crate::spec::{Address, PortSpec};
 
     let action_matches = if let Some(a) = parsed.action {
         a == spec.action
@@ -664,7 +662,7 @@ fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool 
 
     let dir_matches = match (parsed.direction, spec.direction) {
         (Some(d), Some(sd)) => d == sd,
-        (None, None) | (Some(_), None) => true,
+        (_, None) => true,
         (None, Some(sd)) => {
             let lower = parsed.raw.to_lowercase();
             lower.contains(&sd.to_string())
@@ -674,61 +672,44 @@ fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool 
         return false;
     }
 
-    let proto_matches = match &spec.protocol {
-        ProtocolFilter::Any => true,
-        ProtocolFilter::Specific(proto) => {
-            let lower = parsed.raw.to_lowercase();
-            lower.contains(&proto.to_string())
-        }
-    };
-    if !proto_matches {
+    if let Some(app) = &spec.app_profile
+        && !status::rule_matches_app_profile(parsed, app)
+    {
         return false;
     }
 
-    let port_matches = match &spec.to_port {
-        PortSpec::Any => true,
-        PortSpec::Single(p) => {
-            let lower = parsed.raw.to_lowercase();
-            lower.contains(&format!("{p}/tcp"))
-                || lower.contains(&format!("{p}/udp"))
-                || lower.contains(&format!("{p}"))
-        }
-        PortSpec::Range { start, end } => {
-            let lower = parsed.raw.to_lowercase();
-            lower.contains(&format!("{start}:{end}"))
-        }
-        PortSpec::List(ports) => {
-            let lower = parsed.raw.to_lowercase();
-            ports.iter().all(|p| lower.contains(&p.to_string()))
-        }
-        PortSpec::ServiceName(name) => {
-            let lower = parsed.raw.to_lowercase();
-            lower.contains(&name.to_lowercase())
-        }
+    let port_matches = match parsed.to.as_deref() {
+        Some(to) => status::to_column_matches_port_spec(to, &spec.to_port, spec.protocol),
+        None => match &spec.to_port {
+            PortSpec::Any => true,
+            PortSpec::Single(p) => parsed.raw.contains(&p.to_string()),
+            PortSpec::Range { start, end } => parsed.raw.contains(&format!("{start}:{end}")),
+            PortSpec::List(ports) => ports.iter().all(|p| {
+                let rendered = p.to_string();
+                parsed.raw.contains(&rendered)
+            }),
+            PortSpec::ServiceName(name) => parsed.raw.contains(name),
+        },
     };
     if !port_matches {
         return false;
     }
 
-    let from_matches = match &spec.from_addr {
-        Address::Any => true,
-        addr => {
-            let lower = parsed.raw.to_lowercase();
-            lower.contains(&addr.to_string().to_lowercase())
-        }
+    let from_matches = match (&spec.from_addr, parsed.from.as_deref()) {
+        (Address::Any, _) => true,
+        (addr, Some(column)) => status::column_matches_address(column, addr),
+        (addr, None) => parsed.raw.contains(&addr.to_string()),
     };
     if !from_matches {
         return false;
     }
 
-    let to_matches = match &spec.to_addr {
-        Address::Any => true,
-        addr => {
-            let lower = parsed.raw.to_lowercase();
-            lower.contains(&addr.to_string().to_lowercase())
-        }
+    let to_addr_matches = match (&spec.to_addr, parsed.to.as_deref()) {
+        (Address::Any, _) => true,
+        (addr, Some(column)) => status::column_matches_address(column, addr),
+        (addr, None) => parsed.raw.contains(&addr.to_string()),
     };
-    if !to_matches {
+    if !to_addr_matches {
         return false;
     }
 

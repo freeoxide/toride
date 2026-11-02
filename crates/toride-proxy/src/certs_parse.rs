@@ -5,16 +5,19 @@
 //!
 //! ## Real expiry from scan-discovered certs
 //!
-//! [`read_cert_expiry`] shells out to `openssl x509 -enddate -noout -in <path>`
-//! via the [`Runner`] abstraction and parses the
-//! resulting `notAfter=...` line into a real expiry. This lets scan-discovered
-//! certificate files (e.g. the certbot live-directory scan performed by the TUI)
-//! carry a genuine `not_after` / `days_remaining` / `is_valid` rather than the
-//! misleading placeholder (`is_valid = true`, empty `not_after`) that previously
-//! rendered as `?` in the UI.
+//! [`read_cert_expiry`] parses the leaf certificate's ASN.1 validity in
+//! process (PEM decode plus a fixed-layout DER walk), spawning
+//! `openssl x509 -enddate -noout -in <path>` via the [`Runner`] abstraction
+//! only as a fallback when that walk fails. This lets scan-discovered
+//! certificate files (e.g. the certbot live-directory scan performed by the
+//! TUI) carry a genuine `not_after` / `days_remaining` / `is_valid` rather
+//! than the misleading placeholder (`is_valid = true`, empty `not_after`)
+//! that previously rendered as `?` in the UI. Scan loops should construct a
+//! [`CertExpiryReader`] once per pass so the `openssl` presence probe also
+//! runs once, not per certificate.
 //!
-//! On any failure — `openssl` absent, command timeout, non-zero exit, or an
-//! unparseable date — [`read_cert_expiry`] degrades to
+//! On any failure: unparseable file, `openssl` absent, command timeout,
+//! non-zero exit, or an unparseable date: [`read_cert_expiry`] degrades to
 //! [`CertExpiry::unknown`], which carries `is_valid = false` and an empty
 //! `not_after`. This is deliberately NOT a "looks valid" status: the operator
 //! sees the cert as unverified rather than healthy.
@@ -29,6 +32,57 @@ use toride_runner::{CommandSpec, Runner};
 /// Generous enough to absorb a cold-start openssl invocation on a loaded host,
 /// short enough that a wedged openssl never stalls the cert scan.
 const OPENSSL_ENDDATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Certificate-expiry reader that hoists the per-scan environment probe.
+///
+/// [`CertExpiryReader::new`] resolves `openssl` on `$PATH` exactly once; every
+/// [`CertExpiryReader::read`] then parses the leaf certificate's validity in
+/// process (PEM plus the fixed-layout DER walk in this module) and consults
+/// `openssl x509 -enddate` only when that parse fails. Construct one reader
+/// per scan loop; [`read_cert_expiry`] is the one-shot wrapper.
+pub struct CertExpiryReader<'a> {
+    runner: &'a dyn Runner,
+    openssl_present: bool,
+}
+
+impl<'a> CertExpiryReader<'a> {
+    /// Create a reader over `runner`, probing `openssl` presence once.
+    pub fn new(runner: &'a dyn Runner) -> Self {
+        Self {
+            runner,
+            openssl_present: which::which("openssl").is_ok(),
+        }
+    }
+
+    /// Whether the `openssl` fallback is available on this host.
+    pub fn openssl_present(&self) -> bool {
+        self.openssl_present
+    }
+
+    /// Read the expiry of the leaf certificate in `path`.
+    ///
+    /// Same contract and degradation behavior as [`read_cert_expiry`]:
+    /// every recoverable failure yields [`CertExpiry::unknown`] (`Ok`), and
+    /// `Err` is reserved for the never-hit panic guard.
+    pub fn read(&self, path: &Path, now: SystemTime) -> Result<CertExpiry> {
+        if let Some((epoch, label)) = pem_leaf_not_after(path) {
+            let now_epoch = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            return Ok(CertExpiry {
+                days_remaining: days_until(now_epoch, epoch),
+                is_valid: epoch > now_epoch,
+                not_after: label,
+            });
+        }
+        if !self.openssl_present {
+            tracing::debug!(
+                "certs_parse: openssl not on PATH; expiry for {} is unknown",
+                path.display()
+            );
+            return Ok(CertExpiry::unknown());
+        }
+        Ok(openssl_enddate_expiry(path, self.runner, now))
+    }
+}
 
 /// Parsed certificate file metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +119,7 @@ impl ParsedCert {
 /// Any failure to obtain real expiry (no `openssl`, timeout, non-zero exit,
 /// unparseable date) yields [`CertExpiry::unknown`]: empty `not_after`,
 /// `days_remaining = 0`, `is_valid = false`. The `false` here means
-/// **"expiry unverified"**, not "expired-and-bad" — but it is strictly safer
+/// **"expiry unverified"**, not "expired-and-bad", but it is strictly safer
 /// than the previous `is_valid = true` placeholder, which misrepresented an
 /// unchecked cert as healthy.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,9 +131,11 @@ pub struct CertExpiry {
     /// Whole days until expiry relative to the probe time. Negative once the
     /// cert has expired. `0` when expiry is unknown.
     pub days_remaining: i64,
-    /// `true` only when real expiry was parsed AND the cert is still in date
-    /// (`days_remaining > 0`). `false` for expired certs AND for certs whose
-    /// expiry could not be determined (unverified).
+    /// `true` only when real expiry was parsed AND the expiry instant is
+    /// still in the future (`expiry_epoch > now_epoch`), so a cert inside
+    /// its final 24 hours stays `true` with `days_remaining = 0`. `false`
+    /// for expired certs AND for certs whose expiry could not be determined
+    /// (unverified).
     pub is_valid: bool,
 }
 
@@ -99,19 +155,21 @@ impl CertExpiry {
 
     /// Construct a known expiry from a parsed not-after timestamp.
     ///
-    /// `days_remaining` is computed against `now`. `is_valid` is `days_remaining > 0`.
+    /// `days_remaining` is the signed whole-day count from `now` until the
+    /// expiry ([`days_until`]), so an expired certificate reports a negative
+    /// value. `is_valid` derives directly from `expiry_epoch > now_epoch`:
+    /// a certificate inside its final 24 hours still reports
+    /// `is_valid = true` alongside `days_remaining = 0`.
     #[must_use]
     pub fn from_not_after(not_after: impl Into<String>, now: SystemTime) -> Self {
         let not_after = not_after.into();
         match parse_openssl_enddate_epoch(&not_after) {
             Some(expiry_epoch) => {
                 let now_epoch = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                let secs_remaining = expiry_epoch.saturating_sub(now_epoch);
-                let days_remaining = i64::try_from(secs_remaining / 86_400).unwrap_or(i64::MAX);
                 Self {
+                    days_remaining: days_until(now_epoch, expiry_epoch),
+                    is_valid: expiry_epoch > now_epoch,
                     not_after,
-                    days_remaining,
-                    is_valid: days_remaining > 0,
                 }
             }
             None => Self::unknown_with_label(not_after),
@@ -128,35 +186,33 @@ impl CertExpiry {
     }
 }
 
-/// Read real expiry for a discovered certificate file by shelling out to
-/// `openssl x509 -enddate -noout -in <path>`.
+/// Read real expiry for the leaf certificate in `path`.
 ///
-/// The probe runs under a bounded timeout (see `OPENSSL_ENDDATE_TIMEOUT`).
-/// On any failure — `openssl` not on `$PATH`, the runner returning an error,
-/// a non-zero exit, a timeout, or an unparseable `notAfter=` line — this
+/// The leaf's ASN.1 validity is parsed in process first; the
+/// `openssl x509 -enddate -noout -in <path>` probe runs only when that parse
+/// fails, under a bounded timeout (see `OPENSSL_ENDDATE_TIMEOUT`). On any
+/// failure: `openssl` not on `$PATH`, the runner returning an error, a
+/// non-zero exit, a timeout, or an unparseable `notAfter=` line: this
 /// returns [`CertExpiry::unknown`] (degraded, NOT `is_valid = true`).
 ///
 /// `now` is taken as a parameter so callers (and tests) can pin the reference
-/// instant; pass [`SystemTime::now`] in production.
+/// instant; pass [`SystemTime::now`] in production. Scan loops should prefer
+/// [`CertExpiryReader`], which hoists the `openssl` presence probe.
 ///
 /// # Errors
 ///
 /// This function returns `Ok(CertExpiry)` for every recoverable case (openssl
 /// missing, parse failure, etc.). It returns `Err` only for an internal panic
-/// guard — in practice it never errors, matching the "read-only section must
+/// guard: in practice it never errors, matching the "read-only section must
 /// never crash" contract of the TUI integration. The `Result` shape is kept for
 /// forward-compatibility and consistency with the rest of the module.
 pub fn read_cert_expiry(path: &Path, runner: &dyn Runner, now: SystemTime) -> Result<CertExpiry> {
-    // Resolve openssl up front so a missing binary degrades cleanly rather than
-    // surfacing as a generic runner error. `which` is a workspace dep.
-    if which::which("openssl").is_err() {
-        tracing::debug!(
-            "certs_parse: openssl not on PATH; expiry for {} is unknown",
-            path.display()
-        );
-        return Ok(CertExpiry::unknown());
-    }
+    CertExpiryReader::new(runner).read(path, now)
+}
 
+/// The `openssl x509 -enddate` fallback probe behind [`CertExpiryReader::read`].
+/// Every recoverable failure degrades to [`CertExpiry::unknown`].
+fn openssl_enddate_expiry(path: &Path, runner: &dyn Runner, now: SystemTime) -> CertExpiry {
     let path_str = path.to_string_lossy();
     let spec = CommandSpec::new("openssl")
         .args(["x509", "-enddate", "-noout", "-in"])
@@ -170,7 +226,7 @@ pub fn read_cert_expiry(path: &Path, runner: &dyn Runner, now: SystemTime) -> Re
                 "certs_parse: openssl enddate probe failed for {}: {e}",
                 path.display()
             );
-            return Ok(CertExpiry::unknown());
+            return CertExpiry::unknown();
         }
     };
 
@@ -181,21 +237,260 @@ pub fn read_cert_expiry(path: &Path, runner: &dyn Runner, now: SystemTime) -> Re
             output.exit_code,
             output.stderr.trim()
         );
-        return Ok(CertExpiry::unknown());
+        return CertExpiry::unknown();
     }
 
-    // Extract the `notAfter=...` value from stdout. openssl prints exactly one
-    // line; tolerate leading/trailing whitespace and a missing `GMT` suffix.
     let not_after = extract_not_after(&output.stdout);
     if let Some(na) = not_after {
-        Ok(CertExpiry::from_not_after(na, now))
+        CertExpiry::from_not_after(na, now)
     } else {
         tracing::debug!(
             "certs_parse: no notAfter= line in openssl output for {}: {:?}",
             path.display(),
             output.stdout
         );
-        Ok(CertExpiry::unknown())
+        CertExpiry::unknown()
+    }
+}
+
+/// Parse the leaf certificate of a PEM file on disk into its not-after epoch
+/// plus an openssl-style label, without spawning a process.
+///
+/// Returns `None` when the file is unreadable, holds no CERTIFICATE block, or
+/// the DER walk cannot reach a well-formed validity; callers then fall back to
+/// the `openssl` probe.
+fn pem_leaf_not_after(path: &Path) -> Option<(u64, String)> {
+    let content = std::fs::read(path).ok()?;
+    let der = pem_first_certificate_der(&content)?;
+    let (tag, value) = der_leaf_not_after_tlv(&der)?;
+    let epoch = parse_asn1_time(tag, value)?;
+    Some((epoch, format_openssl_enddate(epoch)))
+}
+
+/// Extract and base64-decode the first `CERTIFICATE` block of a PEM document.
+fn pem_first_certificate_der(content: &[u8]) -> Option<Vec<u8>> {
+    let begin = content
+        .windows(b"-----BEGIN CERTIFICATE-----".len())
+        .position(|w| w == b"-----BEGIN CERTIFICATE-----")?;
+    let body = &content[begin + b"-----BEGIN CERTIFICATE-----".len()..];
+    let end = body
+        .windows(b"-----END CERTIFICATE-----".len())
+        .position(|w| w == b"-----END CERTIFICATE-----")?;
+    base64_decode(&body[..end])
+}
+
+/// Decode standard-alphabet base64, ignoring ASCII whitespace. Returns `None`
+/// for invalid characters or a trailing one-character quantum.
+fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
+    /// The 6-bit value of one base64 digit, always within `0..=63`.
+    fn sextet(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut quantum = [0u8; 4];
+    let mut filled = 0usize;
+    for &byte in input {
+        match byte {
+            b'\n' | b'\r' | b' ' | b'\t' | b'=' => continue,
+            _ => {}
+        }
+        quantum[filled] = sextet(byte)?;
+        filled += 1;
+        if filled == 4 {
+            let [q0, q1, q2, q3] = quantum;
+            out.push((q0 << 2) | (q1 >> 4));
+            out.push(((q1 & 0x0F) << 4) | (q2 >> 2));
+            out.push(((q2 & 0x03) << 6) | q3);
+            filled = 0;
+        }
+    }
+    match quantum[..filled] {
+        // Each sextet fits 6 bits, so the masked shifts below never overflow.
+        [q0, q1] => {
+            out.push((q0 << 2) | (q1 >> 4));
+            Some(out)
+        }
+        [q0, q1, q2] => {
+            out.push((q0 << 2) | (q1 >> 4));
+            out.push(((q1 & 0x0F) << 4) | (q2 >> 2));
+            Some(out)
+        }
+        [] => Some(out),
+        _ => None,
+    }
+}
+
+/// Walk a DER certificate to the `validity` SEQUENCE and return its second
+/// `Time` element (notAfter) as a raw `(tag, bytes)` pair.
+///
+/// Layout per RFC 5280: `Certificate ::= SEQUENCE { tbsCertificate, signature
+/// AlgorithmIdentifier, signatureValue }`, with tbsCertificate beginning
+/// `[0] version` (optional), `serialNumber`, `signature`, `issuer`, then
+/// `validity ::= SEQUENCE { notBefore Time, notAfter Time }`.
+fn der_leaf_not_after_tlv(der: &[u8]) -> Option<(u8, &[u8])> {
+    let mut outer = DerReader::new(der);
+    let (_, certificate) = outer.read_tlv()?;
+    let mut cert_seq = DerReader::new(certificate);
+    let (_, tbs_content) = cert_seq.read_tlv()?;
+    let mut tbs = DerReader::new(tbs_content);
+    let (tag, _) = tbs.read_tlv()?;
+    if tag != 0x02 {
+        // The first TLV was the explicit `[0] version`; serialNumber follows.
+        tbs.read_tlv()?;
+    }
+    tbs.read_tlv()?; // signature AlgorithmIdentifier
+    tbs.read_tlv()?; // issuer Name
+    let (_, validity) = tbs.read_tlv()?;
+    let mut times = DerReader::new(validity);
+    times.read_tlv()?; // notBefore
+    times.read_tlv() // notAfter
+}
+
+/// Minimal DER TLV cursor over a borrowed buffer.
+struct DerReader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> DerReader<'a> {
+    fn new(buf: &'a [u8]) -> DerReader<'a> {
+        DerReader { buf, pos: 0 }
+    }
+
+    /// Read one tag-length-value triple, returning the tag and a slice of
+    /// the reader's original buffer.
+    fn read_tlv(&mut self) -> Option<(u8, &'a [u8])> {
+        let tag = *self.buf.get(self.pos)?;
+        self.pos += 1;
+        let first_len = *self.buf.get(self.pos)?;
+        self.pos += 1;
+        let len = if first_len & 0x80 == 0 {
+            usize::from(first_len)
+        } else {
+            let n = usize::from(first_len & 0x7f);
+            if n == 0 || n > 4 {
+                return None;
+            }
+            let mut len = 0usize;
+            for _ in 0..n {
+                len = (len << 8) | usize::from(*self.buf.get(self.pos)?);
+                self.pos += 1;
+            }
+            len
+        };
+        let end = self.pos.checked_add(len)?;
+        let value = self.buf.get(self.pos..end)?;
+        self.pos = end;
+        Some((tag, value))
+    }
+}
+
+/// Parse an ASN.1 `Time` value (`UTCTime` tag 0x17, `GeneralizedTime` tag
+/// 0x18) in the Zulu form certificates carry, into epoch seconds.
+///
+/// RFC 5280 restricts both forms to seconds precision with a `Z` zone; offset
+/// forms and fractional seconds yield `None` so the caller falls back to the
+/// `openssl` probe rather than guessing.
+fn parse_asn1_time(tag: u8, value: &[u8]) -> Option<u64> {
+    let (year, rest): (i64, &[u8]) = match tag {
+        0x17 => {
+            if value.len() != 13 || !value.ends_with(b"Z") {
+                return None;
+            }
+            let yy = two_digits(value.get(0..2)?)?;
+            let century = if yy >= 50 { 1900 } else { 2000 };
+            (century + i64::from(yy), value.get(2..)?)
+        }
+        0x18 => {
+            if value.len() != 15 || !value.ends_with(b"Z") {
+                return None;
+            }
+            let yyyy = i64::from(two_digits(value.get(0..2)?)?) * 100
+                + i64::from(two_digits(value.get(2..4)?)?);
+            (yyyy, value.get(4..)?)
+        }
+        _ => return None,
+    };
+    let rest = rest.strip_suffix(b"Z")?;
+    if rest.len() != 10 {
+        return None;
+    }
+    let month = u32::from(two_digits(rest.get(0..2)?)?);
+    let day = u32::from(two_digits(rest.get(2..4)?)?);
+    let hour = u32::from(two_digits(rest.get(4..6)?)?);
+    let min = u32::from(two_digits(rest.get(6..8)?)?);
+    let sec = u32::from(two_digits(rest.get(8..10)?)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || min > 59 || sec > 59 {
+        return None;
+    }
+    Some(civil_to_epoch_seconds(year, month, day, hour, min, sec))
+}
+
+/// Parse exactly two ASCII digits into a number.
+fn two_digits(bytes: &[u8]) -> Option<u8> {
+    let &[a, b] = bytes else {
+        return None;
+    };
+    match (a, b) {
+        (b'0'..=b'9', b'0'..=b'9') => Some((a - b'0') * 10 + (b - b'0')),
+        _ => None,
+    }
+}
+
+/// Format an epoch as openssl's `-enddate` label: `Mon DD HH:MM:SS YYYY GMT`.
+fn format_openssl_enddate(epoch: u64) -> String {
+    let days = i64::try_from(epoch / 86_400).expect("epoch days fit i64");
+    let (year, month, day) = civil_from_epoch_days(days);
+    let rem = epoch % 86_400;
+    format!(
+        "{} {:>2} {:02}:{:02}:{:02} {} GMT",
+        month_name(month),
+        day,
+        rem / 3_600,
+        (rem % 3_600) / 60,
+        rem % 60,
+        year
+    )
+}
+
+/// Inverse of `civil_to_epoch_seconds`'s day component: epoch days to
+/// `(year, month, day)` per Howard Hinnant's civil-from-days algorithm.
+fn civil_from_epoch_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn month_name(month: i64) -> &'static str {
+    match month {
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
+        other => unreachable!("month {other} out of range"),
     }
 }
 
@@ -224,7 +519,7 @@ fn extract_not_after(stdout: &str) -> Option<String> {
 ///
 /// Accepts the canonical openssl `-enddate` format:
 /// `Mon DD HH:MM:SS YYYY GMT` (e.g. `Sep 18 00:48:15 2026 GMT`). The trailing
-/// `GMT` is optional — openssl always emits UTC, so a missing zone is treated
+/// `GMT` is optional: openssl always emits UTC, so a missing zone is treated
 /// as UTC. Returns `None` for any unparseable input rather than panicking.
 ///
 /// This avoids pulling in `chrono`/`time` for a single fixed format.
@@ -243,7 +538,7 @@ pub fn parse_openssl_enddate_epoch(s: &str) -> Option<u64> {
 
     // Sanity-check the day-of-month. openssl never emits an out-of-range day,
     // so a value like 99 is a sure sign of a non-cert `notAfter=` line (or a
-    // corrupt file) — reject it rather than computing a bogus epoch.
+    // corrupt file): reject it rather than computing a bogus epoch.
     if !(1..=31).contains(&day) {
         return None;
     }
@@ -326,7 +621,7 @@ pub fn days_until(now_secs: u64, expiry_secs: u64) -> i64 {
     let delta = i64::try_from(expiry_secs).unwrap_or(i64::MAX)
         - i64::try_from(now_secs).unwrap_or(i64::MAX);
     // Floor toward negative infinity so a cert that expired 5h ago reports -1,
-    // not 0 — matching how operators read "days remaining".
+    // not 0, matching how operators read "days remaining".
     delta.div_euclid(86_400)
 }
 
@@ -381,7 +676,7 @@ pub fn list_live_certs(live_dir: &Path) -> Result<Vec<ParsedCert>> {
 
 /// Read the PEM-encoded certificate from a fullchain file.
 ///
-/// Extracts just the first (leaf) certificate from a full chain PEM file.
+/// Extracts only the first (leaf) certificate from a full chain PEM file.
 ///
 /// # Errors
 ///
@@ -506,7 +801,7 @@ mod tests {
 
     #[test]
     fn parse_openssl_enddate_leap_year() {
-        // 2024-02-29 12:00:00 UTC — a real leap day; must parse without panic.
+        // 2024-02-29 12:00:00 UTC, a real leap day; must parse without panic.
         // Independently verified: == 1709208000.
         let epoch = parse_openssl_enddate_epoch("Feb 29 12:00:00 2024 GMT");
         assert_eq!(epoch, Some(1_709_208_000));
@@ -572,6 +867,170 @@ mod tests {
         let e = CertExpiry::from_not_after("Jan  1 00:00:00 1970 GMT", now);
         assert!(!e.is_valid, "expired cert must be is_valid=false");
         assert!(e.days_remaining <= 0);
+    }
+
+    /// The final-24-hours class: a cert with 23 h left must stay `is_valid`
+    /// with `days_remaining == 0`; 25 h keeps `days_remaining == 1`; a cert
+    /// expired 5 h ago reports `-1`, not the documented-but-never-produced 0.
+    #[test]
+    fn from_not_after_boundary_hours_table() {
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let date_at = |offset_secs: u64| {
+            let t = base + Duration::from_secs(offset_secs);
+            let secs = t.duration_since(UNIX_EPOCH).expect("positive");
+            let days = secs.as_secs() / 86_400;
+            let rem = secs.as_secs() % 86_400;
+            let (y, m, d) = civil_from_epoch_days(i64::try_from(days).expect("fits"));
+            format!(
+                "{} {:>2} {:02}:{:02}:{:02} {} GMT",
+                month_name(m),
+                d,
+                rem / 3_600,
+                (rem % 3_600) / 60,
+                rem % 60,
+                y
+            )
+        };
+
+        let e = CertExpiry::from_not_after(date_at(23 * 3_600), base);
+        assert!(e.is_valid, "a cert valid for another 23 h is not expired");
+        assert_eq!(e.days_remaining, 0);
+
+        let e = CertExpiry::from_not_after(date_at(25 * 3_600), base);
+        assert!(e.is_valid);
+        assert_eq!(e.days_remaining, 1);
+
+        let five_hours = Duration::from_secs(18_000);
+        let e = CertExpiry::from_not_after(date_at(0), base + five_hours);
+        assert!(!e.is_valid, "a cert that expired 5 h ago is invalid");
+        assert_eq!(e.days_remaining, -1, "expired certs report negative days");
+    }
+
+    #[test]
+    fn base64_decode_standard_vectors() {
+        assert_eq!(base64_decode(b"QUJD"), Some(b"ABC".to_vec()));
+        assert_eq!(base64_decode(b"QUJDRA=="), Some(b"ABCD".to_vec()));
+        assert_eq!(base64_decode(b"QUJD"), Some(b"ABC".to_vec()));
+        assert_eq!(base64_decode(b"QUJDREVGRw=="), Some(b"ABCDEFG".to_vec()));
+        assert_eq!(
+            base64_decode(b"MIID\r\nGTCC"),
+            base64_decode(b"MIIDGTCC"),
+            "PEM line breaks are ignored"
+        );
+        assert_eq!(base64_decode(b"A"), None, "one-char quantum is invalid");
+        assert_eq!(base64_decode(b"AB&="), None, "invalid character");
+    }
+
+    #[test]
+    fn parse_asn1_time_utc_and_generalized_forms() {
+        // UTCTime: 2036-10-10 03:47:30 Z, the committed bench fixture's expiry.
+        let utc = b"361010034730Z";
+        assert_eq!(parse_asn1_time(0x17, utc), Some(2_107_223_250));
+        // GeneralizedTime: the same instant must agree with the UTCTime form.
+        let general = b"20361010034730Z";
+        assert_eq!(parse_asn1_time(0x18, general), parse_asn1_time(0x17, utc));
+        // RFC 5280 year window: UTCTime 49 means 2049, 50 means 1950; pin
+        // each against its four-digit GeneralizedTime spelling.
+        assert_eq!(
+            parse_asn1_time(0x17, b"491231235959Z"),
+            parse_asn1_time(0x18, b"20491231235959Z")
+        );
+        assert_eq!(
+            parse_asn1_time(0x17, b"500101000000Z"),
+            parse_asn1_time(0x18, b"19500101000000Z")
+        );
+    }
+
+    #[test]
+    fn parse_asn1_time_rejects_offset_and_fractional_forms() {
+        assert_eq!(parse_asn1_time(0x17, b"361010034730+0100"), None);
+        assert_eq!(parse_asn1_time(0x18, b"20361010034730.500Z"), None);
+        assert_eq!(parse_asn1_time(0x17, b"3610100347"), None);
+        assert_eq!(parse_asn1_time(0x19, b"361010034730Z"), None);
+    }
+
+    /// The in-process walk must reach the same not-after as `openssl` for the
+    /// committed fixture certificate.
+    #[test]
+    fn pem_leaf_not_after_matches_openssl_on_the_fixture() {
+        let pem = include_str!("../benches/fixtures/certs/self_signed.pem");
+        let dir = assert_fs::TempDir::new().unwrap();
+        let path = dir.path().join("fullchain.pem");
+        std::fs::write(&path, pem).unwrap();
+
+        let (epoch, label) = pem_leaf_not_after(&path).expect("fixture must parse in process");
+        assert_eq!(epoch, 2_107_223_250);
+        assert_eq!(label, "Oct 10 03:47:30 2036 GMT");
+        assert_eq!(
+            parse_openssl_enddate_epoch(&label),
+            Some(epoch),
+            "the in-process label must round-trip through the openssl parser"
+        );
+    }
+
+    /// A fullchain carries leaf plus issuer certificates; the first block is
+    /// the leaf and must win even when later blocks are corrupt.
+    #[test]
+    fn pem_leaf_not_after_takes_the_first_certificate_of_a_chain() {
+        let pem = include_str!("../benches/fixtures/certs/self_signed.pem");
+        let chained =
+            format!("{pem}-----BEGIN CERTIFICATE-----\n@@@@\n-----END CERTIFICATE-----\n");
+        let dir = assert_fs::TempDir::new().unwrap();
+        let path = dir.path().join("fullchain.pem");
+        std::fs::write(&path, chained).unwrap();
+
+        let (epoch, _) = pem_leaf_not_after(&path).expect("the leaf block must parse");
+        assert_eq!(epoch, 2_107_223_250);
+    }
+
+    #[test]
+    fn pem_leaf_not_after_rejects_non_certificates() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let plain = dir.path().join("plain.pem");
+        std::fs::write(&plain, "not a certificate").unwrap();
+        assert_eq!(pem_leaf_not_after(&plain), None);
+
+        let missing = dir.path().join("missing.pem");
+        assert_eq!(pem_leaf_not_after(&missing), None);
+    }
+
+    /// With a parseable PEM on disk the read must never consult the runner:
+    /// a strict `FakeRunner` errors on any unmatched invocation, so this test
+    /// fails if the `openssl` fallback runs for a healthy certificate.
+    #[test]
+    fn read_cert_expiry_parses_in_process_without_spawning() {
+        let pem = include_str!("../benches/fixtures/certs/self_signed.pem");
+        let dir = assert_fs::TempDir::new().unwrap();
+        let path = dir.path().join("fullchain.pem");
+        std::fs::write(&path, pem).unwrap();
+
+        let fake = toride_runner::fake::FakeRunner::new().strict();
+        let expiry =
+            read_cert_expiry(&path, &fake, SystemTime::now()).expect("the panic guard never fires");
+        assert!(expiry.is_valid, "the 2036 fixture is valid");
+        assert!(expiry.days_remaining > 3000, "got {expiry:?}");
+        assert_eq!(expiry.not_after, "Oct 10 03:47:30 2036 GMT");
+    }
+
+    /// A file the in-process walk cannot handle still reaches the openssl
+    /// fallback and degrades to unknown on a hostile runner.
+    #[test]
+    fn read_cert_expiry_falls_back_to_openssl_for_unparseable_files() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let path = dir.path().join("garbage.pem");
+        std::fs::write(
+            &path,
+            "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let fake = toride_runner::fake::FakeRunner::new().strict();
+        let expiry =
+            read_cert_expiry(&path, &fake, SystemTime::now()).expect("the panic guard never fires");
+        assert!(!expiry.is_valid);
+        assert_eq!(
+            expiry.not_after, "",
+            "host-independent: degraded or unknown"
+        );
     }
 
     #[test]

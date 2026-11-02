@@ -5,6 +5,7 @@
 //! the active exit node.
 
 use crate::Result;
+use crate::models::StatusDocument;
 use crate::report::{ConnectionStatus, TailscaleReport};
 
 // ---------------------------------------------------------------------------
@@ -45,6 +46,31 @@ impl NodeStatus {
     pub async fn from_api(api: &crate::api::TailscaleApi) -> Result<Self> {
         let raw = api.get_status().await?;
         Ok(Self { raw })
+    }
+
+    /// Build the report from the typed status document, the fetch path the
+    /// [`crate::client::TailscaleClient`] uses: no `serde_json::Value` DOM is
+    /// built. Field semantics match [`NodeStatus::to_report`] exactly.
+    pub(crate) fn report_from_document(doc: &StatusDocument) -> TailscaleReport {
+        let exit_node = doc
+            .exit_node_status
+            .as_ref()
+            .and_then(|status| status.tailscale_ips.first())
+            .filter(|ip| !ip.is_empty())
+            .cloned();
+        let ip_addresses = doc
+            .self_node
+            .as_ref()
+            .map(|n| n.tailscale_ips.clone())
+            .unwrap_or_default();
+        TailscaleReport {
+            connected: doc.is_connected(),
+            node_name: doc.self_name().to_owned(),
+            tailnet: doc.tailnet_name().to_owned(),
+            ip_addresses,
+            exit_node,
+            dns_enabled: doc.magic_dns_enabled,
+        }
     }
 
     /// Returns the node's hostname.
@@ -99,9 +125,12 @@ impl NodeStatus {
 
     /// Convert this status into a [`TailscaleReport`].
     ///
-    /// The exit-node field is populated from the first online peer that
-    /// advertises itself as an exit node (`ExitNodeOption == true`). MagicDNS
-    /// is derived from the top-level `MagicDNSEnabled` boolean.
+    /// The exit-node field is the node this machine actively routes through,
+    /// parsed from the top-level `ExitNodeStatus` object. A peer advertising
+    /// `ExitNodeOption` is only available as an exit node
+    /// ([`PeerInfo::exit_node`](crate::report::PeerInfo)); availability does
+    /// not imply use. MagicDNS is derived from the top-level
+    /// `MagicDNSEnabled` boolean.
     pub fn to_report(&self) -> TailscaleReport {
         let exit_node = self.exit_node_in_use();
         let dns_enabled = self.magic_dns_enabled();
@@ -116,35 +145,24 @@ impl NodeStatus {
         }
     }
 
-    /// Returns the IP of the exit node currently advertised by an online peer,
-    /// if any.
+    /// Returns the IP of the exit node this node actively routes through, if
+    /// any.
     ///
-    /// A peer with `ExitNodeOption == true` is one that this tailnet exposes as
-    /// an exit node; we report its first Tailscale IP. `None` when no such peer
-    /// is online.
+    /// The in-use signal is the top-level `ExitNodeStatus.TailscaleIPs`
+    /// object `tailscale status --json` emits; it is absent (or carries no
+    /// usable IP) when this node is not using an exit node.
     fn exit_node_in_use(&self) -> Option<String> {
-        let peers = self.raw.get("Peer").and_then(|p| p.as_object())?;
-        for peer in peers.values() {
-            let is_exit = peer
-                .get("ExitNodeOption")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            let online = peer
-                .get("Online")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if is_exit
-                && online
-                && let Some(ip) = peer
-                    .get("TailscaleIPs")
-                    .and_then(|i| i.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|v| v.as_str())
-            {
-                return Some(ip.to_owned());
-            }
+        let ip = self
+            .raw
+            .get("ExitNodeStatus")
+            .and_then(|s| s.get("TailscaleIPs"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|ips| ips.first())
+            .and_then(serde_json::Value::as_str)?;
+        if ip.is_empty() {
+            return None;
         }
-        None
+        Some(ip.to_owned())
     }
 
     /// Returns whether MagicDNS is enabled, parsed from the top-level
@@ -180,6 +198,7 @@ mod tests {
                 "HostName": "my-host",
                 "TailscaleIPs": ["100.64.0.1"]
             },
+            "ExitNodeStatus": { "TailscaleIPs": ["100.64.0.9"] },
             "Peer": {
                 "k1": {
                     "HostName": "exit-box",
@@ -209,11 +228,33 @@ mod tests {
         assert!(report.dns_enabled);
     }
 
+    /// The typed fetch path must produce the same report as the raw-JSON
+    /// path for the same document.
     #[test]
-    fn exit_node_none_when_no_online_exit_peer() {
+    fn typed_report_matches_the_raw_json_report() {
+        let doc: crate::models::StatusDocument =
+            serde_json::from_value(sample()).expect("sample parses as typed document");
+        assert_eq!(
+            NodeStatus::report_from_document(&doc),
+            NodeStatus::from_raw(sample()).to_report()
+        );
+    }
+
+    #[test]
+    fn exit_node_none_when_no_exit_node_status() {
         let mut raw = sample();
-        // Mark the only exit node offline.
-        raw["Peer"]["k1"]["Online"] = serde_json::json!(false);
+        raw.as_object_mut().unwrap().remove("ExitNodeStatus");
+        let report = NodeStatus::from_raw(raw).to_report();
+        assert_eq!(
+            report.exit_node, None,
+            "an offered-but-unused exit node must not be reported as in use"
+        );
+    }
+
+    #[test]
+    fn exit_node_none_when_status_ips_empty() {
+        let mut raw = sample();
+        raw["ExitNodeStatus"] = serde_json::json!({ "TailscaleIPs": [] });
         let report = NodeStatus::from_raw(raw).to_report();
         assert_eq!(report.exit_node, None);
     }

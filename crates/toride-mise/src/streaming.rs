@@ -41,10 +41,6 @@ use crate::client::Mise;
 use crate::error::MiseResult;
 use crate::exec::ExecRequest;
 
-// ---------------------------------------------------------------------------
-// Mise impl — streaming methods
-// ---------------------------------------------------------------------------
-
 impl Mise {
     /// Install a tool with real-time output streaming.
     ///
@@ -199,10 +195,6 @@ impl Mise {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
-
 /// Build the argument list for a `mise exec` invocation from an [`ExecRequest`].
 ///
 /// Mirrors the arg-building logic in [`Mise::exec`](crate::client::Mise::exec)
@@ -221,24 +213,24 @@ fn build_exec_args(req: &ExecRequest) -> Vec<String> {
     }
 
     if req.fresh_env {
-        args.push("--fresh".into());
+        args.push("--fresh-env".into());
     }
 
     if req.no_deps {
         args.push("--no-deps".into());
     }
 
-    // Raw mode — must match the non-streaming exec path.
+    // Raw mode: must match the non-streaming exec path.
     if req.raw {
         args.push("--raw".into());
     }
 
     if let Some(ref cwd) = req.cwd {
-        args.push("--cwd".into());
+        args.push("--cd".into());
         args.push(cwd.to_string());
     }
 
-    // Sandbox flags — must match the non-streaming exec path.
+    // Sandbox flags: must match the non-streaming exec path.
     if let Some(ref policy) = req.sandbox {
         if policy.deny_read {
             args.push("--deny-read".into());

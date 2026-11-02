@@ -12,10 +12,6 @@ use serde::Deserialize;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// JSON response types
-// ---------------------------------------------------------------------------
-
 /// A single task entry as returned by `mise tasks ls --json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TaskInfo {
@@ -45,10 +41,6 @@ pub struct TaskRunRequest {
     /// (e.g. `["node@22", "python@3.12"]`).
     pub tools: Vec<String>,
 }
-
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// List all defined tasks.
@@ -108,7 +100,7 @@ impl Mise {
     /// <spec>… <task> [args…]`; otherwise it invokes `mise run <task>
     /// [args…]`.
     ///
-    /// If `req.cwd` is set it is passed as `--cwd <path>`.
+    /// If `req.cwd` is set it is passed as `--cd <path>`.
     ///
     /// # Errors
     ///
@@ -124,7 +116,7 @@ impl Mise {
 
         // Working directory override.
         if let Some(ref cwd) = req.cwd {
-            args.push("--cwd".into());
+            args.push("--cd".into());
             args.push(cwd.to_string());
         }
 

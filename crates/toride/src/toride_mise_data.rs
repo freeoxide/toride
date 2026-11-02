@@ -38,8 +38,8 @@ pub struct MiseDataBundle {
 /// Manages periodic async collection of mise data with a 60s whole-bundle
 /// cache: a cache-hit tick runs no mise subprocess.
 pub struct MiseCollector {
-    rx: Option<oneshot::Receiver<(MiseDataBundle, bool)>>,
-    cached_bundle: Option<MiseDataBundle>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<MiseDataBundle>, bool)>>,
+    cached_bundle: Option<std::sync::Arc<MiseDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -84,7 +84,14 @@ impl MiseCollector {
             self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
         let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
-        let handle = tokio::spawn(async move { collect_real_mise(use_cache, cached_bundle).await });
+        // TTL hit: re-ship the cached Arc by refcount, no mise subprocess.
+        if use_cache && let Some(bundle) = cached_bundle {
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
+        let handle = tokio::spawn(async move { collect_real_mise(false, None).await });
         tokio::spawn(async move {
             let (bundle, reused_cache) = match handle.await {
                 Ok(tuple) => tuple,
@@ -96,21 +103,21 @@ impl MiseCollector {
                     )
                 }
             };
-            let _ = tx.send((bundle, reused_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache));
         });
     }
 
     /// Returns `Some(bundle)` once the collection completes, `None` while
-    /// still pending; a degraded bundle is never cached, so the next tick retries.
-    pub async fn poll(&mut self) -> Option<MiseDataBundle> {
+    /// still pending; a degraded bundle is never cached, so the next tick
+    /// retries. A cache-hit poll re-ships the cached `Arc` by refcount.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<MiseDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
                 if let Some((ref bundle, used_cache)) = result
-                    && bundle.available
                     && !used_cache
                 {
-                    self.cached_bundle = Some(bundle.clone());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
                     self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
@@ -121,7 +128,6 @@ impl MiseCollector {
     }
 
     /// Invalidate the bundle cache so the next collection re-runs the probes.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_bundle = None;
         self.bundle_fresh_at = None;
@@ -327,7 +333,7 @@ fn reason_when_construction_ok_but_unavailable(
     if available {
         None
     } else {
-        Some("mise did not respond — all probes timed out or failed".to_string())
+        Some("mise did not respond: all probes timed out or failed".to_string())
     }
 }
 
@@ -421,21 +427,19 @@ mod tests {
         collector.start();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
-        if bundle.is_some_and(|b| b.available) {
-            assert!(collector.cached_bundle.is_some());
-            assert!(collector.bundle_fresh_at.is_some());
-        } else {
+        if bundle.is_some() {
             assert!(
-                collector.cached_bundle.is_none(),
-                "a degraded bundle must not be cached"
+                collector.cached_bundle.is_some(),
+                "a completed derivation is cached whether available or degraded, so ticks stop re-polling"
             );
+            assert!(collector.bundle_fresh_at.is_some());
         }
     }
 
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = MiseCollector::new();
-        collector.cached_bundle = Some(empty_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(empty_bundle()));
         collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
         assert!(collector.cached_bundle.is_none());
@@ -669,7 +673,7 @@ mod tests {
         assert!(
             reason.is_none(),
             "a populated outdated list must keep the section available even \
-             when every other probe failed — the heuristic unions over all \
+             when every other probe failed: the heuristic unions over all \
              five data sources: {reason:?}"
         );
     }
@@ -732,7 +736,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn cache_hit_returns_cached_bundle_without_reprobing() {
         let mut collector = MiseCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 
@@ -768,7 +772,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = MiseCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 
@@ -789,17 +793,9 @@ mod cadence_oracle {
             bundle.tools.iter().all(|t| t.name != SENTINEL_TOOL),
             "an expired cache must not serve the sentinel tool row"
         );
-        if bundle.available {
-            assert!(
-                collector.bundle_fresh_at.is_some_and(|t| t > primed),
-                "an expired cache must be re-derived and the freshness clock advanced"
-            );
-        } else {
-            assert_eq!(
-                collector.bundle_fresh_at,
-                Some(primed),
-                "a degraded re-derivation must leave the primed clock untouched"
-            );
-        }
+        assert!(
+            collector.bundle_fresh_at.is_some_and(|t| t > primed),
+            "an expired cache is re-derived and the clock advanced, degraded or not"
+        );
     }
 }

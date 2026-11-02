@@ -1,7 +1,9 @@
 //! Lossless parse tree for SSH config files.
 //!
-//! Preserves whitespace, `=` separators, comments, and blank lines.
-//! Every byte of the original file is representable.
+//! Preserves whitespace, `=` separators, comments, and blank lines, and
+//! normalizes line endings to LF: `str::lines()` strips CRLF and every
+//! rendered node ends in `\n`, so a managed edit of a CRLF file rewrites
+//! every line ending. Content other than line terminators round-trips.
 
 use serde::{Deserialize, Serialize};
 
@@ -95,6 +97,9 @@ pub enum ConfigNode {
 
 impl ConfigAst {
     /// Render the AST back to a string suitable for writing to disk.
+    ///
+    /// Output is LF-terminated on every line regardless of the input's line
+    /// endings; see the module docs for the normalization note.
     #[must_use]
     pub fn to_string_lossless(&self) -> String {
         let mut out = String::new();
@@ -244,7 +249,7 @@ pub fn parse(input: &str) -> ConfigAst {
                 nodes: inner,
             })));
         } else {
-            // Regular directive — check for trailing inline comment
+            // Regular directive: check for trailing inline comment
             let (value, comment) = split_trailing_comment(rest);
             nodes.push(ConfigNode::Directive(Box::new(DirectiveData {
                 keyword: keyword.to_owned(),
@@ -269,35 +274,10 @@ fn line_indent(line: &str) -> &str {
 
 /// Parse the body of a Host/Match block, consuming indented lines.
 ///
-/// # Known limitation (tracked followup)
-///
-/// Membership is gated on indentation: a line belongs to the block only if it
-/// starts with whitespace. OpenSSH does **not** require body indentation — a
-/// `Host`/`Match` block actually extends until the next `Host`/`Match` header
-/// — so an *unindented* block-scoped directive (e.g. a real `sshd_config`
-/// `Match User sftpuser` block written as
-/// `Match User sftpuser\nChrootDirectory /sftp`) leaks into the global view.
-/// In the Security tab this can misreport rare unindented Match-scoped
-/// `AllowUsers`/`DenyUsers` as global.
-///
-/// The obvious fix — header-based membership — is correct but breaks the
-/// managed-block feature (`managed.rs`): a `# >>> toride …` managed section
-/// placed after a `Host` line would be absorbed into that Host block, and
-/// `upsert_managed_block` (which appends at top level) would lose it on
-/// re-parse. Reconciling the two needs a design decision (managed blocks as
-/// self-contained blocks, or an explicit parser mode), so it is left as a
-/// scoped followup rather than risked here.
-///
-/// IMPORTANT: this is **not** a display-only misreport. Because the leaked
-/// directive is reified as a top-level `ConfigNode::Directive`, an editor that
-/// scans `ast.nodes` (as `sshd::upsert_user_in_directive` does) would mutate
-/// the leaked node and re-render it at indent 0 — permanently relocating a
-/// `Match`/`Host`-scoped directive to global scope on disk. `sshd -t` passes
-/// (the file is still syntactically valid), so the validation gate does not
-/// catch it. The `sshd.rs` editor therefore **fail-closes**: if a directive it
-/// is asked to edit is immediately preceded (in document order) by a
-/// `Match`/`Host` block, it refuses the edit with `Error::SshdConfigInvalid`
-/// rather than risk writing to the wrong scope.
+/// Membership is indentation-gated, but OpenSSH extends a block to the next
+/// `Host`/`Match` header: an unindented block-scoped directive therefore
+/// leaks into global scope. The `sshd.rs` editors fail-closed around that
+/// leak rather than risk writing to the wrong scope.
 fn parse_block_body<'a, I>(lines: &mut std::iter::Peekable<I>) -> Vec<ConfigNode>
 where
     I: Iterator<Item = &'a str>,
@@ -349,10 +329,11 @@ where
 
 /// Split a directive line into (keyword, separator, rest-of-line).
 ///
-/// An `=` is only treated as the separator when it appears immediately after
-/// the keyword token with **no intervening whitespace** — i.e. `Key=Value`.
-/// If there is whitespace before the `=` (e.g. `SetEnv FOO=bar`) the `=` is
-/// part of the value, not the separator.
+/// An `=` is treated as the separator when it appears immediately after the
+/// keyword token with **no intervening whitespace** (`Key=Value`), or after
+/// whitespace when followed by end-of-line or more whitespace
+/// (`Key = Value`, per `ssh_config(5)`). If the `=` abuts a value
+/// (`SetEnv FOO=bar`) it is part of the value, not the separator.
 pub(crate) fn parse_directive_parts(line: &str) -> (&str, Separator, &str) {
     // Find the first whitespace boundary.
     let ws_pos = line.find(|c: char| c.is_whitespace());
@@ -371,17 +352,34 @@ pub(crate) fn parse_directive_parts(line: &str) -> (&str, Separator, &str) {
     // Fall back to whitespace separator.
     if let Some(ws) = ws_pos {
         let keyword = &line[..ws];
-        let rest = line[ws..].trim_start();
-        return (keyword, Separator::Space, rest);
+        let mut rest = line[ws..].trim_start();
+        let separator = if let Some(after_eq) = rest.strip_prefix('=')
+            && (after_eq.is_empty() || after_eq.starts_with(char::is_whitespace))
+        {
+            rest = after_eq.trim_start();
+            Separator::Equals
+        } else {
+            Separator::Space
+        };
+        return (keyword, separator, rest);
     }
 
     // Keyword only, no value.
     (line, Separator::Space, "")
 }
 
-/// Parse space-separated host patterns from a `Host` value string.
+/// Parse space- and/or comma-separated host patterns from a `Host` value.
+///
+/// `ssh_config(5)` allows `Host foo,bar` and `Host foo bar` to mean the same
+/// thing, so each whitespace token is additionally split on `,`. `!`
+/// negation prefixes survive the split.
 fn parse_patterns(value: &str) -> Vec<String> {
-    value.split_whitespace().map(str::to_owned).collect()
+    value
+        .split_whitespace()
+        .flat_map(|token| token.split(','))
+        .filter(|pattern| !pattern.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Split a value string into (value, `optional_trailing_comment`).
@@ -389,6 +387,10 @@ fn parse_patterns(value: &str) -> Vec<String> {
 /// Handles `# comment` at the end of a line. Quotes are respected so that
 /// `#` inside quotes is not treated as a comment.
 pub(crate) fn split_trailing_comment(value: &str) -> (String, Option<String>) {
+    if !value.as_bytes().contains(&b'#') {
+        return (value.to_owned(), None);
+    }
+
     let mut in_double = false;
     let mut in_single = false;
     let mut comment_start = None;

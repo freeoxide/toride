@@ -6,9 +6,10 @@
 //!
 //! # Architecture
 //!
-//! The entry point is [`TailscaleClient`], which communicates with the local
-//! Tailscale daemon over `http://localhost:41642` (the Unix socket API). It
-//! delegates to sub-modules for specific concerns:
+//! The entry point is [`TailscaleClient`], which communicates with the
+//! tailscaled LocalAPI over its Unix socket
+//! (`/var/run/tailscale/tailscaled.sock`; see [`api`]). It delegates to
+//! sub-modules for specific concerns:
 //!
 //! - [`api`] -- low-level HTTP client for the Tailscale local API
 //! - [`status`] -- node status and connection state
@@ -67,6 +68,13 @@ pub mod doctor;
 
 #[cfg(feature = "client")]
 pub mod api;
+
+/// Typed local-API response documents, the wire types
+/// [`crate::api::TailscaleApi`] deserializes into. Unknown fields are
+/// ignored and consumed fields default, so both newer and older tailscaled
+/// stay parseable.
+#[cfg(feature = "client")]
+pub mod models;
 
 #[cfg(feature = "client")]
 pub mod acl;

@@ -10,11 +10,11 @@ use crate::spec::SysctlParam;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HardeningProfile {
-    /// Desktop workstation profile — balanced security and usability.
+    /// Desktop workstation profile: balanced security and usability.
     Desktop,
-    /// Server profile — stricter security, suitable for production servers.
+    /// Server profile: stricter security, suitable for production servers.
     Server,
-    /// Router profile — enables IP forwarding with hardening.
+    /// Router profile: enables IP forwarding with hardening.
     Router,
 }
 
@@ -59,7 +59,7 @@ impl std::fmt::Display for HardeningProfile {
     }
 }
 
-/// Desktop profile parameters — balanced for daily workstation use.
+/// Desktop profile parameters: balanced for daily workstation use.
 ///
 /// - ASLR enabled (level 2)
 /// - `kptr_restrict` enabled
@@ -69,7 +69,6 @@ impl std::fmt::Display for HardeningProfile {
 /// - Source routing disabled
 fn desktop_params() -> Vec<SysctlParam> {
     vec![
-        // ── Kernel security ──────────────────────────────────────
         SysctlParam::new(
             "kernel.randomize_va_space",
             "2",
@@ -90,7 +89,6 @@ fn desktop_params() -> Vec<SysctlParam> {
             "1",
             "Restrict ptrace to direct parent processes",
         ),
-        // ── Filesystem protections ───────────────────────────────
         SysctlParam::new(
             "fs.protected_hardlinks",
             "1",
@@ -111,7 +109,6 @@ fn desktop_params() -> Vec<SysctlParam> {
             "2",
             "Enable protected regular files (strict mode)",
         ),
-        // ── Network hardening ────────────────────────────────────
         SysctlParam::new(
             "net.ipv4.conf.all.accept_redirects",
             "0",
@@ -147,7 +144,11 @@ fn desktop_params() -> Vec<SysctlParam> {
             "0",
             "Disable IPv6 ICMP redirect acceptance",
         ),
-        // ── IP forwarding disabled (desktop) ─────────────────────
+        SysctlParam::new(
+            "net.ipv6.conf.default.accept_redirects",
+            "0",
+            "Disable IPv6 ICMP redirect acceptance (default)",
+        ),
         SysctlParam::new(
             "net.ipv4.ip_forward",
             "0",
@@ -156,18 +157,14 @@ fn desktop_params() -> Vec<SysctlParam> {
     ]
 }
 
-/// Server profile parameters — stricter security for production servers.
+/// Server profile parameters: stricter security for production servers.
 ///
 /// Includes all Desktop parameters plus additional server-specific hardening.
 fn server_params() -> Vec<SysctlParam> {
     let mut params = desktop_params();
 
-    // Override the desktop ptrace_scope (1) with the stricter server value (2).
-    // Drop the inherited entry first so we don't emit a duplicate key: the
-    // direct-apply path iterates and writes every entry (so `sysctl -w
-    // kernel.yama.ptrace_scope=1` then `=2` would run), and the c62c8d5
-    // dedup_by_key_last_wins only covers the spec-expansion path, not this
-    // list. Mirror the `ip_forward` retain used in `router_params`.
+    // The direct-apply path writes every entry in order, so the inherited
+    // desktop value must be dropped before the stricter one is pushed.
     params.retain(|p| p.key != "kernel.yama.ptrace_scope");
     params.push(SysctlParam::new(
         "kernel.yama.ptrace_scope",
@@ -218,14 +215,13 @@ fn server_params() -> Vec<SysctlParam> {
     params
 }
 
-/// Router profile parameters — enables IP forwarding with hardening.
+/// Router profile parameters: enables IP forwarding with hardening.
 ///
 /// Includes all Server parameters but enables IP forwarding and adjusts
 /// related parameters for routing use cases.
 fn router_params() -> Vec<SysctlParam> {
     let mut params = server_params();
 
-    // Remove the ip_forward=0 entry and replace with ip_forward=1
     params.retain(|p| p.key != "net.ipv4.ip_forward");
     params.push(SysctlParam::new(
         "net.ipv4.ip_forward",

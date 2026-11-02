@@ -3,27 +3,27 @@
 //! The [`Backend`] trait is the seam between a planned operation and one
 //! install technology (homebrew, flatpak, a distro manager, a direct
 //! download under the `direct` feature): every
-//! technology-specific concern — binary detection, JSON list parsing, argv
-//! quirks — lives behind it, in the implementing module. Callers see only
+//! technology-specific concern: binary detection, JSON list parsing, argv
+//! quirks: lives behind it, in the implementing module. Callers see only
 //! plan types ([`InstallPlan`], [`UninstallPlan`]), typed requests, and
 //! plain outcome records.
 //!
 //! Contract every implementation must honor:
 //!
-//! - **Dry-run refusal** — a plan marked `dry_run` is never executed.
+//! - **Dry-run refusal**: a plan marked `dry_run` is never executed.
 //!   This is convention, not compiler enforcement: implementations MUST
 //!   call [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] /
 //!   [`ensure_update_allowed`] as their first statement (see
 //!   [`Backend::install`]), and every backend round must carry the two
 //!   refusal tests against a fake runner.
-//! - **No auto-sudo** — when a plan `requires_elevation` and the request
+//! - **No auto-sudo**: when a plan `requires_elevation` and the request
 //!   does not carry `elevated: true`, the backend returns
 //!   [`Error::ElevationRequired`]; backends never invoke `sudo` themselves
 //!   (enforced by the same guard call).
-//! - **Seam-only execution** — all commands go through
+//! - **Seam-only execution**: all commands go through
 //!   [`CommandRunner`](crate::CommandRunner); backends never spawn processes
 //!   directly.
-//! - **Sync twins** — every operation exists twice: the `async` spelling
+//! - **Sync twins**: every operation exists twice: the `async` spelling
 //!   and a `_sync` twin ([`Backend::install_sync`] and friends) executing
 //!   on the calling thread through the seam's sync dispatch. Both honor
 //!   the same guards, argv, and classification; callers pick per their
@@ -42,9 +42,9 @@ use crate::plan::{InstallPlan, Target, UninstallPlan, UpdatePlan};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum BackendId {
-    /// macOS Homebrew — casks and formulae (`brew`).
+    /// macOS Homebrew: casks and formulae (`brew`).
     Homebrew,
-    /// Linux Flatpak — remotes and refs (`flatpak`).
+    /// Linux Flatpak: remotes and refs (`flatpak`).
     Flatpak,
     /// Linux Snap packages, through snapd (`snap`).
     Snap,
@@ -60,10 +60,10 @@ pub enum BackendId {
     /// uv-managed Python tools (`uv tool install`).
     Uv,
     /// mise-managed tools, delegated to toride-mise (gated with the `mise`
-    /// feature — it carries tokio).
+    /// feature: it carries tokio).
     #[cfg(feature = "mise")]
     Mise,
-    /// Direct downloads over toride-installer's verified pipeline — the one
+    /// Direct downloads over toride-installer's verified pipeline: the one
     /// backend every platform shares (gated with the `direct` feature).
     #[cfg(feature = "direct")]
     Direct,
@@ -99,7 +99,7 @@ pub struct InstallRequest<'a> {
     /// The plan to execute. Its `dry_run` and `requires_elevation` slots are
     /// binding contracts (see the module docs).
     pub plan: &'a InstallPlan,
-    /// Host target the plan was derived for — context for backend decisions
+    /// Host target the plan was derived for: context for backend decisions
     /// beyond the plan's argv (e.g. picking a user vs system scope).
     pub target: &'a Target,
     /// Elevation grant: `true` only when the caller has arranged root
@@ -136,7 +136,7 @@ pub struct UninstallRequest<'a> {
     pub plan: &'a UninstallPlan,
     /// Host target the plan was derived for.
     pub target: &'a Target,
-    /// Elevation grant — see [`InstallRequest::elevated`].
+    /// Elevation grant: see [`InstallRequest::elevated`].
     pub elevated: bool,
 }
 
@@ -151,7 +151,7 @@ impl<'a> UninstallRequest<'a> {
         }
     }
 
-    /// Assert that elevation has been arranged — consume-and-return.
+    /// Assert that elevation has been arranged: consume-and-return.
     #[must_use]
     pub const fn elevated(mut self, elevated: bool) -> Self {
         self.elevated = elevated;
@@ -167,7 +167,7 @@ pub struct UpdateRequest<'a> {
     pub plan: &'a UpdatePlan,
     /// Host target the plan was derived for.
     pub target: &'a Target,
-    /// Elevation grant — see [`InstallRequest::elevated`].
+    /// Elevation grant: see [`InstallRequest::elevated`].
     pub elevated: bool,
 }
 
@@ -182,7 +182,7 @@ impl<'a> UpdateRequest<'a> {
         }
     }
 
-    /// Assert that elevation has been arranged — consume-and-return.
+    /// Assert that elevation has been arranged: consume-and-return.
     #[must_use]
     pub const fn elevated(mut self, elevated: bool) -> Self {
         self.elevated = elevated;
@@ -196,7 +196,7 @@ pub struct ListQuery {
     /// Restrict the listing to these backend-native identifiers (cask
     /// tokens, flatpak refs, package names). Empty lists everything the
     /// backend manages. Backends may implement the restriction by listing
-    /// and filtering — the semantics, not the mechanism, are the contract.
+    /// and filtering: the semantics, not the mechanism, are the contract.
     pub ids: Vec<String>,
 }
 
@@ -235,14 +235,14 @@ impl<'a> StatusQuery<'a> {
 /// One app a backend currently manages, as its `list_installed` reports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledApp {
-    /// Backend-native identifier (cask token, flatpak ref, package name) —
+    /// Backend-native identifier (cask token, flatpak ref, package name),
     /// the join key against plan operations and manifest records.
     pub id: String,
     /// Installed version, when the backend's listing reports one.
     pub version: Option<String>,
 }
 
-/// Opaque newtype over the manager's native version spelling — a wrapped
+/// Opaque newtype over the manager's native version spelling: a wrapped
 /// string, not semver, because distro and flatpak versions are not
 /// semver-ordered; ordering questions go to the manager's stale signal.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -273,7 +273,7 @@ impl std::fmt::Display for Version {
 /// entries; managers with no such probe report none).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutdatedEntry {
-    /// Backend-native identifier — the join key against manifest records.
+    /// Backend-native identifier: the join key against manifest records.
     pub id: String,
     /// All installed (stale) versions.
     pub installed_versions: Vec<String>,
@@ -283,7 +283,7 @@ pub struct OutdatedEntry {
     pub pinned: bool,
 }
 
-/// Per-backend status of one app id — the primitive the cross-backend
+/// Per-backend status of one app id: the primitive the cross-backend
 /// status layer (A5) combines with the manifest into `Installed` /
 /// `Foreign` / `NotInstalled`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,7 +326,7 @@ pub struct UninstallOutcome {
 #[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Backend: Send + Sync {
-    /// Stable identity of this backend — matches the routing slot on plan
+    /// Stable identity of this backend: matches the routing slot on plan
     /// types (`InstallPlan::backend`).
     fn id(&self) -> BackendId;
 
@@ -341,7 +341,7 @@ pub trait Backend: Send + Sync {
     ///
     /// **Binding convention on every implementation:** the first statement
     /// of an implementation MUST be
-    /// `ensure_install_allowed(&request)?` — the trait cannot enforce this
+    /// `ensure_install_allowed(&request)?`: the trait cannot enforce this
     /// structurally, so the shared guard is how dry-run refusal and
     /// no-auto-sudo stay uniform across backends. Review rounds verify each
     /// backend by testing both refusals against a fake runner.
@@ -358,7 +358,7 @@ pub trait Backend: Send + Sync {
     ///
     /// **Binding convention on every implementation:** the first statement
     /// of an implementation MUST be
-    /// `ensure_uninstall_allowed(&request)?` — same rationale as
+    /// `ensure_uninstall_allowed(&request)?`: same rationale as
     /// [`Backend::install`].
     ///
     /// # Errors
@@ -398,7 +398,7 @@ pub trait Backend: Send + Sync {
     /// Execute an update plan.
     ///
     /// **Binding convention on every implementation:** the first statement
-    /// of an implementation MUST be `ensure_update_allowed(&request)?` —
+    /// of an implementation MUST be `ensure_update_allowed(&request)?`:
     /// same rationale as [`Backend::install`].
     ///
     /// # Errors
@@ -444,7 +444,7 @@ pub trait Backend: Send + Sync {
 
     /// The versions the manager can install for `id` today, in the
     /// manager's own order (brew's offered version per kind, flatpak's
-    /// branches for the app in its remote). The default reports none —
+    /// branches for the app in its remote). The default reports none:
     /// backends without a listing probe keep it.
     ///
     /// # Errors
@@ -473,7 +473,7 @@ pub trait Backend: Send + Sync {
         })
     }
 
-    /// Release a pin — same contract as [`Backend::pin`].
+    /// Release a pin: same contract as [`Backend::pin`].
     ///
     /// # Errors
     ///
@@ -488,7 +488,7 @@ pub trait Backend: Send + Sync {
         })
     }
 
-    /// Execute an install plan on the calling thread — the sync twin of
+    /// Execute an install plan on the calling thread: the sync twin of
     /// [`Backend::install`]: same request type, same binding guard
     /// convention (`ensure_install_allowed(&request)?` first), same argv
     /// and classification, dispatched through the seam's
@@ -499,7 +499,7 @@ pub trait Backend: Send + Sync {
     /// Same contract as [`Backend::install`].
     fn install_sync(&self, request: InstallRequest<'_>) -> Result<InstallOutcome>;
 
-    /// Execute an uninstall plan on the calling thread — the sync twin of
+    /// Execute an uninstall plan on the calling thread: the sync twin of
     /// [`Backend::uninstall`], same guard convention.
     ///
     /// # Errors
@@ -507,7 +507,7 @@ pub trait Backend: Send + Sync {
     /// Same contract as [`Backend::install_sync`].
     fn uninstall_sync(&self, request: UninstallRequest<'_>) -> Result<UninstallOutcome>;
 
-    /// Execute an update plan on the calling thread — the sync twin of
+    /// Execute an update plan on the calling thread: the sync twin of
     /// [`Backend::update`], same guard convention.
     ///
     /// # Errors
@@ -515,7 +515,7 @@ pub trait Backend: Send + Sync {
     /// Same contract as [`Backend::install_sync`].
     fn update_sync(&self, request: UpdateRequest<'_>) -> Result<()>;
 
-    /// List the apps this backend manages, on the calling thread — the
+    /// List the apps this backend manages, on the calling thread: the
     /// sync twin of [`Backend::list_installed`].
     ///
     /// # Errors
@@ -523,7 +523,7 @@ pub trait Backend: Send + Sync {
     /// Same contract as [`Backend::list_installed`].
     fn list_installed_sync(&self, query: ListQuery) -> Result<Vec<InstalledApp>>;
 
-    /// Report the status of one backend-native id, on the calling thread —
+    /// Report the status of one backend-native id, on the calling thread:
     /// the sync twin of [`Backend::status`], deriving from
     /// [`Backend::list_installed_sync`] by default.
     ///
@@ -542,7 +542,7 @@ pub trait Backend: Send + Sync {
     }
 
     /// Report every stale item the backend's manager flags, on the calling
-    /// thread — the sync twin of [`Backend::outdated`], none reported by
+    /// thread: the sync twin of [`Backend::outdated`], none reported by
     /// default.
     ///
     /// # Errors
@@ -554,7 +554,7 @@ pub trait Backend: Send + Sync {
     }
 
     /// The installed version of one backend-native id, on the calling
-    /// thread — the sync twin of [`Backend::installed_version`], deriving
+    /// thread: the sync twin of [`Backend::installed_version`], deriving
     /// from [`Backend::status_sync`] by default.
     ///
     /// # Errors
@@ -568,7 +568,7 @@ pub trait Backend: Send + Sync {
     }
 
     /// The version the manager would install for `id` today, on the
-    /// calling thread — the sync twin of [`Backend::available_version`];
+    /// calling thread: the sync twin of [`Backend::available_version`];
     /// `Ok(None)` is *unknown*, never "up to date".
     ///
     /// # Errors
@@ -579,7 +579,7 @@ pub trait Backend: Send + Sync {
     }
 
     /// The versions the manager can install for `id` today, on the calling
-    /// thread — the sync twin of [`Backend::available_versions`], none by
+    /// thread: the sync twin of [`Backend::available_versions`], none by
     /// default.
     ///
     /// # Errors
@@ -590,7 +590,7 @@ pub trait Backend: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Hold `id` back from the manager's upgrades, on the calling thread —
+    /// Hold `id` back from the manager's upgrades, on the calling thread:
     /// the sync twin of [`Backend::pin`], refused by default.
     ///
     /// # Errors
@@ -606,7 +606,7 @@ pub trait Backend: Send + Sync {
         })
     }
 
-    /// Release a pin, on the calling thread — the sync twin of
+    /// Release a pin, on the calling thread: the sync twin of
     /// [`Backend::unpin`], refused by default.
     ///
     /// # Errors
@@ -644,7 +644,7 @@ pub fn ensure_install_allowed(request: &InstallRequest<'_>) -> Result<()> {
 }
 
 /// Shared precondition check every [`Backend::uninstall`] implementation
-/// must run before mutating anything — same contract as
+/// must run before mutating anything: same contract as
 /// [`ensure_install_allowed`].
 ///
 /// # Errors
@@ -663,7 +663,7 @@ pub fn ensure_uninstall_allowed(request: &UninstallRequest<'_>) -> Result<()> {
 }
 
 /// Shared precondition check every [`Backend::update`] implementation must
-/// run before mutating anything — same contract as
+/// run before mutating anything: same contract as
 /// [`ensure_install_allowed`].
 ///
 /// # Errors
@@ -900,7 +900,7 @@ mod tests {
             .await
             .unwrap();
         // The load-bearing assertion: the planned argv reached the seam.
-        // (No assert on the fake's own `detail` string — that would only
+        // (No assert on the fake's own `detail` string: that would only
         // test the fake against itself.)
         fake.assert_called_with(&spec);
     }

@@ -2,16 +2,16 @@
 //!
 //! Renders inside the dashboard's content region when
 //! [`Section::Mise`](crate::data::Section) is the active sidebar section.
-//! Mirrors the fail2ban / Tailscale TEMPLATE read-only integrations — there is
+//! Mirrors the fail2ban / Tailscale TEMPLATE read-only integrations: there is
 //! no write path, no optimistic update, no cooldown, no loading spinner. Every
 //! line rendered here comes from a live read of the local `mise` binary.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Status panel — version + config-file count.
-//! 2. Installed tools table — tool, version, source, active/outdated flags.
-//! 3. Outdated tools — tool, current → latest, backend.
-//! 4. Config files — paths read by `mise config ls`.
-//! 5. Doctor findings — grouped by severity (Error > Warning > Info).
+//! 1. Status panel: version + config-file count.
+//! 2. Installed tools table: tool, version, source, active/outdated flags.
+//! 3. Outdated tools: tool, current → latest, backend.
+//! 4. Config files: paths read by `mise config ls`.
+//! 5. Doctor findings: grouped by severity (Error > Warning > Info).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -209,7 +209,7 @@ impl MiseContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -233,7 +233,7 @@ impl MiseContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -302,7 +302,7 @@ impl MiseContent {
     /// converted into an `empty_bundle_with_reason`). In all three cases
     /// the collector attaches a reason string surfaced here; the "mise binary not
     /// found" default below is reached only for a freshly-constructed empty bundle
-    /// (no collection has run yet), NOT for the all-probes-failed case — the latter
+    /// (no collection has run yet), NOT for the all-probes-failed case: the latter
     /// carries its own "did not respond" reason.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " MISE ", p.text_dim, false);
@@ -740,7 +740,7 @@ mod tests {
         c.set_available(true);
         c.set_tools(sample_tools());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 
@@ -755,7 +755,7 @@ mod tests {
         let mut c = MiseContent::new();
         // available stays false -> view() routes to render_unavailable.
         c.set_unavailable_reason(Some("mise did not respond".into()));
-        // 20x5 — degenerate; must not panic. (At this width the "mise
+        // 20x5: degenerate; must not panic. (At this width the "mise
         // unavailable" text is truncated, so assert on the panel border which
         // fits; the load-bearing claim is "did not panic".)
         let out_20x5 = render_to_string(&mut c, 20, 5);
@@ -763,7 +763,7 @@ mod tests {
             out_20x5.contains("MISE"),
             "degraded panel border 20x5: {out_20x5}"
         );
-        // 1x1 — the most degenerate possible terminal; must not panic.
+        // 1x1: the most degenerate possible terminal; must not panic.
         let _ = render_to_string(&mut c, 1, 1);
         // At a comfortable size the panel renders the unavailable text + the
         // reason surfaced by the collector (the "did not respond" path).

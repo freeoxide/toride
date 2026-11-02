@@ -28,6 +28,19 @@ fn assert_fixture_shape(snapshots: &str, check: &str, borg: &str) {
     assert_eq!(parsed[0].id.len(), 8, "short id is the first 8 chars");
     assert_eq!(parsed[0].id, parsed[0].full_id[..8]);
     assert!(parsed.iter().all(|s| s.hostname.is_none()));
+    assert_eq!(
+        parsed[0].timestamp, "2025-01-01T00:00:00",
+        "the single-space restic table yields the real timestamp column"
+    );
+    assert_eq!(
+        parsed[EXPECTED_SNAPSHOTS - 1].timestamp,
+        "2025-03-25T07:00:00",
+        "the fixture's last row keeps its timestamp"
+    );
+    assert!(
+        parsed.iter().all(|s| !s.timestamp.is_empty()),
+        "every restic row carries its timestamp"
+    );
 
     let result = parse_restic_check(check);
     assert_eq!(result.output_lines.len(), EXPECTED_CHECK_LINES);
@@ -38,6 +51,20 @@ fn assert_fixture_shape(snapshots: &str, check: &str, borg: &str) {
     assert_eq!(borg_parsed.len(), EXPECTED_BORG_LINES);
     assert!(borg_parsed.iter().all(|s| s.hostname.is_none()));
     assert_eq!(borg_parsed[0].id.len(), 8, "short id is the first 8 chars");
+    assert_eq!(
+        borg_parsed[0].timestamp, "2025-01-01T00:00:00",
+        "the double-space borg columns must split to the real timestamp field"
+    );
+    assert_eq!(borg_parsed[0].id, "host0000");
+    assert!(
+        borg_parsed.iter().all(|s| !s.timestamp.is_empty()),
+        "every borg row carries its timestamp (whitespace-run split)"
+    );
+    assert_eq!(
+        borg_parsed[EXPECTED_BORG_LINES - 1].timestamp,
+        "2025-03-25T07:00:00",
+        "the fixture's last row keeps its timestamp"
+    );
 }
 
 fn bench_parse_kernels(c: &mut Criterion) {

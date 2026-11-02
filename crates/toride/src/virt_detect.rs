@@ -1,4 +1,4 @@
-//! Layered VM / container detection — decides whether to neutralize cosmetic
+//! Layered VM / container detection: decides whether to neutralize cosmetic
 //! animations for the current host.
 //!
 //! ## Why
@@ -10,7 +10,7 @@
 //! `reduced_motion` and the tick is gated to fire only on real state changes,
 //! cutting redraws from ~30/s to a handful.
 //!
-//! ## How — layered OR-combine, no single signal trusted alone
+//! ## How: layered OR-combine, no single signal trusted alone
 //!
 //! The adversarial research (`detect_vm_*` in systemd `src/basic/virt.c`,
 //! provider docs, live provider tests) established that **no single signal is
@@ -18,19 +18,19 @@
 //! positively fires, but a `none` result is indistinguishable from an AWS
 //! Graviton VM, macOS, or Alpine. So the layers are OR-combined and a
 //! **negative result is treated as "indeterminate", never "confirmed bare
-//! metal"** — this matches the asymmetric cost model where a *false negative*
+//! metal"**: this matches the asymmetric cost model where a *false negative*
 //! (leaving heavy animations on a laggy VPS) is the actual bug being fixed,
 //! while a *false positive* (freezing animations on capable metal) is merely
 //! an annoying-but-safe annoyance the user can override.
 //!
-//! 1. **`SYSTEMD_VIRTUALIZATION` env** — if systemd already probed, skip the fork.
-//! 2. **`systemd-detect-virt --vm` / `--container`** — positive fire only;
+//! 1. **`SYSTEMD_VIRTUALIZATION` env**: if systemd already probed, skip the fork.
+//! 2. **`systemd-detect-virt --vm` / `--container`**: positive fire only;
 //!    absence / `none` falls through.
-//! 3. **DMI vendor strings** (`/sys/class/dmi/id/*`, all `0444` — no root) +
+//! 3. **DMI vendor strings** (`/sys/class/dmi/id/*`, all `0444`: no root) +
 //!    `/sys/hypervisor/type` (Xen). AWS `.metal` bare-metal guard.
-//! 4. **Container / WSL markers** — `/.dockerenv`, `/run/.containerenv`,
+//! 4. **Container / WSL markers**: `/.dockerenv`, `/run/.containerenv`,
 //!    `/run/host/container-manager`, `/proc/sys/kernel/osrelease`.
-//! 5. **ARM/PPC device-tree** (`/proc/device-tree/hypervisor/compatible`) — the
+//! 5. **ARM/PPC device-tree** (`/proc/device-tree/hypervisor/compatible`): the
 //!    canonical path that catches Graviton/Ampere where DMI is absent and
 //!    systemd-detect-virt silently returns `none`. The kernel does not
 //!    synthesize this node on bare metal, so false-positive risk is ~nil.
@@ -38,16 +38,16 @@
 //! CPUID (`/proc/cpuinfo` `hypervisor` flag or `raw-cpuid`) is deliberately
 //! **omitted**: it is the one signal with a large false-positive class
 //! (Windows VBS / Credential Guard sets the hypervisor-present bit on bare
-//! metal), toride is Linux-focused, and layers 1–5 already cover the space.
+//! metal), toride is Linux-focused, and layers 1-5 already cover the space.
 //!
-//! Zero new dependencies — `std::fs`, `std::process`, `std::env` only.
+//! Zero new dependencies: `std::fs`, `std::process`, `std::env` only.
 
 use std::sync::OnceLock;
 
 /// The outcome of a one-shot virtualization probe at startup.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VirtProbe {
-    /// `true` when the host looks like a VM, container, or WSL session — i.e. a
+    /// `true` when the host looks like a VM, container, or WSL session: i.e. a
     /// remote / headless environment where the 30fps redraw loop should be
     /// neutralized to avoid multiplying network round-trips.
     pub reduce_motion: bool,
@@ -61,7 +61,7 @@ pub struct VirtProbe {
 /// unit-testable against a fixture table without touching the real host.
 ///
 /// Every method is best-effort and returns `None` on any failure (missing
-/// path, non-zero exit, unset var) — the layered combiner treats `None` as
+/// path, non-zero exit, unset var): the layered combiner treats `None` as
 /// "this signal is absent", never as "bare metal confirmed".
 pub trait Probe {
     /// Best-effort full contents of the file at `path`. `None` if missing /
@@ -156,7 +156,7 @@ pub fn detect_with(probe: &dyn Probe) -> VirtProbe {
     {
         let _ = id;
         // A container shares the host kernel but implies a constrained / headless
-        // session — reduce motion for the same latency reason.
+        // session: reduce motion for the same latency reason.
         return VirtProbe {
             reduce_motion: true,
             label: Some("container"),
@@ -230,7 +230,7 @@ pub fn detect_with(probe: &dyn Probe) -> VirtProbe {
     }
 
     // ── Layer 4: ARM/PPC/RISC-V device-tree. The kernel does NOT synthesize
-    // /proc/device-tree/hypervisor on bare metal — the hypervisor injects it —
+    // /proc/device-tree/hypervisor on bare metal: the hypervisor injects it:
     // so this is near-zero false-positive and is the canonical path that
     // catches AWS Graviton / Ampere (DMI absent, systemd returns "none").
     if let Some(raw) = probe.read("/proc/device-tree/hypervisor/compatible") {
@@ -430,8 +430,8 @@ mod tests {
 
     #[test]
     fn aws_metal_bare_metal_not_flagged() {
-        // i3.metal shares EC2 vendor strings — the ".metal" guard must keep it
-        // as bare metal so a powerful metal instance isn't wrongly frozen.
+        // i3.metal shares EC2 vendor strings: the ".metal" guard must keep it
+        // as bare metal so a large metal instance isn't wrongly frozen.
         let mut p = FixtureProbe::new();
         p.files.insert("/sys/class/dmi/id/sys_vendor", "Amazon EC2");
         p.files.insert("/sys/class/dmi/id/product_name", "i3.metal");
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn arm_device_tree_kvm_fires() {
-        // AWS Graviton: no DMI, systemd silent — device-tree is the catcher.
+        // AWS Graviton: no DMI, systemd silent: device-tree is the catcher.
         let mut p = FixtureProbe::new();
         p.files.insert(
             "/proc/device-tree/hypervisor/compatible",

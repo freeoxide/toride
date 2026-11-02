@@ -1,7 +1,7 @@
 //! Convert raw tool-resolution results to UI presentation types.
 //!
 //! This is the ONLY module in the `toride` crate that owns the tool catalogue
-//! — mirroring `toride_harden_convert.rs`'s role as the single boundary
+//!: mirroring `toride_harden_convert.rs`'s role as the single boundary
 //! between backend (here: the host `PATH`) and presentation. Each function
 //! handles errors gracefully: malformed input is skipped with a
 //! `tracing::warn!` and a placeholder, never propagated (the read-only
@@ -22,7 +22,7 @@ use crate::ui::screens::tools::{FindingEntry, ToolEntry};
 /// A tool may install under several names (`binaries`); the collector tries
 /// each in order and records the first that resolves on PATH (e.g. `fd`
 /// resolves to `fdfind` on Debian). `expected == true` marks a tool whose
-/// absence is a warning finding — toride cares about it being present.
+/// absence is a warning finding: toride cares about it being present.
 #[derive(Clone, Debug)]
 pub struct ToolSpec {
     /// Canonical name shown to the operator (e.g. `"fd"`).
@@ -42,7 +42,7 @@ pub struct ToolSpec {
 ///
 /// Categories mirror the spec's suggested grouping (Editors, Search/Files,
 /// Containers, Languages/Runtimes, Network, Shell/System). Every entry is
-/// `expected == true` — toride expects a fully-equipped host to carry all of
+/// `expected == true`: toride expects a fully-equipped host to carry all of
 /// these; a missing one surfaces as a `tools.missing.<name>` finding. A future
 /// "optional" tool can opt out by passing `expected: false` here.
 #[must_use]
@@ -102,7 +102,7 @@ pub fn catalogue() -> Vec<ToolSpec> {
             name,
             category,
             binaries: binaries.iter().map(|s| (*s).to_string()).collect(),
-            // Every catalogue entry is `expected == true` — toride expects a
+            // Every catalogue entry is `expected == true`: toride expects a
             // fully-equipped host to carry all of these, and a missing one
             // surfaces as a `tools.missing.<name>` finding. A future "optional"
             // tool can opt out by passing `expected: false` here.
@@ -118,7 +118,7 @@ pub fn catalogue() -> Vec<ToolSpec> {
 ///
 /// Mirrors the harden / fail2ban convert layer: malformed input (an empty
 /// name) is logged and skipped, never propagated. A tool that is installed but
-/// has no version is NOT a finding — presence is the source of truth.
+/// has no version is NOT a finding: presence is the source of truth.
 pub fn convert_findings(tools: &[ToolEntry]) -> Vec<FindingEntry> {
     tools
         .iter()
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn catalogue_aliases_include_known_distro_renames() {
-        // fd/fdfind, bat/batcat, eza/exa, make/gmake, gcc/cc — the catalogue
+        // fd/fdfind, bat/batcat, eza/exa, make/gmake, gcc/cc: the catalogue
         // must try the distro-renamed alias so a Debian/macOS host resolves.
         let c = catalogue();
         let by_name = |n: &str| c.iter().find(|s| s.name == n).unwrap();

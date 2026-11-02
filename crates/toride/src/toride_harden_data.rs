@@ -13,7 +13,7 @@
 //!
 //! Doctor findings are expensive (they shell out to `sysctl` for every checked
 //! parameter, plus `findmnt` for shm) and change slowly, so they are cached for
-//! 60s — exactly like the fail2ban / ufw-kit / SSH diagnostics cache.
+//! 60s: exactly like the fail2ban / ufw-kit / SSH diagnostics cache.
 //!
 //! ## macOS / construction
 //!
@@ -46,7 +46,7 @@ use crate::ui::screens::toride_harden::{FindingEntry, HardenProfileEntry, MountE
 pub struct HardenDataBundle {
     /// Whether the harden backend was reachable at all (`sysctl` binary
     /// present + construction succeeded). `false` when construction failed
-    /// entirely or the collection task panicked — the UI renders a degraded
+    /// entirely or the collection task panicked: the UI renders a degraded
     /// "unavailable" panel.
     pub available: bool,
     /// Available hardening profiles (always populated when collection ran,
@@ -67,7 +67,7 @@ pub struct HardenDataBundle {
     pub findings: Vec<FindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
     /// `available == false` (construction error or collection-task panic).
-    /// `None` otherwise — notably also `None` for a freshly-constructed empty
+    /// `None` otherwise: notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
     pub unavailable_reason: Option<String>,
@@ -86,11 +86,13 @@ pub struct HardenCollector {
     /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
     /// would reset the TTL clock with the SAME (already-cached) findings and
     /// the cache would never expire for the lifetime of the app.
-    rx: Option<oneshot::Receiver<(HardenDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<HardenDataBundle>, bool)>>,
     /// Cached doctor findings from the last collection.
     cached_findings: Option<Vec<FindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
+    cached_bundle: Option<std::sync::Arc<HardenDataBundle>>,
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
@@ -104,6 +106,8 @@ impl HardenCollector {
             rx: None,
             cached_findings: None,
             findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -123,6 +127,16 @@ impl HardenCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
+        if let (Some(bundle), Some(at)) = (&self.cached_bundle, self.bundle_fresh_at)
+            && at.elapsed() < FINDINGS_TTL
+        {
+            self.rx = Some(rx);
+            let bundle = std::sync::Arc::clone(bundle);
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
@@ -135,27 +149,27 @@ impl HardenCollector {
                 reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
             )]
             let (bundle, used_cache) = collect_real_harden(use_cache, cached_findings).await;
-            let _ = tx.send((bundle, used_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), used_cache));
         });
     }
 
     /// Poll for a completed collection result.
     ///
     /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed. On success the cached findings are
-    /// updated to the freshly-returned findings, but the freshness timestamp is
-    /// only advanced when the doctor was actually re-run (not on a cache-hit
-    /// poll) — otherwise the 60s TTL would be re-armed forever with the same
-    /// cached data on every 2s refresh.
-    pub async fn poll(&mut self) -> Option<HardenDataBundle> {
+    /// pending or if the collection failed. On a fresh run the cached findings
+    /// and bundle are stored and the freshness timestamps advance; a cache-hit
+    /// poll re-ships the cached `Arc` by refcount and touches nothing.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<HardenDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
+                if let Some((ref bundle, used_cache)) = result
+                    && !used_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)
@@ -165,10 +179,11 @@ impl HardenCollector {
     }
 
     /// Invalidate the findings cache so the next collection re-runs the doctor.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -184,8 +199,8 @@ impl Default for HardenCollector {
 ///
 /// All work runs on the blocking thread pool (the `DuctRunner` shells out
 /// synchronously). Doctor findings may be reused from the cache. On ANY error
-/// — construction failure (`HardenClient::system()` `Err(BinaryNotFound)` on
-/// macOS), doctor error, or a collection-task panic — returns
+///: construction failure (`HardenClient::system()` `Err(BinaryNotFound)` on
+/// macOS), doctor error, or a collection-task panic: returns
 /// [`empty_bundle_with_profiles`] / [`empty_bundle_with_reason`] with
 /// `available = false` but the profile selector STILL populated via
 /// [`HardenProfile::all_names`] so the desired state is described.
@@ -227,13 +242,13 @@ async fn collect_real_harden(
 
     // Profiles are computable WITHOUT the client (pure backend data), so build
     // them once outside the per-collection spawn. (They change only with the
-    // crate version, never at runtime — cheap to recompute.)
+    // crate version, never at runtime: cheap to recompute.)
     let profiles = toride_harden_convert::convert_profiles();
     // Resolve each profile name to its backend enum so the blocking closure can
     // probe `status()` once per profile. The desired-side (`params()`) is pure
     // data; only the live `current` column shells out. Building all profiles
     // here (rather than only index 0) is what makes the Left/Right selector
-    // actually swap the table — previously the selector advanced
+    // actually swap the table: previously the selector advanced
     // `selected_profile` but the table stayed pinned to Desktop.
     let profile_specs: Vec<(String, toride_harden::HardenSpec)> = profiles
         .iter()
@@ -270,7 +285,7 @@ async fn collect_real_harden(
         // Probe `status()` once per profile (each call shells out once per
         // param). The desired-side comes from the spec built above; only the
         // live `current` column is read here. A profile whose probe errors is
-        // recorded as an empty row list rather than aborting the whole bundle —
+        // recorded as an empty row list rather than aborting the whole bundle:
         // the operator can still cycle to the other profiles.
         let mut sysctl_rows_by_profile: BTreeMap<String, Vec<SysctlRow>> = BTreeMap::new();
         for (name, spec) in &profile_specs {
@@ -303,7 +318,7 @@ async fn collect_real_harden(
         // (the status() probe succeeded for at least one parameter), OR the
         // doctor produced any findings, OR any shm mounts were discovered. A
         // host where sysctl is missing yields empty tables + a doctor that
-        // errors per-key (each producing an `Important` finding) — that still
+        // errors per-key (each producing an `Important` finding): that still
         // counts as available so the operator SEES the findings. A host where
         // construction failed entirely (BinaryNotFound) never reaches this code
         // path; it returns the degraded bundle above.
@@ -353,7 +368,7 @@ fn empty_bundle() -> HardenDataBundle {
 
 /// Empty bundle carrying the reason collection failed. Used when construction
 /// failed (`HardenClient::system()` `Err(BinaryNotFound)`) or when a
-/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`): the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> HardenDataBundle {
     let mut b = empty_bundle();
@@ -434,7 +449,7 @@ mod tests {
         assert!(b.mounts.is_empty());
         assert!(b.findings.is_empty());
         // The profile selector is ALWAYS populated (even on an unreadable host)
-        // so the desired state is described — a regression to empty profiles
+        // so the desired state is described: a regression to empty profiles
         // would hide the entire baseline from the operator.
         assert!(
             !b.profiles.is_empty(),

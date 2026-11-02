@@ -185,3 +185,35 @@ Match exec \"test -f /tmp/x\"
     let host_pos = output.find("Host newhost").unwrap();
     assert!(host_pos > match_pos);
 }
+
+#[test]
+fn rename_host_multi_pattern_keeps_sibling_aliases() {
+    let mut ast = parse_ast(
+        "\
+Host primary alias1 alias2
+    HostName primary.com
+",
+    );
+    rename_host(&mut ast, "alias1", "renamed").unwrap();
+
+    let output = ast.to_string_lossless();
+    assert!(
+        output.contains("Host primary renamed alias2"),
+        "header must regenerate from the pattern list: {output}"
+    );
+    assert!(output.contains("HostName primary.com"));
+
+    match &ast.nodes[0] {
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(
+                b.patterns,
+                vec![
+                    "primary".to_owned(),
+                    "renamed".to_owned(),
+                    "alias2".to_owned()
+                ]
+            );
+        }
+        _ => panic!("expected HostBlock"),
+    }
+}

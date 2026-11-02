@@ -135,7 +135,9 @@ pub fn diff_firewall_configs(
 
 /// Compare two UFW status snapshots and return findings for differences.
 ///
-/// Useful for detecting changes between two points in time.
+/// Useful for detecting changes between two points in time. Membership is
+/// probed through hash sets of the raw rule text (one build, one probe per
+/// rule) instead of nested full-string scans; finding order is preserved.
 #[must_use]
 pub fn diff_status_findings(
     before_rules: &[crate::spec::ParsedRule],
@@ -143,10 +145,14 @@ pub fn diff_status_findings(
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
 
+    let before_raws: std::collections::HashSet<&str> =
+        before_rules.iter().map(|r| r.raw.as_str()).collect();
+    let after_raws: std::collections::HashSet<&str> =
+        after_rules.iter().map(|r| r.raw.as_str()).collect();
+
     // Find added rules
     for after_rule in after_rules {
-        let exists_before = before_rules.iter().any(|b| b.raw == after_rule.raw);
-        if !exists_before {
+        if !before_raws.contains(after_rule.raw.as_str()) {
             findings.push(Finding {
                 id: "diff:rule:added",
                 severity: Severity::Info,
@@ -159,8 +165,7 @@ pub fn diff_status_findings(
 
     // Find removed rules
     for before_rule in before_rules {
-        let exists_after = after_rules.iter().any(|a| a.raw == before_rule.raw);
-        if !exists_after {
+        if !after_raws.contains(before_rule.raw.as_str()) {
             findings.push(Finding {
                 id: "diff:rule:removed",
                 severity: Severity::Warning,

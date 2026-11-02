@@ -83,6 +83,22 @@ fn jail_name_rejects_shell_metacharacters() {
 }
 
 #[test]
+fn jail_name_rejects_leading_dash() {
+    // A leading dash would parse as an option in fail2ban-client subcommand argv.
+    for s in ["-h", "-delete", " --not-adjacent"] {
+        assert!(JailName::new(s).is_err(), "should reject: {s:?}");
+    }
+}
+
+#[test]
+fn jail_name_rejects_internal_whitespace() {
+    // Whitespace breaks INI section headers and argv boundaries.
+    for s in ["my jail", "sshd\tjail", "a b"] {
+        assert!(JailName::new(s).is_err(), "should reject: {s:?}");
+    }
+}
+
+#[test]
 fn jail_name_trims_whitespace() {
     let name = JailName::new("  sshd  ").unwrap();
     assert_eq!(name.as_str(), "sshd");
@@ -1530,11 +1546,11 @@ mod proptests {
     /// Strategy for a string of valid name characters, guaranteed non-empty
     /// and free of ".." sequences.
     fn valid_name_strategy() -> impl Strategy<Value = String> {
-        // Generate 1..=20 valid chars, then filter out ".."
+        // Generate 1..=20 valid chars, then filter out ".." and leading dashes
         prop::collection::vec(valid_name_char(), 1..=20)
-            .prop_filter("no consecutive dots", |chars| {
+            .prop_filter("no consecutive dots or leading dash", |chars| {
                 let s: String = chars.iter().collect();
-                !s.is_empty() && !s.contains("..") && s.trim() == s
+                !s.is_empty() && !s.contains("..") && s.trim() == s && !s.starts_with('-')
             })
             .prop_map(|chars| chars.into_iter().collect())
     }

@@ -82,10 +82,14 @@ pub fn parse_iptables_log(input: &str, prefix: &str) -> Result<Vec<IptablesLogEn
 }
 
 fn parse_single_iptables_line(line: &str, _prefix: &str) -> Option<IptablesLogEntry> {
-    let prefix = extract_field(line, "PREFIX=").unwrap_or_default();
+    let prefix = extract_field(line, "PREFIX=")
+        .unwrap_or_default()
+        .to_owned();
     let src = extract_field(line, "SRC=")?.parse().ok()?;
     let dst = extract_field(line, "DST=")?.parse().ok()?;
-    let proto = extract_field(line, "PROTO=").unwrap_or_else(|| "UNKNOWN".to_owned());
+    let proto = extract_field(line, "PROTO=")
+        .unwrap_or("UNKNOWN")
+        .to_owned();
     let spt = extract_field(line, "SPT=").and_then(|s| s.parse().ok());
     let dpt = extract_field(line, "DPT=").and_then(|s| s.parse().ok());
 
@@ -117,8 +121,9 @@ pub fn parse_conntrack_output(input: &str) -> Result<Vec<ConntrackEntry>> {
 
 fn parse_single_conntrack_line(line: &str) -> Option<ConntrackEntry> {
     // /proc/net/nf_conntrack leading tokens: proto-name, proto-number, ttl,
-    // then STATE — present only for tcp/sctp/dccp (kernel protoinfo-*
-    // containers); udp/icmp/gre carry none. docs.kernel.org/netlink/specs/conntrack.html
+    // then STATE (present only for tcp/sctp/dccp, the kernel protoinfo-*
+    // containers; udp/icmp/gre carry none).
+    // docs.kernel.org/netlink/specs/conntrack.html
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.is_empty() {
         return None;
@@ -136,8 +141,8 @@ fn parse_single_conntrack_line(line: &str) -> Option<ConntrackEntry> {
     let dst = extract_field(line, "dst=")?.parse().ok()?;
     let sport = extract_field(line, "sport=").and_then(|s| s.parse().ok());
     let dport = extract_field(line, "dport=").and_then(|s| s.parse().ok());
-    let bytes = extract_field(line, "bytes=").and_then(|s| s.parse().ok());
-    let packets = extract_field(line, "packets=").and_then(|s| s.parse().ok());
+    let bytes = sum_numeric_fields(line, "bytes=");
+    let packets = sum_numeric_fields(line, "packets=");
 
     Some(ConntrackEntry {
         proto,
@@ -149,6 +154,58 @@ fn parse_single_conntrack_line(line: &str) -> Option<ConntrackEntry> {
         bytes,
         packets,
     })
+}
+
+/// Sums every `key=<number>` occurrence on a conntrack line.
+///
+/// `conntrack -L -o extended` emits one counter pair per direction
+/// (original then reply); `None` means no occurrence carried a number.
+fn sum_numeric_fields(line: &str, key: &str) -> Option<u64> {
+    let mut total: u64 = 0;
+    let mut found = false;
+    let mut rest = line;
+    while let Some(start) = rest.find(key) {
+        let remainder = &rest[start + key.len()..];
+        let end = remainder.find(' ').unwrap_or(remainder.len());
+        if let Ok(value) = remainder[..end].parse::<u64>() {
+            total = total.saturating_add(value);
+            found = true;
+        }
+        rest = remainder;
+    }
+    found.then_some(total)
+}
+
+/// Sum byte and packet counters across a `conntrack -L -o extended` dump
+/// without materializing [`ConntrackEntry`] values.
+///
+/// Both direction counter pairs per line are summed. Returns `None` when no
+/// line carried counters (plain `-L` output, or kernel accounting off).
+///
+/// # Errors
+/// Does not return errors; unparseable lines are skipped.
+pub fn sum_conntrack_counters(input: &str) -> Option<(u64, u64)> {
+    let mut total_bytes: u64 = 0;
+    let mut total_packets: u64 = 0;
+    let mut found = false;
+    for line in input.lines() {
+        let known_proto = line
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| proto_number(first).is_some());
+        if !known_proto {
+            continue;
+        }
+        if let Some(bytes) = sum_numeric_fields(line, "bytes=") {
+            total_bytes = total_bytes.saturating_add(bytes);
+            found = true;
+        }
+        if let Some(packets) = sum_numeric_fields(line, "packets=") {
+            total_packets = total_packets.saturating_add(packets);
+            found = true;
+        }
+    }
+    found.then_some((total_bytes, total_packets))
 }
 
 /// Parse `ss -tunap` output into entries, mapping columns by header name;
@@ -228,6 +285,65 @@ fn parse_ss_header(header: &str) -> Option<SsColumns> {
     })
 }
 
+/// Parse `ss -tunap` output directly into [`ConnectionInfo`] values without
+/// materializing intermediate [`SsEntry`] rows.
+///
+/// Each row is walked by iterator position up to the peer column (the two
+/// queue columns and the process column are never read); rows whose local or
+/// peer address fails to parse are skipped, as in
+/// [`ss_entry_to_connection`].
+///
+/// # Errors
+/// Does not return errors; unparseable lines are skipped.
+pub fn parse_ss_connections(input: &str) -> Result<Vec<ConnectionInfo>> {
+    let mut lines = input.lines();
+    let columns = lines.next().and_then(parse_ss_header).unwrap_or_else(|| {
+        tracing::debug!("ss output had no recognizable header; using legacy fixed indices");
+        SsColumns::legacy()
+    });
+
+    let mut connections = Vec::new();
+    for line in lines {
+        let mut netid = None;
+        let mut state = None;
+        let mut local = None;
+        let mut peer = None;
+        for (idx, token) in line.split_whitespace().enumerate() {
+            match idx {
+                i if i == columns.netid => netid = Some(token),
+                i if i == columns.state => state = Some(token),
+                i if i == columns.local => local = Some(token),
+                i if i == columns.peer => {
+                    peer = Some(token);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let (Some(netid), Some(state), Some(local), Some(peer)) = (netid, state, local, peer)
+        else {
+            continue;
+        };
+        let Some((src, src_port)) = parse_addr_port(local) else {
+            continue;
+        };
+        let Some((dst, dst_port)) = parse_addr_port(peer) else {
+            continue;
+        };
+        connections.push(ConnectionInfo {
+            src,
+            src_port,
+            dst,
+            dst_port,
+            protocol: netid.to_lowercase(),
+            state: state.to_owned(),
+            bytes: None,
+            packets: None,
+        });
+    }
+    Ok(connections)
+}
+
 /// Convert an [`SsEntry`] into a [`ConnectionInfo`]; returns `None` if
 /// either address cannot be parsed.
 pub fn ss_entry_to_connection(entry: &SsEntry) -> Option<ConnectionInfo> {
@@ -279,11 +395,11 @@ fn has_state_token(proto_name: &str) -> bool {
     matches!(proto_name, "tcp" | "sctp" | "dccp")
 }
 
-fn extract_field(line: &str, key: &str) -> Option<String> {
+fn extract_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let start = line.find(key)?;
     let remainder = &line[start + key.len()..];
     let end = remainder.find(' ').unwrap_or(remainder.len());
-    Some(remainder[..end].to_owned())
+    Some(&remainder[..end])
 }
 
 #[cfg(test)]
@@ -318,7 +434,7 @@ mod tests {
 
     #[test]
     fn conntrack_state_is_fourth_token_not_protocol() {
-        let line = "tcp  6 431998 ESTABLISHED src=1.2.3.4 dst=5.6.7.8 sport=12345 dport=80 bytes=1234 packets=56";
+        let line = "tcp  6 431998 ESTABLISHED src=1.2.3.4 dst=5.6.7.8 sport=12345 dport=80 packets=56 bytes=1234 src=5.6.7.8 dst=1.2.3.4 sport=80 dport=12345 packets=78 bytes=9876 [ASSURED] mark=0 use=1";
         let entries = parse_conntrack_output(line).unwrap();
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
@@ -331,15 +447,16 @@ mod tests {
         assert_eq!(e.src.to_string(), "1.2.3.4");
         assert_eq!(e.dst.to_string(), "5.6.7.8");
         assert_eq!(e.dport, Some(80));
-        assert_eq!(e.bytes, Some(1234));
+        assert_eq!(e.bytes, Some(11_110), "both direction pairs must be summed");
+        assert_eq!(e.packets, Some(134));
     }
 
     #[test]
     fn conntrack_multiple_lines_with_various_states() {
         let input = "\
-tcp  6 100 ESTABLISHED src=10.0.0.1 dst=10.0.0.2 sport=40000 dport=22 bytes=100 packets=1
-tcp  6 50 TIME_WAIT src=10.0.0.3 dst=10.0.0.4 sport=40001 dport=443 bytes=200 packets=2
-udp  17 30 src=10.0.0.5 dst=10.0.0.6 sport=40002 dport=53 bytes=50 packets=1
+tcp  6 100 ESTABLISHED src=10.0.0.1 dst=10.0.0.2 sport=40000 dport=22 packets=1 bytes=100 src=10.0.0.2 dst=10.0.0.1 sport=22 dport=40000 packets=2 bytes=200
+tcp  6 50 TIME_WAIT src=10.0.0.3 dst=10.0.0.4 sport=40001 dport=443 packets=2 bytes=200 src=10.0.0.4 dst=10.0.0.3 sport=443 dport=40001 packets=4 bytes=400
+udp  17 30 src=10.0.0.5 dst=10.0.0.6 sport=40002 dport=53 packets=1 bytes=50 src=10.0.0.6 dst=10.0.0.5 sport=53 dport=40002 packets=1 bytes=90
 ";
         let entries = parse_conntrack_output(input).unwrap();
         assert_eq!(entries.len(), 3);
@@ -352,16 +469,17 @@ udp  17 30 src=10.0.0.5 dst=10.0.0.6 sport=40002 dport=53 bytes=50 packets=1
         );
         assert_eq!(entries[2].src.to_string(), "10.0.0.5");
         assert_eq!(entries[2].dport, Some(53));
+        assert_eq!(entries[2].bytes, Some(140));
     }
 
     #[test]
     fn conntrack_mixed_protocols_from_real_proc_sample() {
         let input = "\
-tcp      6 431998 ESTABLISHED src=10.0.2.2 dst=93.184.216.34 sport=58994 dport=443 bytes=2048 packets=12
-udp      17 30 src=192.168.1.10 dst=8.8.8.8 sport=54321 dport=53 bytes=128 packets=2
-sctp     132 210 ESTABLISHED src=10.0.0.7 dst=10.0.0.8 sport=3868 dport=3868 bytes=0 packets=0
-dccp     33 120 REQUEST src=10.0.0.9 dst=10.0.0.10 sport=5001 dport=5001 bytes=64 packets=1
-icmp     1 25 src=10.0.0.11 dst=10.0.0.12 bytes=56 packets=1
+tcp      6 431998 ESTABLISHED src=10.0.2.2 dst=93.184.216.34 sport=58994 dport=443 packets=12 bytes=2048 src=93.184.216.34 dst=10.0.2.2 sport=443 dport=58994 packets=15 bytes=16384 [ASSURED] mark=0 use=1
+udp      17 30 src=192.168.1.10 dst=8.8.8.8 sport=54321 dport=53 packets=2 bytes=128 src=8.8.8.8 dst=192.168.1.10 sport=53 dport=54321 packets=2 bytes=512
+sctp     132 210 ESTABLISHED src=10.0.0.7 dst=10.0.0.8 sport=3868 dport=3868 packets=0 bytes=0 src=10.0.0.8 dst=10.0.0.7 sport=3868 dport=3868 packets=0 bytes=0
+dccp     33 120 REQUEST src=10.0.0.9 dst=10.0.0.10 sport=5001 dport=5001 packets=1 bytes=64 src=10.0.0.10 dst=10.0.0.9 sport=5001 dport=5001 packets=1 bytes=72
+icmp     1 25 src=10.0.0.11 dst=10.0.0.12 type=8 code=0 id=42396 packets=1 bytes=56 src=10.0.0.12 dst=10.0.0.11 type=0 code=0 id=42396 packets=1 bytes=56
 ";
         let entries = parse_conntrack_output(input).unwrap();
         assert_eq!(entries.len(), 5, "all five lines must parse");
@@ -369,6 +487,7 @@ icmp     1 25 src=10.0.0.11 dst=10.0.0.12 bytes=56 packets=1
         assert_eq!(entries[0].proto, 6);
         assert_eq!(entries[0].state.as_deref(), Some("ESTABLISHED"));
         assert_eq!(entries[0].dport, Some(443));
+        assert_eq!(entries[0].bytes, Some(18432), "both directions summed");
 
         assert_eq!(entries[1].proto, 17);
         assert_eq!(entries[1].state, None, "udp must have no state token");
@@ -383,6 +502,16 @@ icmp     1 25 src=10.0.0.11 dst=10.0.0.12 bytes=56 packets=1
 
         assert_eq!(entries[4].proto, 1);
         assert_eq!(entries[4].state, None, "icmp must have no state token");
+    }
+
+    #[test]
+    fn conntrack_line_without_counters_reports_none() {
+        let line =
+            "udp  17 30 src=10.0.0.5 dst=10.0.0.6 sport=40002 dport=53 [UNREPLIED] mark=0 use=1";
+        let entries = parse_conntrack_output(line).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].bytes, None);
+        assert_eq!(entries[0].packets, None);
     }
 
     #[test]
@@ -468,6 +597,50 @@ icmp     1 25 src=10.0.0.11 dst=10.0.0.12 bytes=56 packets=1
             ss_entry_to_connection(&entries[0]).is_none(),
             "a wildcard peer is a listening socket, not a connection"
         );
+    }
+
+    #[test]
+    fn fused_connection_parse_matches_entry_parse() {
+        let input = format!(
+            "{SS_HEADER}\n\
+             tcp ESTAB 0 0 10.0.0.5:44332 93.184.216.34:443 users:((\"app\",pid=42,fd=6))\n\
+             udp ESTAB 0 0 152.53.38.170:59701 46.38.252.230:53 users:((\"dig\",pid=99,fd=5))\n\
+             tcp LISTEN 0 5 127.0.0.1:39099 0.0.0.0:* users:((\"python3\",pid=7,fd=3))\n\
+             tcp6 ESTAB 0 0 [::1]:54321 [2001:db8::2]:443\n"
+        );
+        let via_entries: Vec<_> = parse_ss_output(&input)
+            .unwrap()
+            .iter()
+            .filter_map(ss_entry_to_connection)
+            .collect();
+        let fused = parse_ss_connections(&input).unwrap();
+        assert_eq!(
+            fused.len(),
+            via_entries.len(),
+            "wildcard peers skipped alike"
+        );
+        for (fused, entry) in fused.iter().zip(via_entries.iter()) {
+            assert_eq!(fused.src, entry.src);
+            assert_eq!(fused.src_port, entry.src_port);
+            assert_eq!(fused.dst, entry.dst);
+            assert_eq!(fused.dst_port, entry.dst_port);
+            assert_eq!(fused.protocol, entry.protocol);
+            assert_eq!(fused.state, entry.state);
+        }
+    }
+
+    #[test]
+    fn sum_conntrack_counters_sums_both_directions() {
+        let input = "\
+tcp  6 431998 ESTABLISHED src=10.0.0.1 dst=10.0.0.2 sport=40000 dport=22 packets=10 bytes=100 src=10.0.0.2 dst=10.0.0.1 sport=22 dport=40000 packets=20 bytes=200\n\
+udp  17 30 src=10.0.0.5 dst=10.0.0.6 sport=40002 dport=53 packets=1 bytes=50 src=10.0.0.6 dst=10.0.0.5 sport=53 dport=40002 packets=1 bytes=60\n";
+        assert_eq!(sum_conntrack_counters(input), Some((410, 32)));
+        assert_eq!(
+            sum_conntrack_counters("udp 17 30 src=1.2.3.4 dst=5.6.7.8 [UNREPLIED]"),
+            None,
+            "no counters carried"
+        );
+        assert_eq!(sum_conntrack_counters(""), None);
     }
 
     #[test]

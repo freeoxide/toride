@@ -101,7 +101,7 @@ pub fn parse_config(content: &str) -> Result<MonitorSpec> {
 
 /// Render a [`MonitorSpec`] into a TOML config string.
 ///
-/// Serializes the full spec — thresholds, logging rules, and alert targets —
+/// Serializes the full spec (thresholds, logging rules, and alert targets)
 /// so that saving and reloading round-trips losslessly.
 ///
 /// # Errors

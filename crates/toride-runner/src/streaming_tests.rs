@@ -234,7 +234,7 @@ mod tests {
         let runner = TokioRunner;
         let timeout = Duration::from_millis(100);
 
-        // Use a single `sleep` process — no bash subprocess tree.
+        // Use a single `sleep` process; no bash subprocess tree.
         let spec = CommandSpec::new("sleep").arg("10").timeout(timeout);
         let mut sink = CollectingSink::default();
 
@@ -254,7 +254,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Use pgrep to check if a `sleep 10` from our test is still alive.
-        // This is best-effort on CI — skip if pgrep isn't available.
+        // This is best-effort on CI; skip if pgrep isn't available.
         if let Ok(check) = std::process::Command::new("pgrep")
             .args(["-f", "sleep 10"])
             .output()
@@ -263,7 +263,7 @@ mod tests {
             if check.status.success() {
                 // There might be leftover sleep 10 from other tests; just verify
                 // the streaming runner returned the correct error type.
-                // The kill-on-timeout code path was exercised — that's what matters.
+                // The kill-on-timeout code path was exercised, which is what matters.
             }
         }
         // If we got here, the timeout error was returned correctly.
@@ -396,7 +396,7 @@ mod tests {
     }
 
     /// A redact(true) spec must never deliver secret flag values in the
-    /// Started event — the streaming path redacts args at emission.
+    /// Started event: the streaming path redacts args at emission.
     #[tokio::test]
     async fn streaming_started_event_redacts_secret_args() {
         let runner = TokioRunner;
@@ -567,7 +567,7 @@ mod tests {
 
     /// A single newline-free stream that writes far more than the cap. Bounded
     /// reads must trip the cap and fail fast rather than buffering the whole
-    /// line — this proves the streaming path uses bounded reads, not `read_line`.
+    /// line; this proves the streaming path uses bounded reads, not `read_line`.
     #[tokio::test]
     async fn streaming_output_limit_bounds_memory_on_newline_free_stream() {
         let runner = TokioRunner;

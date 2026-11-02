@@ -554,12 +554,6 @@ impl SshTab for KeysTab {
             || self.passphrase_test_result.is_some()
     }
 
-    fn close_modal(&mut self) {
-        self.detail_modal.close();
-        self.detail_key_idx = None;
-        self.action_modal = None;
-    }
-
     fn drain_ops(&mut self) -> Vec<SshOp> {
         std::mem::take(&mut self.pending_ops)
     }
@@ -795,7 +789,7 @@ impl KeysTab {
                         if key.has_cert {
                             "✓ attached"
                         } else {
-                            "— none"
+                            "- none"
                         },
                         Style::new().fg(if key.has_cert {
                             p.accent2

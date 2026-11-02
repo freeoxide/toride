@@ -1,9 +1,5 @@
 //! Error types for the toride-mise crate.
 
-// ---------------------------------------------------------------------------
-// FailureKind — classified from stderr text patterns
-// ---------------------------------------------------------------------------
-
 /// Broad category of failure extracted from mise stderr output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FailureKind {
@@ -43,7 +39,7 @@ pub enum FailureKind {
 pub fn classify_stderr(stderr: &str) -> FailureKind {
     let lower = stderr.to_ascii_lowercase();
 
-    // Version-specific "not found" — must come before the generic checks.
+    // Version-specific "not found": must come before the generic checks.
     if (lower.contains("version") && lower.contains("not found"))
         || lower.contains("version not found")
         || lower.contains("version not available")
@@ -51,7 +47,7 @@ pub fn classify_stderr(stderr: &str) -> FailureKind {
         return FailureKind::VersionUnknown;
     }
 
-    // Binary / command not found — also ordered before generic tool checks.
+    // Binary / command not found: also ordered before generic tool checks.
     if (lower.contains("binary") && lower.contains("not found"))
         || lower.contains("command not found")
     {
@@ -94,13 +90,13 @@ pub fn classify_stderr(stderr: &str) -> FailureKind {
         return FailureKind::ConfigInvalid;
     }
 
-    // Lockfile issues — checked before the generic "not found" catch-all so
+    // Lockfile issues: checked before the generic "not found" catch-all so
     // that "lockfile not found" maps to LockfileMissing, not ToolUnknown.
     if lower.contains("lockfile") {
         return FailureKind::LockfileMissing;
     }
 
-    // Tool not found / unknown tool — broad catch-all, must come last.
+    // Tool not found / unknown tool: broad catch-all, must come last.
     if lower.contains("not found") || lower.contains("unknown tool") {
         return FailureKind::ToolUnknown;
     }
@@ -207,7 +203,7 @@ pub enum MiseError {
     /// The downloaded `mise` tarball failed its sha256 integrity check.
     ///
     /// Bootstrap fails closed when the published checksum does not match the
-    /// bytes actually downloaded — the binary is never extracted.
+    /// bytes actually downloaded: the binary is never extracted.
     #[error("checksum mismatch for mise tarball: expected sha256 {expected}, got {actual}")]
     ChecksumMismatch {
         /// Expected sha256 (lowercase hex) sourced from the release's
@@ -329,10 +325,6 @@ pub enum ConfigError {
     },
 }
 
-// ---------------------------------------------------------------------------
-// From implementations
-// ---------------------------------------------------------------------------
-
 impl From<std::io::Error> for MiseError {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
@@ -353,7 +345,7 @@ impl From<toride_runner::Error> for MiseError {
     fn from(err: toride_runner::Error) -> Self {
         // Delegate to the canonical mapping in command::mapping so there is
         // a single source of truth for toride_runner::Error -> MiseError.
-        crate::command::mapping::map_runner_error(err, "")
+        crate::command::mapping::map_runner_error(err)
     }
 }
 
@@ -368,10 +360,6 @@ impl From<MiseError> for ToolInstallError {
         Self::MiseFailed(Box::new(err))
     }
 }
-
-// ---------------------------------------------------------------------------
-// MiseError methods
-// ---------------------------------------------------------------------------
 
 impl MiseError {
     /// Return the classified [`FailureKind`] for this error.
@@ -391,10 +379,6 @@ impl MiseError {
         self.command_failure_kind().unwrap_or(FailureKind::Unknown)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests for classify_stderr and FailureKind
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod failure_kind_tests {

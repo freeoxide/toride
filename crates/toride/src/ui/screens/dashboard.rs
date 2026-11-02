@@ -1,15 +1,17 @@
 //! The dashboard home screen: sidebar navigation over the read-only content
 //! sections plus live system status panels.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
+use ratatui::buffer::Buffer;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Widget},
 };
 
 use crate::action::Action;
@@ -71,11 +73,9 @@ struct StatCardInput {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 struct ManagedServiceCard {
     icon: &'static str,
     name: &'static str,
-    section: Section,
     overview: OverviewSnapshot,
 }
 
@@ -206,7 +206,7 @@ impl_content_panel!(
 /// read-only content sections.
 pub struct DashboardScreen {
     data: DashboardData,
-    status: Option<TorideStatus>,
+    status: Option<std::sync::Arc<TorideStatus>>,
     sidebar: Sidebar,
     active: usize,
     focus: FocusManager<ShellFocus>,
@@ -252,6 +252,115 @@ pub struct DashboardScreen {
     templates_content: TemplatesContent,
     tools_content: ToolsContent,
     setup_content: SetupContent,
+    managed_findings: usize,
+    managed_available_count: usize,
+    managed_dirty: bool,
+    delivered: DeliveredBundles,
+    modules_cache: PanelBufCache,
+    stat_cache: PanelBufCache,
+    updates_cache: PanelBufCache,
+    activity_cache: PanelBufCache,
+    input_version: u64,
+    modules_version: u64,
+    status_version: u64,
+}
+
+/// A cached offscreen render of one dashboard panel.
+///
+/// The dashboard overview panels are time-invariant between data deliveries
+/// and input events: their pixels depend only on the collected bundles, the
+/// status snapshot, the focus/selection state, and the panel rect. On an
+/// unchanged key the frame blits the cached cells instead of re-running the
+/// widget renders, which is what the 250ms shimmer cadence draws between
+/// collector deliveries.
+struct PanelBufCache {
+    key: Option<(u64, u64, Rect)>,
+    buf: Buffer,
+    hitboxes: Vec<Rect>,
+}
+
+impl Default for PanelBufCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Render a `&self` dashboard panel through `cache`: a key hit blits the
+/// cached cells; a miss seeds a scratch buffer from the live frame (keeping
+/// the gradient background in the gaps), renders, stores, and blits.
+fn render_side_panel(
+    cache: &mut PanelBufCache,
+    frame: &mut Frame,
+    area: Rect,
+    key: (u64, u64, Rect),
+    render: impl FnOnce(&mut Buffer),
+) {
+    if cache.key == Some(key) {
+        blit_area(frame.buffer_mut(), &cache.buf, area);
+        return;
+    }
+    if cache.buf.area != area {
+        cache.buf = Buffer::empty(area);
+    }
+    blit_area(&mut cache.buf, &*frame.buffer_mut(), area);
+    render(&mut cache.buf);
+    cache.key = Some(key);
+    blit_area(frame.buffer_mut(), &cache.buf, area);
+}
+
+impl PanelBufCache {
+    fn new() -> Self {
+        Self {
+            key: None,
+            buf: Buffer::empty(Rect::default()),
+            hitboxes: Vec::new(),
+        }
+    }
+}
+
+/// Copy the cells of `area` from `src` to `dst`; both buffers index by the
+/// same absolute coordinates, so this is a row-wise cell clone.
+fn blit_area(dst: &mut Buffer, src: &Buffer, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let w = usize::from(area.width);
+    for row in 0..usize::from(area.height) {
+        let y = area.y + u16::try_from(row).expect("row index fits the area height");
+        let src_base = src.index_of(area.x, y);
+        let dst_base = dst.index_of(area.x, y);
+        dst.content[dst_base..dst_base + w].clone_from_slice(&src.content[src_base..src_base + w]);
+    }
+}
+
+/// Last-delivered bundle per TTL collector.
+///
+/// A `Arc::ptr_eq` match against an incoming bundle means its collector
+/// re-shipped the cache: the panel state is already current, so the setter
+/// body is skipped and no redraw is forced.
+#[derive(Default)]
+struct DeliveredBundles {
+    fail2ban: Option<Arc<crate::fail2ban_data::Fail2banDataBundle>>,
+    firewall: Option<Arc<crate::ufw_kit_data::FirewallDataBundle>>,
+    harden: Option<Arc<crate::toride_harden_data::HardenDataBundle>>,
+    wireguard: Option<Arc<crate::toride_wireguard_data::WireguardDataBundle>>,
+    updates: Option<Arc<crate::toride_updates_data::UpdatesDataBundle>>,
+    users: Option<Arc<crate::toride_users_data::UsersDataBundle>>,
+    audit: Option<Arc<crate::toride_audit_data::AuditDataBundle>>,
+    proxy: Option<Arc<crate::toride_proxy_data::ProxyDataBundle>>,
+    cloud: Option<Arc<crate::toride_cloud_data::CloudDataBundle>>,
+    tailscale: Option<Arc<crate::toride_tailscale_data::TailscaleDataBundle>>,
+    monitor: Option<Arc<crate::toride_monitor_data::MonitorDataBundle>>,
+    mise: Option<Arc<crate::toride_mise_data::MiseDataBundle>>,
+    logs: Option<Arc<crate::logs_data::LogsDataBundle>>,
+    tools: Option<Arc<crate::tools_data::ToolsDataBundle>>,
+    setup: Option<Arc<crate::setup_data::SetupDataBundle>>,
+    backup: Option<Arc<crate::toride_backup_data::BackupDataBundle>>,
+}
+
+/// Whether `next` differs from the last-delivered bundle of its collector.
+fn bundle_changed<T>(last: Option<&Arc<T>>, next: &Arc<T>) -> bool {
+    !last.is_some_and(|p| Arc::ptr_eq(p, next))
 }
 
 impl Default for DashboardScreen {
@@ -332,12 +441,23 @@ impl DashboardScreen {
             tools_content: ToolsContent::new(),
             setup_content: SetupContent::new(),
             toride_tailscale_content: TailscaleContent::new(),
+            managed_findings: 0,
+            managed_available_count: 0,
+            managed_dirty: true,
+            delivered: DeliveredBundles::default(),
+            modules_cache: PanelBufCache::new(),
+            stat_cache: PanelBufCache::new(),
+            updates_cache: PanelBufCache::new(),
+            activity_cache: PanelBufCache::new(),
+            input_version: 0,
+            modules_version: 0,
+            status_version: 0,
         }
     }
 
     /// Store the latest collected system status and compute live throughput rates.
     #[expect(clippy::cast_precision_loss, reason = "display-only")]
-    pub fn set_status(&mut self, status: TorideStatus) {
+    pub fn set_status(&mut self, status: std::sync::Arc<TorideStatus>) {
         if let Some(prev) = &self.status {
             let dt = (status.collected_at)
                 .duration_since(prev.collected_at)
@@ -359,7 +479,8 @@ impl DashboardScreen {
             self.disk_write_rate = Some(dw.max(0.0) / dt);
         }
         self.status = Some(status);
-        self.refresh_sidebar_badges();
+        self.status_version = self.status_version.wrapping_add(1);
+        self.refresh_managed_services();
     }
 
     fn refresh_sidebar_badges(&mut self) {
@@ -438,18 +559,48 @@ impl DashboardScreen {
         }
     }
 
+    /// Mark the managed-services derived state (module list, findings and
+    /// availability counts) stale; every data setter calls this, and the
+    /// next render recomputes it once instead of per frame.
+    fn refresh_managed_services(&mut self) {
+        self.managed_dirty = true;
+    }
+
+    /// Record that a section bundle changed: the managed-services state is
+    /// stale and the cached modules-panel render is no longer valid.
+    fn managed_content_changed(&mut self) {
+        self.refresh_managed_services();
+        self.modules_version = self.modules_version.wrapping_add(1);
+    }
+
+    /// Recompute the managed-services derived state when a setter marked it
+    /// stale; a no-op on unchanged data so steady-state frames borrow.
+    fn recompute_managed_if_dirty(&mut self) {
+        if !self.managed_dirty {
+            return;
+        }
+        self.managed_dirty = false;
+        let cards = self.managed_services();
+        self.managed_findings = cards.iter().map(|c| c.overview.findings_count).sum();
+        self.managed_available_count = cards
+            .iter()
+            .filter(|c| c.overview.status_label != "offline")
+            .count();
+        if self.status.is_some() {
+            self.modules_view = cards.iter().map(ManagedServiceCard::to_module).collect();
+        }
+    }
+
     #[must_use]
     fn managed_services(&self) -> Vec<ManagedServiceCard> {
         fn snap<O: SectionOverview>(
             icon: &'static str,
             name: &'static str,
-            section: Section,
             o: &O,
         ) -> ManagedServiceCard {
             ManagedServiceCard {
                 icon,
                 name,
-                section,
                 overview: OverviewSnapshot {
                     status_label: o.status_label(),
                     detail: o.detail(),
@@ -459,44 +610,19 @@ impl DashboardScreen {
         }
 
         vec![
-            snap("✦", "fail2ban", Section::Fail2ban, &self.fail2ban_content),
-            snap(
-                "▦",
-                "ufw firewall",
-                Section::Firewall,
-                &self.ufw_kit_content,
-            ),
-            snap("⚙", "harden", Section::Harden, &self.toride_harden_content),
-            snap(
-                "◇",
-                "wireguard",
-                Section::WireGuard,
-                &self.toride_wireguard_content,
-            ),
-            snap(
-                "↻",
-                "updates",
-                Section::Updates,
-                &self.toride_updates_content,
-            ),
-            snap("◉", "users", Section::Users, &self.toride_users_content),
-            snap("⚖", "audit", Section::Audit, &self.toride_audit_content),
-            snap(
-                "◎",
-                "monitor",
-                Section::Monitor,
-                &self.toride_monitor_content,
-            ),
-            snap("▣", "backup", Section::Backup, &self.toride_backup_content),
-            snap("⊕", "proxy", Section::Proxy, &self.toride_proxy_content),
-            snap("☁", "cloud", Section::Cloud, &self.toride_cloud_content),
-            snap(
-                "⛓",
-                "tailscale",
-                Section::Tailscale,
-                &self.toride_tailscale_content,
-            ),
-            snap("Ⓜ", "mise", Section::Mise, &self.toride_mise_content),
+            snap("✦", "fail2ban", &self.fail2ban_content),
+            snap("▦", "ufw firewall", &self.ufw_kit_content),
+            snap("⛨", "harden", &self.toride_harden_content),
+            snap("◇", "wireguard", &self.toride_wireguard_content),
+            snap("↻", "updates", &self.toride_updates_content),
+            snap("◉", "users", &self.toride_users_content),
+            snap("⚖", "audit", &self.toride_audit_content),
+            snap("◎", "monitor", &self.toride_monitor_content),
+            snap("▤", "backup", &self.toride_backup_content),
+            snap("⊕", "proxy", &self.toride_proxy_content),
+            snap("☁", "cloud", &self.toride_cloud_content),
+            snap("⛓", "tailscale", &self.toride_tailscale_content),
+            snap("Ⓜ", "mise", &self.toride_mise_content),
         ]
     }
 
@@ -526,6 +652,7 @@ impl DashboardScreen {
     #[cfg(test)]
     pub(crate) fn fail2ban_set_available_for_test(&mut self, available: bool) {
         self.fail2ban_content.set_available(available);
+        self.refresh_managed_services();
     }
 
     #[cfg(test)]
@@ -544,11 +671,13 @@ impl DashboardScreen {
             pending_total,
             None,
         );
+        self.refresh_managed_services();
     }
 
     #[cfg(test)]
     pub(crate) fn ufw_kit_set_available_for_test(&mut self, available: bool) {
         self.ufw_kit_content.set_available(available);
+        self.refresh_managed_services();
     }
 
     /// Refresh the header clock string.
@@ -603,219 +732,368 @@ impl DashboardScreen {
         self.ssh_content.set_loading(loading, count);
     }
 
-    /// Push a collected fail2ban bundle into the fail2ban panel.
-    pub fn set_fail2ban_data(&mut self, b: crate::fail2ban_data::Fail2banDataBundle) {
+    /// Push a collected fail2ban bundle into the fail2ban panel. Returns
+    /// `false` when the bundle is the same `Arc` the panel already holds
+    /// (a TTL cache re-ship); every panel state is then left untouched.
+    pub fn set_fail2ban_data(&mut self, b: &Arc<crate::fail2ban_data::Fail2banDataBundle>) -> bool {
+        if !bundle_changed(self.delivered.fail2ban.as_ref(), b) {
+            return false;
+        }
+        self.delivered.fail2ban = Some(Arc::clone(b));
         self.fail2ban_content.set_available(b.available);
         self.fail2ban_content
-            .set_unavailable_reason(b.unavailable_reason);
+            .set_unavailable_reason(b.unavailable_reason.clone());
         self.fail2ban_content
-            .set_service(b.service_active, b.service_enabled, b.version);
-        self.fail2ban_content.set_jails(b.jails);
-        self.fail2ban_content.set_bans(b.bans);
-        self.fail2ban_content.set_findings(b.findings);
+            .set_service(b.service_active, b.service_enabled, b.version.clone());
+        self.fail2ban_content.set_jails(b.jails.clone());
+        self.fail2ban_content.set_bans(b.bans.clone());
+        self.fail2ban_content.set_findings(b.findings.clone());
         self.fail2ban_content
             .set_firewall(b.fw_nft_available, b.fw_iptables_available);
         self.refresh_sidebar_badges();
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected UFW bundle into the firewall panel.
-    pub fn set_ufw_kit_data(&mut self, b: crate::ufw_kit_data::FirewallDataBundle) {
+    /// Push a collected UFW bundle into the firewall panel. Returns `false`
+    /// on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_ufw_kit_data(&mut self, b: &Arc<crate::ufw_kit_data::FirewallDataBundle>) -> bool {
+        if !bundle_changed(self.delivered.firewall.as_ref(), b) {
+            return false;
+        }
+        self.delivered.firewall = Some(Arc::clone(b));
         self.ufw_kit_content.set_available(b.available);
         self.ufw_kit_content
-            .set_unavailable_reason(b.unavailable_reason);
+            .set_unavailable_reason(b.unavailable_reason.clone());
         self.ufw_kit_content.set_status(
             b.active,
-            b.default_incoming,
-            b.default_outgoing,
-            b.default_routed,
-            b.logging_level,
-            b.version,
+            b.default_incoming.clone(),
+            b.default_outgoing.clone(),
+            b.default_routed.clone(),
+            b.logging_level.clone(),
+            b.version.clone(),
         );
-        self.ufw_kit_content.set_rules(b.rules);
-        self.ufw_kit_content.set_findings(b.findings);
+        self.ufw_kit_content.set_rules(b.rules.clone());
+        self.ufw_kit_content.set_findings(b.findings.clone());
         self.refresh_sidebar_badges();
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected harden bundle into the harden panel.
-    pub fn set_toride_harden_data(&mut self, b: crate::toride_harden_data::HardenDataBundle) {
+    /// Push a collected harden bundle into the harden panel. Returns `false`
+    /// on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_toride_harden_data(
+        &mut self,
+        b: &Arc<crate::toride_harden_data::HardenDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.harden.as_ref(), b) {
+            return false;
+        }
+        self.delivered.harden = Some(Arc::clone(b));
         self.toride_harden_content.set_available(b.available);
         self.toride_harden_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.toride_harden_content.set_profiles(b.profiles);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.toride_harden_content.set_profiles(b.profiles.clone());
         self.toride_harden_content
-            .set_sysctl_rows_by_profile(b.sysctl_rows_by_profile);
-        self.toride_harden_content.set_mounts(b.mounts);
-        self.toride_harden_content.set_findings(b.findings);
+            .set_sysctl_rows_by_profile(b.sysctl_rows_by_profile.clone());
+        self.toride_harden_content.set_mounts(b.mounts.clone());
+        self.toride_harden_content.set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
     /// Push a collected `WireGuard` bundle into the `WireGuard` panel.
+    /// Returns `false` on a TTL cache re-ship of an already-held bundle
+    /// (see [`set_fail2ban_data`]).
     pub fn set_toride_wireguard_data(
         &mut self,
-        b: crate::toride_wireguard_data::WireguardDataBundle,
-    ) {
+        b: &Arc<crate::toride_wireguard_data::WireguardDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.wireguard.as_ref(), b) {
+            return false;
+        }
+        self.delivered.wireguard = Some(Arc::clone(b));
         self.toride_wireguard_content.set_available(b.available);
         self.toride_wireguard_content
-            .set_unavailable_reason(b.unavailable_reason);
+            .set_unavailable_reason(b.unavailable_reason.clone());
         self.toride_wireguard_content.set_env(
             b.wg_binary_found,
             b.wg_quick_binary_found,
             b.config_dir_exists,
         );
-        self.toride_wireguard_content.set_interfaces(b.interfaces);
-        self.toride_wireguard_content.set_peers(b.peers);
-        self.toride_wireguard_content.set_services(b.services);
-        self.toride_wireguard_content.set_findings(b.findings);
+        self.toride_wireguard_content
+            .set_interfaces(b.interfaces.clone());
+        self.toride_wireguard_content.set_peers(b.peers.clone());
+        self.toride_wireguard_content
+            .set_services(b.services.clone());
+        self.toride_wireguard_content
+            .set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected updates bundle into the updates panel.
-    pub fn set_toride_updates_data(&mut self, b: crate::toride_updates_data::UpdatesDataBundle) {
+    /// Push a collected updates bundle into the updates panel. Returns
+    /// `false` on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_toride_updates_data(
+        &mut self,
+        b: &Arc<crate::toride_updates_data::UpdatesDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.updates.as_ref(), b) {
+            return false;
+        }
+        self.delivered.updates = Some(Arc::clone(b));
         self.toride_updates_content.set_available(b.available);
         self.toride_updates_content
-            .set_unavailable_reason(b.unavailable_reason);
+            .set_unavailable_reason(b.unavailable_reason.clone());
         self.toride_updates_content.set_status(
-            b.package_manager,
+            b.package_manager.clone(),
             b.auto_updates_enabled,
             b.service_active,
             b.pending_security,
             b.pending_total,
-            b.last_run,
+            b.last_run.clone(),
         );
-        self.toride_updates_content.set_schedule(b.schedule);
+        self.toride_updates_content.set_schedule(b.schedule.clone());
         self.toride_updates_content.set_timer_active(b.timer_active);
-        self.toride_updates_content.set_findings(b.findings);
+        self.toride_updates_content.set_findings(b.findings.clone());
         self.refresh_sidebar_badges();
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected users bundle into the users panel.
-    pub fn set_toride_users_data(&mut self, b: crate::toride_users_data::UsersDataBundle) {
+    /// Push a collected users bundle into the users panel. Returns `false`
+    /// on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_toride_users_data(
+        &mut self,
+        b: &Arc<crate::toride_users_data::UsersDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.users.as_ref(), b) {
+            return false;
+        }
+        self.delivered.users = Some(Arc::clone(b));
         self.toride_users_content.set_available(b.available);
         self.toride_users_content
-            .set_unavailable_reason(b.unavailable_reason);
+            .set_unavailable_reason(b.unavailable_reason.clone());
         self.toride_users_content.set_read_flags(
             b.passwd_read,
             b.shadow_read,
             b.sudoers_read,
             b.pam_read,
         );
-        self.toride_users_content.set_users(b.users);
-        self.toride_users_content.set_groups(b.groups);
-        self.toride_users_content.set_sudoers(b.sudoers);
-        self.toride_users_content.set_findings(b.findings);
+        self.toride_users_content.set_users(b.users.clone());
+        self.toride_users_content.set_groups(b.groups.clone());
+        self.toride_users_content.set_sudoers(b.sudoers.clone());
+        self.toride_users_content.set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected audit bundle into the audit panel.
-    pub fn set_toride_audit_data(&mut self, b: crate::toride_audit_data::AuditDataBundle) {
+    /// Push a collected audit bundle into the audit panel. Returns `false`
+    /// on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_toride_audit_data(
+        &mut self,
+        b: &Arc<crate::toride_audit_data::AuditDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.audit.as_ref(), b) {
+            return false;
+        }
+        self.delivered.audit = Some(Arc::clone(b));
         self.toride_audit_content.set_available(b.available);
         self.toride_audit_content
-            .set_unavailable_reason(b.unavailable_reason);
+            .set_unavailable_reason(b.unavailable_reason.clone());
         self.toride_audit_content
-            .set_auditd(b.auditd_running, b.auditd_status);
-        self.toride_audit_content.set_integrity(b.integrity);
-        self.toride_audit_content.set_rules(b.rules);
-        self.toride_audit_content.set_log_sources(b.log_sources);
+            .set_auditd(b.auditd_running, b.auditd_status.clone());
+        self.toride_audit_content.set_integrity(b.integrity.clone());
+        self.toride_audit_content.set_rules(b.rules.clone());
+        self.toride_audit_content
+            .set_log_sources(b.log_sources.clone());
         self.toride_audit_content
             .set_log_backends(b.rsyslog_available, b.journald_available);
-        self.toride_audit_content.set_findings(b.findings);
+        self.toride_audit_content.set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected monitor bundle into the monitor panel.
-    pub fn set_toride_monitor_data(&mut self, b: crate::toride_monitor_data::MonitorDataBundle) {
+    /// Push a collected monitor bundle into the monitor panel. Returns
+    /// `false` on a cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_toride_monitor_data(
+        &mut self,
+        b: &Arc<crate::toride_monitor_data::MonitorDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.monitor.as_ref(), b) {
+            return false;
+        }
+        self.delivered.monitor = Some(Arc::clone(b));
         self.toride_monitor_content.set_available(b.available);
         self.toride_monitor_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.toride_monitor_content.set_summary(b.summary);
-        self.toride_monitor_content.set_connections(b.connections);
-        self.toride_monitor_content.set_ports(b.ports);
-        self.toride_monitor_content.set_conntrack(b.conntrack);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.toride_monitor_content.set_summary(b.summary.clone());
+        self.toride_monitor_content
+            .set_connections(b.connections.clone());
+        self.toride_monitor_content.set_ports(b.ports.clone());
+        self.toride_monitor_content
+            .set_conntrack(b.conntrack.clone());
         self.toride_monitor_content
             .set_output_rule_count(b.output_rule_count);
-        self.toride_monitor_content.set_anomalies(b.anomalies);
-        self.toride_monitor_content.set_findings(b.findings);
+        self.toride_monitor_content
+            .set_anomalies(b.anomalies.clone());
+        self.toride_monitor_content.set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected backup bundle into the backup panel.
-    pub fn set_toride_backup_data(&mut self, b: crate::toride_backup_data::BackupDataBundle) {
+    /// Push a collected backup bundle into the backup panel. Returns
+    /// `false` on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_toride_backup_data(
+        &mut self,
+        b: &Arc<crate::toride_backup_data::BackupDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.backup.as_ref(), b) {
+            return false;
+        }
+        self.delivered.backup = Some(Arc::clone(b));
         self.toride_backup_content.set_available(b.available);
         self.toride_backup_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.toride_backup_content
-            .set_status(b.dry_run, b.config_dir, b.data_dir, b.schedule_dir);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.toride_backup_content.set_status(
+            b.dry_run,
+            b.config_dir.clone(),
+            b.data_dir.clone(),
+            b.schedule_dir.clone(),
+        );
         self.toride_backup_content
             .set_binaries(b.restic_available, b.borg_available);
         self.toride_backup_content.set_schedule(
             b.schedule_installed,
             b.timer_active,
-            b.schedule_note,
+            b.schedule_note.clone(),
         );
-        self.toride_backup_content.set_findings(b.findings);
+        self.toride_backup_content.set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected proxy bundle into the proxy panel.
-    pub fn set_toride_proxy_data(&mut self, b: crate::toride_proxy_data::ProxyDataBundle) {
+    /// Push a collected proxy bundle into the proxy panel. Returns `false`
+    /// on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_toride_proxy_data(
+        &mut self,
+        b: &Arc<crate::toride_proxy_data::ProxyDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.proxy.as_ref(), b) {
+            return false;
+        }
+        self.delivered.proxy = Some(Arc::clone(b));
         self.toride_proxy_content.set_available(b.available);
         self.toride_proxy_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.toride_proxy_content.set_status(b.backend, b.status);
-        self.toride_proxy_content.set_server_blocks(b.server_blocks);
+            .set_unavailable_reason(b.unavailable_reason.clone());
         self.toride_proxy_content
-            .set_certificates(b.certificates, b.has_expired_certs);
+            .set_status(b.backend.clone(), b.status.clone());
+        self.toride_proxy_content
+            .set_server_blocks(b.server_blocks.clone());
+        self.toride_proxy_content
+            .set_certificates(b.certificates.clone(), b.has_expired_certs);
         self.toride_proxy_content.set_waf(b.waf_available);
-        self.toride_proxy_content.set_findings(b.findings);
+        self.toride_proxy_content.set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected cloud bundle into the cloud panel.
-    pub fn set_toride_cloud_data(&mut self, b: crate::toride_cloud_data::CloudDataBundle) {
+    /// Push a collected cloud bundle into the cloud panel. Returns `false`
+    /// on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_toride_cloud_data(
+        &mut self,
+        b: &Arc<crate::toride_cloud_data::CloudDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.cloud.as_ref(), b) {
+            return false;
+        }
+        self.delivered.cloud = Some(Arc::clone(b));
         self.toride_cloud_content.set_available(b.available);
         self.toride_cloud_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.toride_cloud_content.set_provider(b.provider);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.toride_cloud_content.set_provider(b.provider.clone());
+        self.toride_cloud_content.set_agent(
+            b.agent_running,
+            b.agent_enabled,
+            b.agent_service_name.clone(),
+        );
         self.toride_cloud_content
-            .set_agent(b.agent_running, b.agent_enabled, b.agent_service_name);
-        self.toride_cloud_content
-            .set_security_groups(b.security_groups);
-        self.toride_cloud_content.set_findings(b.findings);
+            .set_security_groups(b.security_groups.clone());
+        self.toride_cloud_content.set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected tailscale bundle into the tailscale panel.
+    /// Push a collected tailscale bundle into the tailscale panel. Returns
+    /// `false` on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
     pub fn set_toride_tailscale_data(
         &mut self,
-        b: crate::toride_tailscale_data::TailscaleDataBundle,
-    ) {
+        b: &Arc<crate::toride_tailscale_data::TailscaleDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.tailscale.as_ref(), b) {
+            return false;
+        }
+        self.delivered.tailscale = Some(Arc::clone(b));
         self.toride_tailscale_content.set_available(b.available);
         self.toride_tailscale_content
-            .set_unavailable_reason(b.unavailable_reason);
+            .set_unavailable_reason(b.unavailable_reason.clone());
         self.toride_tailscale_content.set_status(
             b.status.connected,
-            b.status.node_name,
-            b.status.tailnet,
-            b.status.ip_addresses,
-            b.status.exit_node,
+            b.status.node_name.clone(),
+            b.status.tailnet.clone(),
+            b.status.ip_addresses.clone(),
+            b.status.exit_node.clone(),
             b.status.dns_enabled,
         );
-        self.toride_tailscale_content.set_peers(b.peers);
+        self.toride_tailscale_content.set_peers(b.peers.clone());
         self.toride_tailscale_content.set_netcheck(
             b.netcheck.connectivity,
-            b.netcheck.derp_region,
-            b.netcheck.derp_latency,
+            b.netcheck.derp_region.clone(),
+            b.netcheck.derp_latency.clone(),
             b.netcheck.udp,
             b.netcheck.ipv6,
             b.netcheck.hairpin,
-            b.netcheck.port_mapping,
+            b.netcheck.port_mapping.clone(),
         );
-        self.toride_tailscale_content.set_dns(b.dns);
-        self.toride_tailscale_content.set_findings(b.findings);
+        self.toride_tailscale_content.set_dns(b.dns.clone());
+        self.toride_tailscale_content
+            .set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
-    /// Push a collected mise bundle into the mise panel.
-    pub fn set_toride_mise_data(&mut self, b: crate::toride_mise_data::MiseDataBundle) {
+    /// Push a collected mise bundle into the mise panel. Returns `false` on
+    /// a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_toride_mise_data(
+        &mut self,
+        b: &Arc<crate::toride_mise_data::MiseDataBundle>,
+    ) -> bool {
+        if !bundle_changed(self.delivered.mise.as_ref(), b) {
+            return false;
+        }
+        self.delivered.mise = Some(Arc::clone(b));
         self.toride_mise_content.set_available(b.available);
         self.toride_mise_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.toride_mise_content.set_version(b.version);
-        self.toride_mise_content.set_tools(b.tools);
-        self.toride_mise_content.set_outdated(b.outdated);
-        self.toride_mise_content.set_config_files(b.config_files);
-        self.toride_mise_content.set_findings(b.findings);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.toride_mise_content.set_version(b.version.clone());
+        self.toride_mise_content.set_tools(b.tools.clone());
+        self.toride_mise_content.set_outdated(b.outdated.clone());
+        self.toride_mise_content
+            .set_config_files(b.config_files.clone());
+        self.toride_mise_content.set_findings(b.findings.clone());
+        self.managed_content_changed();
+        true
     }
 
     /// Push a collected about bundle into the about panel.
@@ -828,12 +1106,19 @@ impl DashboardScreen {
         self.about_content.set_runtime(b.runtime);
     }
 
-    /// Push a collected logs bundle into the logs panel.
-    pub fn set_logs_data(&mut self, b: crate::logs_data::LogsDataBundle) {
+    /// Push a collected logs bundle into the logs panel. Returns `false`
+    /// on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_logs_data(&mut self, b: &Arc<crate::logs_data::LogsDataBundle>) -> bool {
+        if !bundle_changed(self.delivered.logs.as_ref(), b) {
+            return false;
+        }
+        self.delivered.logs = Some(Arc::clone(b));
         self.logs_content.set_available(b.available);
         self.logs_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.logs_content.set_logs(b.sources);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.logs_content.set_logs(b.sources.clone());
+        true
     }
 
     /// Push a collected settings bundle into the settings panel.
@@ -848,6 +1133,7 @@ impl DashboardScreen {
     /// Set the theme the settings panel reports as active.
     pub fn set_active_theme(&mut self, theme: crate::ui::theme::Theme) {
         self.settings_content.set_active_theme(theme);
+        self.input_version = self.input_version.wrapping_add(1);
     }
 
     /// Push a collected templates bundle into the templates panel.
@@ -859,28 +1145,57 @@ impl DashboardScreen {
         self.templates_content.set_findings(b.findings);
     }
 
-    /// Push a collected tools bundle into the tools panel.
-    pub fn set_tools_data(&mut self, b: crate::tools_data::ToolsDataBundle) {
+    /// Push a collected tools bundle into the tools panel. Returns `false`
+    /// on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_tools_data(&mut self, b: &Arc<crate::tools_data::ToolsDataBundle>) -> bool {
+        if !bundle_changed(self.delivered.tools.as_ref(), b) {
+            return false;
+        }
+        self.delivered.tools = Some(Arc::clone(b));
         self.tools_content.set_available(b.available);
         self.tools_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.tools_content.set_tools(b.tools);
-        self.tools_content.set_findings(b.findings);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.tools_content.set_tools(b.tools.clone());
+        self.tools_content.set_findings(b.findings.clone());
         self.refresh_sidebar_badges();
+        true
     }
 
-    /// Push a collected setup bundle into the setup panel.
-    pub fn set_setup_offers(&mut self, b: crate::setup_data::SetupDataBundle) {
+    /// Push a collected setup bundle into the setup panel. Returns `false`
+    /// on a TTL cache re-ship of an already-held bundle (see
+    /// [`set_fail2ban_data`]).
+    pub fn set_setup_offers(&mut self, b: &Arc<crate::setup_data::SetupDataBundle>) -> bool {
+        if !bundle_changed(self.delivered.setup.as_ref(), b) {
+            return false;
+        }
+        self.delivered.setup = Some(Arc::clone(b));
         self.setup_content.set_available(b.available);
         self.setup_content
-            .set_unavailable_reason(b.unavailable_reason);
-        self.setup_content.set_offers(b.offers);
-        self.setup_content.set_findings(b.findings);
+            .set_unavailable_reason(b.unavailable_reason.clone());
+        self.setup_content.set_offers(b.offers.clone());
+        self.setup_content.set_findings(b.findings.clone());
         self.refresh_sidebar_badges();
+        true
     }
 
     fn active_section(&self) -> Section {
         self.data.sidebar[self.active].section
+    }
+
+    /// The currently selected sidebar section (drives collector gating in the
+    /// app's refresh tick).
+    #[must_use]
+    pub fn current_section(&self) -> Section {
+        self.active_section()
+    }
+
+    /// Select `section` in the sidebar; a no-op when it is not listed.
+    pub fn select_section(&mut self, section: Section) {
+        self.input_version = self.input_version.wrapping_add(1);
+        if let Some(idx) = self.data.sidebar.iter().position(|i| i.section == section) {
+            self.active = idx;
+        }
     }
 
     fn active_panel_mut(&mut self) -> Option<&mut dyn ContentPanel> {
@@ -973,7 +1288,7 @@ impl DashboardScreen {
     }
 
     fn gauge_at(&self, col: u16, row: u16) -> Option<GaugeKind> {
-        let kinds = [
+        const KINDS: [GaugeKind; 4] = [
             GaugeKind::Cpu,
             GaugeKind::Ram,
             GaugeKind::Disk,
@@ -981,7 +1296,7 @@ impl DashboardScreen {
         ];
         for (i, rect) in self.gauge_hitboxes.iter().enumerate() {
             if col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom() {
-                return Some(kinds[i]);
+                return Some(KINDS[i]);
             }
         }
         None
@@ -1056,7 +1371,7 @@ impl DashboardScreen {
         if let Some(panel) = self.active_panel_mut() {
             panel.view(frame, content, p);
         } else {
-            self.render_dashboard_content(frame, content, p);
+            self.render_dashboard_content(frame, content, p, skip_bg);
         }
 
         if let Some(idx) = self.open_module_idx
@@ -1143,7 +1458,13 @@ impl DashboardScreen {
         }
     }
 
-    fn render_dashboard_content(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_dashboard_content(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        p: Palette,
+        skip_bg: bool,
+    ) {
         let [stat_area, _gap, body_area] = Layout::vertical([
             Constraint::Length(STAT_ROW_H),
             Constraint::Length(1),
@@ -1151,34 +1472,39 @@ impl DashboardScreen {
         ])
         .areas(pad(area));
 
+        self.recompute_managed_if_dirty();
         let live = self.status.is_some();
-        let managed = self.managed_services();
-        let findings = managed
-            .iter()
-            .map(|c| c.overview.findings_count)
-            .sum::<usize>()
-            + self.status.as_ref().map_or(0, |s| s.warnings.len());
-        let managed_available = managed
-            .iter()
-            .filter(|c| c.overview.status_label != "offline")
-            .count();
+        let findings = self.managed_findings + self.status.as_ref().map_or(0, |s| s.warnings.len());
+        let managed_available = self.managed_available_count;
         let pending_total = if self.toride_updates_content.available() {
             Some(self.toride_updates_content.pending_total())
         } else {
             None
         };
 
-        self.render_stat_cards(
-            frame,
+        let input_v = self.input_version;
+        let modules_v = self.modules_version;
+        let status_v = self.status_version;
+        let stat_key = (
+            input_v ^ modules_v.rotate_left(11) ^ status_v.rotate_left(23),
+            0,
             stat_area,
-            p,
-            &StatCardInput {
-                live,
-                managed_available,
-                findings,
-                pending_total,
-            },
         );
+        let stat_input = StatCardInput {
+            live,
+            managed_available,
+            findings,
+            pending_total,
+        };
+        if skip_bg {
+            self.render_uncached_content(frame, area, p, &stat_input);
+            return;
+        }
+        let mut stat_cache = std::mem::take(&mut self.stat_cache);
+        render_side_panel(&mut stat_cache, frame, stat_area, stat_key, |buf| {
+            self.render_stat_cards(buf, stat_area, p, &stat_input);
+        });
+        self.stat_cache = stat_cache;
 
         let single_col = body_area.width < SINGLE_COL_W;
         if single_col {
@@ -1189,24 +1515,122 @@ impl DashboardScreen {
             ])
             .spacing(1)
             .areas(body_area);
-            self.render_modules_panel(frame, mods, p, 1, live, &managed);
-            self.render_updates_panel(frame, ups, p);
-            self.render_activity_panel(frame, acts, p);
+            self.render_modules_panel(frame, mods, p, 1, live);
+            let side_key = input_v ^ status_v.rotate_left(29);
+            let mut cache = std::mem::take(&mut self.updates_cache);
+            render_side_panel(&mut cache, frame, ups, (side_key, 0, ups), |buf| {
+                self.render_updates_panel_into(buf, ups, p);
+            });
+            self.updates_cache = cache;
+            let mut cache = std::mem::take(&mut self.activity_cache);
+            render_side_panel(&mut cache, frame, acts, (side_key, 0, acts), |buf| {
+                self.render_activity_panel_into(buf, acts, p);
+            });
+            self.activity_cache = cache;
         } else {
             let [left, right] = Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
                 .spacing(1)
                 .areas(body_area);
-            self.render_modules_panel(frame, left, p, 2, live, &managed);
+            self.render_modules_panel(frame, left, p, 2, live);
 
             let [ups, acts] = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
                 .spacing(1)
                 .areas(right);
-            self.render_updates_panel(frame, ups, p);
-            self.render_activity_panel(frame, acts, p);
+            let side_key = input_v ^ status_v.rotate_left(29);
+            let mut cache = std::mem::take(&mut self.updates_cache);
+            render_side_panel(&mut cache, frame, ups, (side_key, 0, ups), |buf| {
+                self.render_updates_panel_into(buf, ups, p);
+            });
+            self.updates_cache = cache;
+            let mut cache = std::mem::take(&mut self.activity_cache);
+            render_side_panel(&mut cache, frame, acts, (side_key, 0, acts), |buf| {
+                self.render_activity_panel_into(buf, acts, p);
+            });
+            self.activity_cache = cache;
         }
     }
 
-    fn render_stat_cards(&self, frame: &mut Frame, area: Rect, p: Palette, input: &StatCardInput) {
+    /// Render the dashboard panels straight into the frame, bypassing the
+    /// offscreen caches: used for foreground-only frames whose gaps carry no
+    /// gradient background, so the cached gap cells stay valid.
+    fn render_uncached_content(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        p: Palette,
+        stat_input: &StatCardInput,
+    ) {
+        let [stat_area, _gap, body_area] = Layout::vertical([
+            Constraint::Length(STAT_ROW_H),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(pad(area));
+        self.render_stat_cards(frame.buffer_mut(), stat_area, p, stat_input);
+
+        let live = stat_input.live;
+        let single_col = body_area.width < SINGLE_COL_W;
+        let (mods, ups, acts, cols) = if single_col {
+            let [mods, ups, acts] = Layout::vertical([
+                Constraint::Fill(2),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+            ])
+            .spacing(1)
+            .areas(body_area);
+            (mods, ups, acts, 1)
+        } else {
+            let [left, right] = Layout::horizontal([Constraint::Fill(2), Constraint::Fill(1)])
+                .spacing(1)
+                .areas(body_area);
+            let [ups, acts] = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
+                .spacing(1)
+                .areas(right);
+            (left, ups, acts, 2)
+        };
+        let buf = frame.buffer_mut();
+        self.render_modules_panel_into(buf, mods, p, cols, live);
+        self.render_updates_panel_into(buf, ups, p);
+        self.render_activity_panel_into(buf, acts, p);
+    }
+
+    /// Render the modules panel through the offscreen cache. The key covers
+    /// input state (selection, scroll, focus), managed-bundle content, the
+    /// live flag, column count, and the rect; a hit blits the cached cells
+    /// and restores the module hitboxes, a miss renders into a scratch buffer
+    /// seeded from the live frame so the gaps keep the gradient background.
+    fn render_modules_panel(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        p: Palette,
+        cols: u16,
+        live: bool,
+    ) {
+        let key = (
+            self.input_version ^ self.modules_version.rotate_left(17),
+            (u64::from(cols) << 1) | u64::from(live),
+            area,
+        );
+        if self.modules_cache.key == Some(key) {
+            self.module_hitboxes
+                .clone_from(&self.modules_cache.hitboxes);
+            blit_area(frame.buffer_mut(), &self.modules_cache.buf, area);
+            return;
+        }
+        let mut cache = std::mem::take(&mut self.modules_cache);
+        if cache.buf.area != area {
+            cache.buf = Buffer::empty(area);
+        }
+        blit_area(&mut cache.buf, &*frame.buffer_mut(), area);
+        self.render_modules_panel_into(&mut cache.buf, area, p, cols, live);
+        cache.key = Some(key);
+        cache.hitboxes.clone_from(&self.module_hitboxes);
+        blit_area(frame.buffer_mut(), &cache.buf, area);
+        self.modules_cache = cache;
+    }
+
+    fn render_stat_cards(&self, buf: &mut Buffer, area: Rect, p: Palette, input: &StatCardInput) {
         let StatCardInput {
             live,
             managed_available,
@@ -1250,7 +1674,7 @@ impl DashboardScreen {
                 Style::new().fg(p.text_muted),
             )),
         ];
-        Card::new(managed_card).render(frame, a, p);
+        Card::new(managed_card).render(buf, a, p);
 
         let updates_num = pending_total.unwrap_or(0);
         let updates_color = if updates_num == 0 { p.ok } else { p.warn };
@@ -1265,7 +1689,7 @@ impl DashboardScreen {
                 Style::new().fg(p.text_muted),
             )),
         ];
-        Card::new(updates_card).render(frame, b, p);
+        Card::new(updates_card).render(buf, b, p);
 
         let findings_color = if findings == 0 {
             p.ok
@@ -1282,9 +1706,9 @@ impl DashboardScreen {
             Line::raw(""),
             Line::from(Span::styled("FINDINGS", Style::new().fg(p.text_muted))),
         ];
-        Card::new(findings_card).render(frame, c, p);
+        Card::new(findings_card).render(buf, c, p);
 
-        Card::new(self.system_card_lines(p)).render(frame, d, p);
+        Card::new(self.system_card_lines(p)).render(buf, d, p);
     }
 
     fn system_card_lines(&self, p: Palette) -> Vec<Line<'static>> {
@@ -1386,14 +1810,13 @@ impl DashboardScreen {
         ]
     }
 
-    fn render_modules_panel(
+    fn render_modules_panel_into(
         &mut self,
-        frame: &mut Frame,
+        buf: &mut Buffer,
         area: Rect,
         p: Palette,
         cols: u16,
         live: bool,
-        managed: &[ManagedServiceCard],
     ) {
         let focused = self.focus.is_focused(&ShellFocus::Content)
             && self.active_section() == Section::Dashboard
@@ -1403,18 +1826,16 @@ impl DashboardScreen {
         } else {
             " MODULES "
         };
-        let inner = render_titled_panel(frame, area, p, title, p.accent, focused);
+        let inner = render_titled_panel(buf, area, p, title, p.accent, focused);
         if inner.height == 0 {
             return;
         }
 
-        let modules: Vec<Module> = if live {
-            managed.iter().map(ManagedServiceCard::to_module).collect()
-        } else {
-            self.data.modules.clone()
-        };
-        self.modules_view.clone_from(&modules);
-        let modules: &[Module] = &modules;
+        if !live {
+            self.modules_view.clear();
+            self.modules_view.extend(self.data.modules.iter().cloned());
+        }
+        let modules: &[Module] = &self.modules_view;
 
         let rows = inner.height / MODULE_CARD_H;
         if rows == 0 {
@@ -1458,7 +1879,7 @@ impl DashboardScreen {
                 }
                 let m = &modules[idx];
                 let card_focused = focused && idx == self.module_sel;
-                render_module_card(frame, *cell, p, m, card_focused);
+                render_module_card(buf, *cell, p, m, card_focused);
                 while self.module_hitboxes.len() <= idx {
                     self.module_hitboxes.push(Rect::default());
                 }
@@ -1467,27 +1888,25 @@ impl DashboardScreen {
         }
     }
 
-    fn render_updates_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_updates_panel_into(&self, buf: &mut Buffer, area: Rect, p: Palette) {
         let focused = self.focus.is_focused(&ShellFocus::Content)
             && self.active_section() == Section::Dashboard
             && self.dashboard_focus == DashboardFocus::Updates;
 
         if let Some(s) = &self.status {
-            let inner =
-                render_titled_panel(frame, area, p, " STORAGE & NETWORK ", p.accent, focused);
-            self.render_storage_network(frame, inner, p, s);
+            let inner = render_titled_panel(buf, area, p, " STORAGE & NETWORK ", p.accent, focused);
+            self.render_storage_network(buf, inner, p, s);
         } else {
-            let inner =
-                render_titled_panel(frame, area, p, " STORAGE & NETWORK ", p.accent, focused);
+            let inner = render_titled_panel(buf, area, p, " STORAGE & NETWORK ", p.accent, focused);
             let line = Line::from(Span::styled(
                 "  collecting system status…",
                 Style::new().fg(p.text_muted),
             ));
-            frame.render_widget(Paragraph::new(line), inner);
+            Paragraph::new(line).render(inner, buf);
         }
     }
 
-    fn render_storage_network(&self, frame: &mut Frame, inner: Rect, p: Palette, s: &TorideStatus) {
+    fn render_storage_network(&self, buf: &mut Buffer, inner: Rect, p: Palette, s: &TorideStatus) {
         let mut lines: Vec<(String, Option<String>, ratatui::style::Color)> = Vec::new();
 
         let mut disks: Vec<&crate::status::DiskStatus> = s
@@ -1527,7 +1946,7 @@ impl DashboardScreen {
                 "  no storage/network data",
                 Style::new().fg(p.text_muted),
             ));
-            frame.render_widget(Paragraph::new(line), inner);
+            Paragraph::new(line).render(inner, buf);
             return;
         }
 
@@ -1542,29 +1961,29 @@ impl DashboardScreen {
                     Style::new().fg(p.text_dim),
                 ),
             ]);
-            frame.render_widget(Paragraph::new(left), row);
+            Paragraph::new(left).render(row, buf);
             if let Some(v) = value {
                 let right = Line::from(Span::styled(v, Style::new().fg(color)));
-                frame.render_widget(Paragraph::new(right).right_aligned(), row);
+                Paragraph::new(right).right_aligned().render(row, buf);
             }
         }
     }
 
-    fn render_activity_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_activity_panel_into(&self, buf: &mut Buffer, area: Rect, p: Palette) {
         let focused = self.focus.is_focused(&ShellFocus::Content)
             && self.active_section() == Section::Dashboard
             && self.dashboard_focus == DashboardFocus::Activity;
 
         if let Some(s) = &self.status {
-            let inner = render_titled_panel(frame, area, p, " TOP PROCESSES ", p.accent3, focused);
-            render_top_processes(frame, inner, p, s);
+            let inner = render_titled_panel(buf, area, p, " TOP PROCESSES ", p.accent3, focused);
+            render_top_processes(buf, inner, p, s);
         } else {
-            let inner = render_titled_panel(frame, area, p, " TOP PROCESSES ", p.accent3, focused);
+            let inner = render_titled_panel(buf, area, p, " TOP PROCESSES ", p.accent3, focused);
             let line = Line::from(Span::styled(
                 "  collecting system status…",
                 Style::new().fg(p.text_muted),
             ));
-            frame.render_widget(Paragraph::new(line), inner);
+            Paragraph::new(line).render(inner, buf);
         }
     }
 
@@ -1625,6 +2044,7 @@ impl DashboardScreen {
 
 impl AppScreen for DashboardScreen {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
+        self.input_version = self.input_version.wrapping_add(1);
         if self.module_modal.is_visible() {
             match self.module_modal.handle_key(code) {
                 ModalEvent::Closed | ModalEvent::Button(_) => {
@@ -1700,6 +2120,9 @@ impl AppScreen for DashboardScreen {
         use crossterm::event::MouseButton;
 
         let motion = matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_));
+        if !motion {
+            self.input_version = self.input_version.wrapping_add(1);
+        }
 
         let mut hover_changed = false;
         if motion {
@@ -1788,6 +2211,7 @@ impl AppScreen for DashboardScreen {
 
     fn invalidate_cache(&mut self) {
         self.base.invalidate();
+        self.input_version = self.input_version.wrapping_add(1);
     }
 
     fn needs_animation(&self) -> bool {
@@ -1838,9 +2262,9 @@ fn fmt_rate(bytes_per_sec: f64) -> String {
     }
 }
 
-fn render_module_card(frame: &mut Frame, area: Rect, p: Palette, m: &Module, focused: bool) {
+fn render_module_card(buf: &mut Buffer, area: Rect, p: Palette, m: &Module, focused: bool) {
     let border = if focused { p.border_hi } else { p.border };
-    let inner = render_panel(frame, area, None, p.text, border, p.panel);
+    let inner = render_panel(buf, area, None, p.text, border, p.panel);
     if inner.height == 0 {
         return;
     }
@@ -1850,39 +2274,37 @@ fn render_module_card(frame: &mut Frame, area: Rect, p: Palette, m: &Module, foc
         Span::styled(format!("{} ", m.icon), Style::new().fg(p.accent2)),
         Span::styled(m.name.clone(), Style::new().fg(p.text).bold()),
     ]);
-    frame.render_widget(Paragraph::new(name_line), title_row);
+    Paragraph::new(name_line).render(title_row, buf);
 
     let status_line = Line::from(Span::styled(
         format!("{} {}", m.status.glyph(), m.status.label()),
         Style::new().fg(m.status.color(p)),
     ));
-    frame.render_widget(Paragraph::new(status_line).right_aligned(), title_row);
+    Paragraph::new(status_line)
+        .right_aligned()
+        .render(title_row, buf);
 
     let w = inner.width as usize;
     if inner.height >= 2 {
         let summary = truncate_str(&m.summary, w);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                summary,
-                Style::new().fg(p.text_dim),
-            ))),
-            Rect::new(inner.x, inner.y + 1, inner.width, 1),
-        );
+        Paragraph::new(Line::from(Span::styled(
+            summary,
+            Style::new().fg(p.text_dim),
+        )))
+        .render(Rect::new(inner.x, inner.y + 1, inner.width, 1), buf);
     }
     if inner.height >= 3 {
         let detail = truncate_str(&m.detail, w);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                detail,
-                Style::new().fg(p.text_muted),
-            ))),
-            Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
-        );
+        Paragraph::new(Line::from(Span::styled(
+            detail,
+            Style::new().fg(p.text_muted),
+        )))
+        .render(Rect::new(inner.x, inner.bottom() - 1, inner.width, 1), buf);
     }
 }
 
 #[allow(clippy::cast_possible_truncation)]
-fn render_top_processes(frame: &mut Frame, inner: Rect, p: Palette, s: &TorideStatus) {
+fn render_top_processes(buf: &mut Buffer, inner: Rect, p: Palette, s: &TorideStatus) {
     let mut procs: Vec<&crate::status::ProcessStatus> =
         s.system.processes.processes.iter().collect();
     procs.sort_by(|a, b| {
@@ -1899,7 +2321,7 @@ fn render_top_processes(frame: &mut Frame, inner: Rect, p: Palette, s: &TorideSt
             "  no process data",
             Style::new().fg(p.text_muted),
         ));
-        frame.render_widget(Paragraph::new(line), inner);
+        Paragraph::new(line).render(inner, buf);
         return;
     }
 
@@ -1926,7 +2348,7 @@ fn render_top_processes(frame: &mut Frame, inner: Rect, p: Palette, s: &TorideSt
                 Style::new().fg(cpu_color),
             ),
         ]);
-        frame.render_widget(Paragraph::new(left), row);
+        Paragraph::new(left).render(row, buf);
     }
 }
 
@@ -2222,6 +2644,158 @@ fn current_clock() -> String {
 mod tests {
     use super::*;
 
+    /// Cells of `backend` below the header row: the header carries the logo
+    /// shimmer and disk/net spinners, which advance with wall-clock time, so
+    /// frame parity is asserted on every row below it.
+    fn cells_below_header(backend: &ratatui::backend::TestBackend) -> String {
+        let buf = backend.buffer();
+        let area = buf.area;
+        let mut out = String::new();
+        for y in crate::ui::shell::HEADER_H..area.height {
+            for x in 0..area.width {
+                let cell = &buf[(x, y)];
+                out.push_str(cell.symbol());
+                out.push('|');
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn parity_status(hostname: &str) -> std::sync::Arc<TorideStatus> {
+        std::sync::Arc::new(crate::status_collector::tests::test_status(hostname))
+    }
+
+    fn parity_screen(hostname: &str) -> DashboardScreen {
+        let mut screen = DashboardScreen::new();
+        screen.set_active_theme(crate::ui::theme::Theme::Charm);
+        screen.set_status(parity_status(hostname));
+        screen
+    }
+
+    #[test]
+    fn render_parity_hit_frame_matches_miss_frame() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let palette = crate::ui::theme::CHARM;
+
+        let mut screen = parity_screen("parity-host");
+        let mut miss = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        miss.draw(|f| screen.view(f, palette)).unwrap();
+        assert!(
+            screen.modules_cache.key.is_some() && screen.stat_cache.key.is_some(),
+            "the first render must arm the panel caches"
+        );
+
+        let mut hit = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        hit.draw(|f| screen.view(f, palette)).unwrap();
+        assert_eq!(
+            cells_below_header(hit.backend()),
+            cells_below_header(miss.backend()),
+            "a cache-hit frame must be pixel-identical to the miss frame"
+        );
+
+        let mut hit_again = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        hit_again.draw(|f| screen.view(f, palette)).unwrap();
+        assert_eq!(
+            cells_below_header(hit_again.backend()),
+            cells_below_header(miss.backend()),
+            "repeated cache-hit frames must stay pixel-identical"
+        );
+    }
+
+    #[test]
+    fn render_parity_after_focus_change_matches_fresh_screen() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let palette = crate::ui::theme::CHARM;
+
+        let mut fresh = parity_screen("parity-focus");
+        fresh.handle_key(KeyCode::Tab);
+        let mut fresh_t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        fresh_t.draw(|f| fresh.view(f, palette)).unwrap();
+
+        let mut primed = parity_screen("parity-focus");
+        let mut prime_terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        prime_terminal.draw(|f| primed.view(f, palette)).unwrap();
+        primed.handle_key(KeyCode::Tab);
+        let mut after = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        after.draw(|f| primed.view(f, palette)).unwrap();
+
+        assert_eq!(
+            cells_below_header(after.backend()),
+            cells_below_header(fresh_t.backend()),
+            "an input-driven frame off the primed caches must equal a fresh render"
+        );
+    }
+
+    #[test]
+    fn render_parity_after_status_change_matches_fresh_screen() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let palette = crate::ui::theme::CHARM;
+
+        let mut fresh = parity_screen("parity-old");
+        fresh.set_status(parity_status("parity-new"));
+        let mut fresh_t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        fresh_t.draw(|f| fresh.view(f, palette)).unwrap();
+
+        let mut primed = parity_screen("parity-old");
+        let mut prime_terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        prime_terminal.draw(|f| primed.view(f, palette)).unwrap();
+        primed.set_status(parity_status("parity-new"));
+        let mut after = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        after.draw(|f| primed.view(f, palette)).unwrap();
+
+        assert_eq!(
+            cells_below_header(after.backend()),
+            cells_below_header(fresh_t.backend()),
+            "a status delivery must invalidate exactly the status-keyed panels"
+        );
+    }
+
+    #[test]
+    fn render_parity_after_content_change_matches_fresh_screen() {
+        use ratatui::{Terminal, backend::TestBackend};
+        use std::sync::Arc;
+        let palette = crate::ui::theme::CHARM;
+        let jail_bundle = |bans: usize| -> Arc<crate::fail2ban_data::Fail2banDataBundle> {
+            Arc::new(crate::fail2ban_data::Fail2banDataBundle {
+                available: true,
+                service_active: true,
+                service_enabled: false,
+                version: Some("1.1.0".to_string()),
+                jails: vec![crate::ui::screens::fail2ban::JailEntry {
+                    name: "sshd".to_string(),
+                    is_running: true,
+                    banned_count: bans,
+                    total_bans: bans,
+                    file_count: 0,
+                }],
+                bans: Vec::new(),
+                findings: Vec::new(),
+                fw_nft_available: None,
+                fw_iptables_available: None,
+                unavailable_reason: None,
+            })
+        };
+
+        let mut fresh = parity_screen("parity-content");
+        fresh.set_fail2ban_data(&jail_bundle(3));
+        let mut fresh_t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        fresh_t.draw(|f| fresh.view(f, palette)).unwrap();
+
+        let mut primed = parity_screen("parity-content");
+        let mut prime_terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        prime_terminal.draw(|f| primed.view(f, palette)).unwrap();
+        primed.set_fail2ban_data(&jail_bundle(3));
+        let mut after = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        after.draw(|f| primed.view(f, palette)).unwrap();
+
+        assert_eq!(
+            cells_below_header(after.backend()),
+            cells_below_header(fresh_t.backend()),
+            "a bundle delivery must invalidate exactly the managed-content-keyed panels"
+        );
+    }
+
     #[test]
     fn shell_focus_cycles_sidebar_content() {
         let mut s = DashboardScreen::new();
@@ -2286,7 +2860,7 @@ mod tests {
         let mut s = DashboardScreen::new();
         assert!(
             s.needs_fast_frames(),
-            "cold start renders header gauge spinners — full frame rate"
+            "cold start renders header gauge spinners: full frame rate"
         );
 
         s.net_rx_rate = Some(1.0);
@@ -2301,7 +2875,7 @@ mod tests {
         s.set_ssh_loading(true, 1);
         assert!(s.needs_fast_frames(), "SSH write spinner needs fast frames");
         s.set_ssh_loading(false, 0);
-        assert!(!s.needs_fast_frames(), "spinner gone — slow cadence again");
+        assert!(!s.needs_fast_frames(), "spinner gone: slow cadence again");
     }
 
     #[test]
@@ -2444,7 +3018,6 @@ mod tests {
             ManagedServiceCard {
                 icon: "◆",
                 name: "x",
-                section: Section::Fail2ban,
                 overview: OverviewSnapshot {
                     status_label: label,
                     detail: None,
@@ -2464,7 +3037,6 @@ mod tests {
             ManagedServiceCard {
                 icon: "◆",
                 name: "x",
-                section: Section::Fail2ban,
                 overview: OverviewSnapshot {
                     status_label: label,
                     detail: None,
@@ -2617,6 +3189,47 @@ mod tests {
     }
 
     #[test]
+    fn set_fail2ban_data_reports_change_and_skips_reshipped_arc() {
+        use crate::fail2ban_data::Fail2banDataBundle;
+        use std::sync::Arc;
+
+        fn bundle(version: &str) -> Fail2banDataBundle {
+            Fail2banDataBundle {
+                available: true,
+                service_active: true,
+                service_enabled: false,
+                version: Some(version.to_string()),
+                jails: Vec::new(),
+                bans: Vec::new(),
+                findings: Vec::new(),
+                fw_nft_available: None,
+                fw_iptables_available: None,
+                unavailable_reason: None,
+            }
+        }
+
+        let mut s = DashboardScreen::new();
+        let fresh = Arc::new(bundle("0.11.2"));
+        assert!(
+            s.set_fail2ban_data(&fresh),
+            "a first delivery of a fresh bundle must report a change"
+        );
+        assert!(
+            !s.set_fail2ban_data(&fresh),
+            "a TTL re-ship of the same Arc must be skipped without a redraw"
+        );
+        let changed = Arc::new(bundle("0.11.3"));
+        assert!(
+            s.set_fail2ban_data(&changed),
+            "a re-derived bundle must report a change"
+        );
+        assert!(
+            s.set_fail2ban_data(&fresh),
+            "a collector re-priming the earlier bundle must report a change again"
+        );
+    }
+
+    #[test]
     fn placeholder_sections_stay_on_sidebar_with_tab() {
         let mut s = DashboardScreen::new();
         s.handle_key(KeyCode::Char('2'));
@@ -2765,7 +3378,7 @@ mod tests {
             "no fabricated badge before the first bundle lands"
         );
 
-        s.set_setup_offers(mac_setup_bundle());
+        s.set_setup_offers(&std::sync::Arc::new(mac_setup_bundle()));
         let expected = s.setup_content.findings_count();
         assert!(expected > 0, "an empty host offers every registry row");
         assert_eq!(
@@ -2778,7 +3391,7 @@ mod tests {
     #[test]
     fn dismissed_suggestion_leaves_the_setup_badge() {
         let mut s = DashboardScreen::new();
-        s.set_setup_offers(mac_setup_bundle());
+        s.set_setup_offers(&std::sync::Arc::new(mac_setup_bundle()));
         let idx = setup_sidebar_idx(&s);
         let before = s.setup_content.findings_count();
         assert!(before > 0);

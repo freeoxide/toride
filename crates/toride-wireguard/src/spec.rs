@@ -12,7 +12,9 @@
 ///
 /// A peer is identified by its public key and carries traffic-routing rules
 /// (`allowed_ips`), an optional endpoint address, and an optional persistent
-/// keepalive interval.
+/// keepalive interval. Keys the parser does not model as fields (for example
+/// `PresharedKey`) are preserved verbatim in [`PeerSpec::extra`] so a
+/// read-modify-write cycle never drops them.
 #[derive(Debug, Clone)]
 pub struct PeerSpec {
     /// The peer's Base64-encoded public key.
@@ -27,6 +29,10 @@ pub struct PeerSpec {
 
     /// Optional persistent keepalive interval in seconds.
     pub persistent_keepalive: Option<u32>,
+
+    /// Unrecognized `[Peer]` keys preserved verbatim as `(key, value)` pairs
+    /// in file order, so rendering reproduces them exactly.
+    pub extra: Vec<(String, String)>,
 }
 
 impl PeerSpec {
@@ -37,6 +43,7 @@ impl PeerSpec {
             allowed_ips,
             endpoint: None,
             persistent_keepalive: None,
+            extra: Vec::new(),
         }
     }
 
@@ -63,36 +70,46 @@ impl PeerSpec {
 ///
 /// Contains all data needed to render a complete WireGuard configuration file
 /// (`wg0.conf`), including the interface section and all peer sections.
+/// Repeated `Address` and `DNS` lines are accumulated (wg-quick supports both,
+/// e.g. for dual-stack interfaces), and unrecognized `[Interface]` keys are
+/// preserved verbatim in [`WireguardSpec::extra`].
 #[derive(Debug, Clone)]
 pub struct WireguardSpec {
     /// Interface name (e.g. `wg0`).
     pub name: String,
 
-    /// Interface address(es), comma-separated (e.g. `10.0.0.1/24`).
-    pub address: String,
+    /// Interface address lines, one CIDR per entry; wg-quick accepts repeated
+    /// `Address` keys (e.g. `10.0.0.1/24` plus `fd00::1/64`).
+    pub addresses: Vec<String>,
 
     /// UDP listen port (0 = kernel-assigned).
     pub listen_port: u16,
 
-    /// DNS server(s) for the interface.
-    pub dns: Option<String>,
+    /// DNS resolver lines; wg-quick accepts repeated `DNS` keys.
+    pub dns_servers: Vec<String>,
 
     /// Base64-encoded private key.
     pub private_key: Option<String>,
+
+    /// Unrecognized `[Interface]` keys preserved verbatim as `(key, value)`
+    /// pairs in file order, so rendering reproduces them exactly (e.g.
+    /// `MTU`, `Table`, `PostUp`, `FwMark`, `SaveConfig`).
+    pub extra: Vec<(String, String)>,
 
     /// List of peers for this interface.
     pub peers: Vec<PeerSpec>,
 }
 
 impl WireguardSpec {
-    /// Create a new interface spec with the given name and address.
-    pub fn new(name: String, address: String) -> Self {
+    /// Create a new interface spec with the given name and address lines.
+    pub fn new(name: String, addresses: Vec<String>) -> Self {
         Self {
             name,
-            address,
+            addresses,
             listen_port: 0,
-            dns: None,
+            dns_servers: Vec::new(),
             private_key: None,
+            extra: Vec::new(),
             peers: Vec::new(),
         }
     }
@@ -104,10 +121,10 @@ impl WireguardSpec {
         self
     }
 
-    /// Set the DNS server(s).
+    /// Add a DNS resolver line.
     #[must_use]
     pub fn with_dns(mut self, dns: String) -> Self {
-        self.dns = Some(dns);
+        self.dns_servers.push(dns);
         self
     }
 

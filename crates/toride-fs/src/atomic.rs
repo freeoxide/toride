@@ -37,7 +37,7 @@ const ATOMIC_FILE_MODE: u32 = 0o600;
 /// the content, and then renames the temp file to `path`. If the rename
 /// fails the temp file is cleaned up automatically.
 ///
-/// The final file is created with mode `0o600` (owner-only read/write) — a
+/// The final file is created with mode `0o600` (owner-only read/write), a
 /// safer-by-default choice than the process umask. For config files that a
 /// daemon running as a *different* user must read (e.g. an nginx/caddy site
 /// config read by a worker process, or a ufw application profile), use
@@ -110,7 +110,10 @@ fn fsync_dir_best_effort(_dir: &Path) {}
 ///
 /// On Unix, `perms` are exact POSIX mode bits: the temp file is created with
 /// that mode, `rename(2)` preserves it, and a safety-net `chmod` after the
-/// rename enforces it (rolling the file back if the chmod fails).
+/// rename enforces it. If that post-rename `chmod` fails, the write is rolled
+/// back: the pre-rename bytes are restored when `path` was an existing
+/// regular file (with its original mode), and `path` is removed otherwise.
+/// The `chmod` error is still returned, but the old content is never lost.
 ///
 /// On non-Unix platforms there is no POSIX mode concept, so `perms` cannot be
 /// honored: the file is written with platform-default permissions and the
@@ -122,19 +125,15 @@ fn fsync_dir_best_effort(_dir: &Path) {}
 /// # Errors
 ///
 /// Returns [`Error::AtomicWriteFailed`] if the write or persist fails.
-/// Returns [`Error::Io`] if the permission change fails (Unix only).
+/// Returns [`Error::Io`] if the permission change fails (Unix only); the
+/// rollback restore itself is best-effort and its failure, if any, is traced.
 pub fn atomic_write_with_perms(path: &Path, content: &str, perms: u32) -> Result<()> {
+    #[cfg(unix)]
+    let before = snapshot_pre_rename(path);
     atomic_write_bytes_with_mode(path, content.as_bytes(), perms)?;
 
-    // Safety-net chmod after the rename. The temp file was already created
-    // with `perms`, so rename(2) preserves the mode and this should normally
-    // be a no-op. If it fails for any reason, roll back by removing the final
-    // file so we never leave a file with the wrong mode behind.
     #[cfg(unix)]
-    if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(perms)) {
-        let _ = fs::remove_file(path);
-        return Err(Error::Io(e));
-    }
+    enforce_mode_with_rollback(path, perms, before, real_chmod)?;
 
     tracing::debug!(
         path = %path.display(),
@@ -142,6 +141,105 @@ pub fn atomic_write_with_perms(path: &Path, content: &str, perms: u32) -> Result
         "atomic write with permissions complete"
     );
     Ok(())
+}
+
+/// The real post-rename `chmod` applied by [`atomic_write_with_perms`].
+#[cfg(unix)]
+fn real_chmod(path: &Path, perms: u32) -> std::io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(perms))
+}
+
+/// Write raw bytes to `path` atomically, then set file permissions.
+///
+/// Byte-level twin of [`atomic_write_with_perms`]: same write-rename-chmod
+/// sequence and rollback-on-chmod-failure contract, but the payload is not
+/// required to be valid UTF-8. Use it to restore arbitrary file contents
+/// while preserving the original mode.
+///
+/// # Errors
+///
+/// Returns [`Error::AtomicWriteFailed`] if the write or persist fails.
+/// Returns [`Error::Io`] if the permission change fails (Unix only); the
+/// rollback restore itself is best-effort and its failure, if any, is traced.
+pub fn atomic_write_bytes_with_perms(path: &Path, content: &[u8], perms: u32) -> Result<()> {
+    #[cfg(unix)]
+    let before = snapshot_pre_rename(path);
+    atomic_write_bytes_with_mode(path, content, perms)?;
+
+    #[cfg(unix)]
+    enforce_mode_with_rollback(path, perms, before, real_chmod)?;
+
+    tracing::debug!(
+        path = %path.display(),
+        mode = format!("{perms:o}"),
+        "atomic byte write with permissions complete"
+    );
+    Ok(())
+}
+
+/// Content and mode of an existing regular file at the target path, captured
+/// before the rename so a failed post-rename `chmod` can restore it.
+#[cfg(unix)]
+struct PreRename {
+    bytes: Vec<u8>,
+    mode: u32,
+}
+
+#[cfg(unix)]
+fn snapshot_pre_rename(path: &Path) -> Option<PreRename> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    Some(PreRename {
+        bytes,
+        mode: meta.mode() & 0o777,
+    })
+}
+
+/// Apply the safety-net `chmod` through `set_perms`; on failure restore the
+/// pre-rename state captured in `before`.
+///
+/// `set_perms` is a parameter so tests can inject a failing `chmod` after the
+/// rename, the one window where a naive implementation destroys old content.
+#[cfg(unix)]
+fn enforce_mode_with_rollback(
+    path: &Path,
+    perms: u32,
+    before: Option<PreRename>,
+    set_perms: impl FnOnce(&Path, u32) -> std::io::Result<()>,
+) -> Result<()> {
+    if let Err(e) = set_perms(path, perms) {
+        restore_pre_rename(path, before);
+        return Err(Error::Io(e));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restore_pre_rename(path: &Path, before: Option<PreRename>) {
+    let restore = || -> Result<()> {
+        match before {
+            Some(pre) => {
+                atomic_write_bytes_with_mode(path, &pre.bytes, pre.mode)?;
+                real_chmod(path, pre.mode)?;
+            }
+            None => {
+                fs::remove_file(path)?;
+            }
+        }
+        Ok(())
+    };
+    if let Err(e) = restore() {
+        tracing::error!(
+            path = %path.display(),
+            error = %e,
+            "failed to restore pre-rename content after a chmod failure"
+        );
+    }
 }
 
 /// Creates the named temporary file for an atomic write in `parent`.
@@ -242,13 +340,9 @@ mod tests {
         let dir = TempDir::new().expect("temp dir creation should succeed");
         let path = dir.path().join("atomic.txt");
 
-        // Write initial content
         fs::write(&path, "old content").expect("initial write should succeed");
-
-        // Overwrite atomically
         atomic_write(&path, "new content").expect("atomic_write should succeed");
 
-        // After the write, the file must have exactly the new content
         let content = fs::read_to_string(&path).expect("file should be readable");
         assert_eq!(content, "new content");
     }
@@ -332,5 +426,73 @@ mod tests {
         let path = Path::new("no_such_dir/output.txt");
         let result = atomic_write(path, "content");
         assert!(result.is_err());
+    }
+
+    /// A chmod failure after the rename must restore the pre-rename content
+    /// and mode instead of leaving only the new bytes behind.
+    #[test]
+    #[cfg(unix)]
+    fn chmod_failure_after_rename_restores_pre_rename_content() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("unit.conf");
+
+        fs::write(&path, "old content").expect("initial write should succeed");
+        let old_mode = fs::metadata(&path).expect("metadata").mode() & 0o777;
+        let before = snapshot_pre_rename(&path).expect("snapshot must capture the old file");
+
+        atomic_write_bytes_with_mode(&path, b"new content", 0o600)
+            .expect("write and rename should succeed");
+        assert_eq!(
+            fs::read_to_string(&path).expect("readable"),
+            "new content",
+            "sanity: the rename landed the new bytes"
+        );
+
+        let failing_chmod = |_path: &Path, _perms: u32| -> std::io::Result<()> {
+            Err(std::io::Error::other("injected chmod failure"))
+        };
+        let outcome = enforce_mode_with_rollback(&path, 0o600, Some(before), failing_chmod);
+
+        let err = outcome.expect_err("the injected chmod failure must surface");
+        assert!(
+            err.to_string().contains("injected chmod failure"),
+            "error: {err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("restored file must be readable"),
+            "old content",
+            "the pre-rename content must be restored"
+        );
+        assert_eq!(
+            fs::metadata(&path).expect("metadata").mode() & 0o777,
+            old_mode,
+            "the pre-rename mode must be restored"
+        );
+    }
+
+    /// The same failure on a path that had no file before the rename must
+    /// remove the freshly renamed file, leaving no half-installed artifact.
+    #[test]
+    #[cfg(unix)]
+    fn chmod_failure_after_rename_removes_fresh_file() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("fresh.conf");
+
+        let before = snapshot_pre_rename(&path);
+        assert!(before.is_none(), "no file existed before the rename");
+
+        atomic_write_bytes_with_mode(&path, b"new content", 0o600)
+            .expect("write and rename should succeed");
+
+        let failing_chmod = |_path: &Path, _perms: u32| -> std::io::Result<()> {
+            Err(std::io::Error::other("injected chmod failure"))
+        };
+        let outcome = enforce_mode_with_rollback(&path, 0o600, None, failing_chmod);
+
+        assert!(outcome.is_err(), "the injected chmod failure must surface");
+        assert!(
+            !path.exists(),
+            "a write whose chmod failed must not leave the new file behind"
+        );
     }
 }

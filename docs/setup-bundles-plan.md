@@ -48,10 +48,10 @@ orchestration state file.
 | D7 | tests exercise `~` expansion by setting `$HOME` | `apply_hint` is a two-line adapter over generic `apply_hint_with`; functional tests drive the generic seam with temp-rooted expanders, the real expander is composition-pinned | `ConfigHint::path` is `&'static str`, so no test hint can carry a temp path, and sibling ssh tests mutate `$HOME` under a module-private lock: a cross-test race |
 | D8 | Phase-3 ACs: Setup in the sidebar AND no existing snapshot changes | Setup appended last (index 20); exactly one pre-existing snapshot changed, one cell (dashboard 90x30 collapsed-sidebar glyph) | dashboard full-screen snapshots render the sidebar, so the two ACs contradict; the last position keeps every other snapshot and the digit-key nav byte-stable |
 | D9 | §2.7: the collector starts "on section entry" | Setup mirrors the real pattern: `start()` in the 2s refresh tick arm, poll arm beside tools | the App has no section-entry hook (`Action` frozen); entry latency is at most one tick, same as every other section |
-| D10 | Phase 3 wires execution | `SetupContent` is read-only; the consent outcome is observable via `approved()`/`consent_for()`; no backend call exists | OQ4 was never decided; execution is future work, not a v1 AC |
+| D10 | Phase 3 wires execution | `SetupContent` is read-only; the consent outcome is observable via `approved()`/`consent_for()`; no backend call exists | OQ4 was never decided; execution is future work, not a v1 AC. The detail footer and the row marker say "approve for install", never "installed", so approval cannot read as execution |
 | D11 | module registration touches lib.rs | `ui/screens/mod.rs` also gained the one `pub mod setup;` line | mechanically required: the screens module is where content areas register |
 | D12 | dashboard.rs outside the phase-4 path list | one binding, one `Section::Setup` arm, one setter call in `refresh_sidebar_badges` | the AC "sidebar badge reflects it" is unmeetable without the badge refresh |
-| D13 | §4.8: `read_optional` is the hint-existence probe | `apply_hint_with` probes `path.try_exists()` | `read_optional` reads UTF-8 content, so a binary `~/.zshrc` errored instead of skipping; metadata probing skips any pre-existing file untouched, bytes and mode included |
+| D13 | §4.8: `read_optional` is the hint-existence probe | `apply_hint_with` opens the destination with `O_EXCL` (`create_new`) | `read_optional` reads UTF-8 content, so a binary `~/.zshrc` errored instead of skipping; the exclusive create refuses any pre-existing file (dangling symlinks included) without reading it, and maps the refusal to `SkippedExisting` |
 
 ### Policy rulings
 
@@ -79,7 +79,7 @@ All eight items deferred at run end are closed:
    file, and a second confinement tripwire covers the rest of
    setup_bundles.rs, failing with a message that names the fix (move the
    code into hints.rs or widen the tripwire consciously).
-4. Non-UTF-8 hint target: the `try_exists` probe (D13) skips any
+4. Non-UTF-8 hint target: the `O_EXCL` create (D13) refuses any
    pre-existing file untouched, bytes and mode included.
 5. `⚒` sidebar icon: registered in CLAUDE.md's Icons table.
 6. Stale consent-modal position: `set_offers` closes an open modal and

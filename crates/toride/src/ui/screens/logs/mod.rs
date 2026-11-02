@@ -4,7 +4,7 @@
 //! [`Section::Logs`](crate::data::Section) is the active sidebar section. This
 //! integration mirrors the fail2ban / ufw-kit / harden templates
 //! (`Fail2banContent` / `FirewallContent` / `HardenContent`) WITHOUT any write
-//! path — every line is read-only.
+//! path: every line is read-only.
 //!
 //! This is the most "live" read-only section: the collector re-reads every
 //! source's tail on each 2s refresh tick, so the displayed lines change in
@@ -12,7 +12,7 @@
 //! scrolls the tail with j/k / ↑/↓ / PageUp/PageDown / the mouse wheel.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Header — active source name + path + size + mtime, plus the
+//! 1. Header: active source name + path + size + mtime, plus the
 //!    `← → cycle source` hint.
 //! 2. The active source's tail as plain lines (lossy-UTF-8, never crashes).
 
@@ -26,7 +26,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::logs_convert::{LogSource, convert_source};
+use crate::logs_convert::LogSource;
 use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::render_titled_panel;
@@ -42,13 +42,13 @@ use crate::ui::widgets::render_titled_panel;
 /// The active source is selected by index (`LogsContent::selected_source`);
 /// Left/Right cycle it (wrapping). Scroll is a manual `usize` offset over the
 /// active source's `lines`, clamped against the visible row count during
-/// render (mirrors every other scrollable pane in the app — no ratatui
+/// render (mirrors every other scrollable pane in the app: no ratatui
 /// `Scrollbar` widget is used).
 pub struct LogsContent {
     /// Whether the logs collector ran at all. `false` (only on a collection
     /// panic) means the section renders a degraded "unavailable" panel.
     available: bool,
-    /// Per-source tails. Empty on a host with NO log sources — in that case
+    /// Per-source tails. Empty on a host with NO log sources: in that case
     /// `available` stays `true` and the viewer surfaces the honest
     /// `"no log sources found on this host"` line (NOT a fake "coming soon").
     sources: Vec<LogSource>,
@@ -89,12 +89,17 @@ impl LogsContent {
 
     // ── Data setters ─────────────────────────────────────────────────────────
 
-    /// Replace the source list. `LogsContent::selected_source` is PRESERVED
-    /// when possible (clamped to the new `sources.len()` so it never points
-    /// past the end), and `scroll` is clamped to the new active source's line
-    /// count. This is what makes Left/Right + the 2s refresh tick feel stable:
-    /// a refresh does not snap the operator back to source 0 / scroll 0.
+    /// Replace the source list. Each source is normalized once here (name and
+    /// path placeholders, line clamp) via [`convert_sources`], so the render
+    /// path borrows the stored entries instead of cloning the active source's
+    /// up-to-200 owned lines every frame. `LogsContent::selected_source` is
+    /// PRESERVED when possible (clamped to the new `sources.len()` so it never
+    /// points past the end), and `scroll` is clamped to the new active
+    /// source's line count. This is what makes Left/Right + the refresh tick
+    /// feel stable: a refresh does not snap the operator back to source 0 /
+    /// scroll 0.
     pub fn set_logs(&mut self, sources: Vec<LogSource>) {
+        let sources = crate::logs_convert::convert_sources(sources);
         // Clamp selection FIRST so the scroll clamp below reads the NEWLY
         // active source's line count, not the previous one.
         if self.selected_source >= sources.len() {
@@ -184,7 +189,7 @@ impl LogsContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -208,7 +213,7 @@ impl LogsContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -243,9 +248,9 @@ impl LogsContent {
 
         if self.sources.is_empty() {
             // Honest empty state: NO log sources exist on this host. This is
-            // NOT a "coming soon" placeholder — it is the literal truth
-            // surfaced so the operator knows the section is wired and simply
-            // has nothing to show.
+            // NOT a "coming soon" placeholder: it is the literal truth
+            // surfaced so the operator knows the section is wired and has
+            // nothing to show.
             let msg = Line::from(vec![
                 Span::styled("· ", Style::new().fg(p.text_dim)),
                 Span::styled(
@@ -263,36 +268,55 @@ impl LogsContent {
             return;
         }
 
-        // Build the full content (header + tail) as a Vec<Line> then render
-        // only the visible window (manual scroll — no ratatui Scrollbar).
-        let active = self.active_source().map_or_else(
-            || LogSource {
-                name: "(none)".into(),
-                path: String::new(),
-                exists: false,
-                size_bytes: 0,
-                mtime: None,
-                line_count: 0,
-                lines: Vec::new(),
-            },
-            |s| convert_source(s.clone()),
-        );
-
-        let lines = self.build_lines(&active, p, inner.width);
+        // Scroll indexes the combined list (HEADER_ROWS header lines, then the
+        // active source's tail). Only the visible window of Lines is built, so
+        // a 200-line tail costs `visible` allocations, not 200 (tui-16).
+        let active = self.active_source();
+        let tail_len = active.map_or(0, |s| s.lines.len());
+        let tail_rows = if tail_len == 0 { 1 } else { tail_len };
+        let total_rows = Self::HEADER_ROWS + tail_rows;
 
         let visible = inner.height as usize;
-        let max_scroll = lines.len().saturating_sub(visible);
+        let max_scroll = total_rows.saturating_sub(visible);
         self.clamp_scroll_to(max_scroll);
         let start = self.scroll.min(max_scroll);
 
-        for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
+        for (row, idx) in (start..total_rows).take(visible).enumerate() {
             let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
+            let line = self.line_at(idx, p, inner.width);
             let row_area = Rect::new(inner.x, y, inner.width, 1);
-            frame.render_widget(Paragraph::new(line.clone()), row_area);
+            frame.render_widget(Paragraph::new(line), row_area);
         }
+    }
+
+    /// Build one row of the combined header+tail list on demand.
+    ///
+    /// Rows `0..HEADER_ROWS` are the header block; row `HEADER_ROWS` is the
+    /// empty-tail placeholder when the active source has no lines, and each
+    /// later row is one tail line truncated to the pane width.
+    fn line_at(&self, idx: usize, p: Palette, inner_width: u16) -> Line<'static> {
+        if idx < Self::HEADER_ROWS {
+            return self.header_line(idx, p, inner_width);
+        }
+        let Some(active) = self.active_source() else {
+            return Line::raw("");
+        };
+        let tail_idx = idx - Self::HEADER_ROWS;
+        let raw = match active.lines.get(tail_idx) {
+            Some(line) => line,
+            None if active.lines.is_empty() => {
+                return Line::from(Span::styled(
+                    "  (empty log: no lines yet)",
+                    Style::new().fg(p.text_dim),
+                ));
+            }
+            None => return Line::raw(""),
+        };
+        let truncated = truncate_str(raw, inner_width as usize);
+        Line::from(Span::styled(truncated, Style::new().fg(p.text)))
     }
 
     /// Render the degraded state when the logs collector itself panicked
@@ -338,85 +362,76 @@ impl LogsContent {
         );
     }
 
-    /// Build the complete content as a flat list of lines: a one-line header
-    /// (active source name + path + size + mtime + cycle hint), then the
-    /// active source's tail. Scrolling operates over this list.
-    fn build_lines(&self, active: &LogSource, p: Palette, inner_width: u16) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
+    /// Rows of header metadata rendered above the active source's tail.
+    const HEADER_ROWS: usize = 5;
 
-        // ── Header: name + path + size + mtime ──────────────────────────────
-        let sel = self.selected_source + 1;
-        let total = self.sources.len();
-        let header_name = if active.name.is_empty() {
-            "(unknown)"
-        } else {
-            active.name.as_str()
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("[{sel}/{total}] "), Style::new().fg(p.text_muted)),
-            Span::styled(
-                header_name.to_string(),
-                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-
-        // Path line (truncated to the viewport width so a long path does not
-        // wrap and steal a tail row).
-        let path_label = if active.path.is_empty() {
-            "(no path)"
-        } else {
-            active.path.as_str()
-        };
-        let path = truncate_str(path_label, inner_width.saturating_sub(2) as usize);
-        lines.push(Line::from(vec![
-            Span::styled("  path   ", Style::new().fg(p.text_muted)),
-            Span::styled(path, Style::new().fg(p.text_dim)),
-        ]));
-
-        // Size + mtime line.
-        let size_str = format_bytes_human(active.size_bytes);
-        let mtime_str = active.mtime.clone().unwrap_or_else(|| "—".to_string());
-        // Extract to locals — format-string field access (`{active.line_count}`)
-        // is not supported, so bind first.
-        let line_count = active.line_count;
-        lines.push(Line::from(vec![
-            Span::styled("  size   ", Style::new().fg(p.text_muted)),
-            Span::styled(
-                format!("{size_str}  ·  {line_count} line(s)"),
-                Style::new().fg(p.text_dim),
-            ),
-            Span::styled(
-                format!("   ·   mtime {mtime_str}"),
-                Style::new().fg(p.text_muted),
-            ),
-        ]));
-
-        // Hint line.
-        lines.push(Line::from(vec![
-            Span::styled("  hint   ", Style::new().fg(p.text_muted)),
-            Span::styled(
-                "← → cycle source  ·  j/k scroll",
-                Style::new().fg(p.text_dim),
-            ),
-        ]));
-
-        // Blank separator between header and the tail.
-        lines.push(Line::raw(""));
-
-        // ── Tail lines ──────────────────────────────────────────────────────
-        if active.lines.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  (empty log — no lines yet)",
-                Style::new().fg(p.text_dim),
-            )));
-        } else {
-            for raw in &active.lines {
-                let truncated = truncate_str(raw, inner_width as usize);
-                lines.push(Line::from(Span::styled(truncated, Style::new().fg(p.text))));
+    /// Build header row `idx` (0..[`Self::HEADER_ROWS`]) of the content list:
+    /// title, path, size + mtime, cycle hint, then a blank separator.
+    fn header_line(&self, idx: usize, p: Palette, inner_width: u16) -> Line<'static> {
+        let active = self.active_source();
+        match idx {
+            0 => {
+                let sel = self.selected_source + 1;
+                let total = self.sources.len();
+                let name = active.map_or("(unknown)", |s| {
+                    if s.name.is_empty() {
+                        "(unknown)"
+                    } else {
+                        s.name.as_str()
+                    }
+                });
+                Line::from(vec![
+                    Span::styled(format!("[{sel}/{total}] "), Style::new().fg(p.text_muted)),
+                    Span::styled(
+                        name.to_string(),
+                        Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+                    ),
+                ])
             }
+            1 => {
+                let path_label = active.map_or("(no path)", |s| {
+                    if s.path.is_empty() {
+                        "(no path)"
+                    } else {
+                        s.path.as_str()
+                    }
+                });
+                let path = truncate_str(path_label, inner_width.saturating_sub(2) as usize);
+                Line::from(vec![
+                    Span::styled("  path   ", Style::new().fg(p.text_muted)),
+                    Span::styled(path, Style::new().fg(p.text_dim)),
+                ])
+            }
+            2 => {
+                let (size_str, line_count, mtime_str) =
+                    active.map_or(("0 B".to_string(), 0, "—".to_string()), |s| {
+                        (
+                            format_bytes_human(s.size_bytes),
+                            s.line_count,
+                            s.mtime.clone().unwrap_or_else(|| "—".to_string()),
+                        )
+                    });
+                Line::from(vec![
+                    Span::styled("  size   ", Style::new().fg(p.text_muted)),
+                    Span::styled(
+                        format!("{size_str}  ·  {line_count} line(s)"),
+                        Style::new().fg(p.text_dim),
+                    ),
+                    Span::styled(
+                        format!("   ·   mtime {mtime_str}"),
+                        Style::new().fg(p.text_muted),
+                    ),
+                ])
+            }
+            3 => Line::from(vec![
+                Span::styled("  hint   ", Style::new().fg(p.text_muted)),
+                Span::styled(
+                    "← → cycle source  ·  j/k scroll",
+                    Style::new().fg(p.text_dim),
+                ),
+            ]),
+            _ => Line::raw(""),
         }
-
-        lines
     }
 }
 
@@ -455,7 +470,7 @@ impl crate::ui::screens::section_overview::SectionOverview for LogsContent {
     fn status_label(&self) -> &'static str {
         // The Logs section has no findings; pass an empty severity iterator so
         // status_label_for collapses to active/offline purely on `available`.
-        // The `as [&str; 0]` annotation pins the iterator's item type —
+        // The `as [&str; 0]` annotation pins the iterator's item type:
         // without it the compiler cannot infer the `AsRef<str>` bound.
         crate::ui::screens::section_overview::status_label_for(self.available, [] as [&str; 0])
     }
@@ -468,7 +483,7 @@ impl crate::ui::screens::section_overview::SectionOverview for LogsContent {
     }
 
     fn findings_count(&self) -> usize {
-        // The Logs section is a passive viewer — it surfaces no findings.
+        // The Logs section is a passive viewer: it surfaces no findings.
         0
     }
 }
@@ -630,7 +645,7 @@ mod tests {
         let mut c = LogsContent::new();
         c.set_available(true);
         c.set_logs(vec![sample_source("auth", 20)]);
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 
@@ -644,7 +659,7 @@ mod tests {
             out.contains("no log sources found on this host"),
             "honest empty-host message: {out}"
         );
-        // And NOT the degraded "Logs unavailable" message — that path is for
+        // And NOT the degraded "Logs unavailable" message: that path is for
         // collection panics only.
         assert!(
             !out.contains("Logs unavailable"),

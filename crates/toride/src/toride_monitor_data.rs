@@ -34,7 +34,7 @@ pub struct MonitorDataBundle {
 }
 
 type MonitorOutcome = (
-    MonitorDataBundle,
+    std::sync::Arc<MonitorDataBundle>,
     bool,
     bool,
     Option<std::sync::Arc<SnapshotCluster>>,
@@ -54,6 +54,12 @@ struct SnapshotCluster {
 /// findings for 60s, the snapshot cluster for 8s (4s when it failed).
 pub struct MonitorCollector {
     rx: Option<oneshot::Receiver<MonitorOutcome>>,
+    cached_bundle: Option<std::sync::Arc<MonitorDataBundle>>,
+    /// Degraded (unavailable) bundle from the last failed collection and when
+    /// it was delivered; re-shipped for [`FAILURE_RETRY_TTL`] so a broken or
+    /// absent backend is not re-probed on every 2s refresh tick.
+    cached_failed_bundle: Option<std::sync::Arc<MonitorDataBundle>>,
+    failed_at: Option<std::time::Instant>,
     cached_findings: Option<std::sync::Arc<[FindingEntry]>>,
     findings_fresh_at: Option<std::time::Instant>,
     cached_snapshot: Option<std::sync::Arc<SnapshotCluster>>,
@@ -65,6 +71,10 @@ const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 const SNAPSHOT_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 
 const SNAPSHOT_FAILURE_TTL: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// How long a degraded (unavailable) bundle is re-shipped before the backend
+/// is probed again; matches the failed-snapshot tier's retry spacing.
+const FAILURE_RETRY_TTL: std::time::Duration = std::time::Duration::from_secs(4);
 
 fn snapshot_ttl_for(cluster: &SnapshotCluster) -> std::time::Duration {
     if cluster.snapshot_ok {
@@ -93,6 +103,9 @@ impl MonitorCollector {
     pub fn new() -> Self {
         Self {
             rx: None,
+            cached_bundle: None,
+            cached_failed_bundle: None,
+            failed_at: None,
             cached_findings: None,
             findings_fresh_at: None,
             cached_snapshot: None,
@@ -125,6 +138,31 @@ impl MonitorCollector {
         }
         let (tx, rx) = oneshot::channel();
         let (use_findings, use_snapshot) = self.tier_decisions();
+        // Both tiers fresh: a rebuild would reassemble the identical bundle
+        // from the cached cluster and findings, so re-ship the cached Arc by
+        // refcount and skip the client construction and both blocking hops.
+        if use_findings
+            && use_snapshot
+            && let Some(bundle) = self.cached_bundle.clone()
+        {
+            self.rx = Some(rx);
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true, true, None));
+            });
+            return;
+        }
+        // Degraded bundle still inside its retry window: re-ship it instead
+        // of paying the construction attempt on every refresh tick.
+        if let (Some(bundle), Some(at)) = (&self.cached_failed_bundle, self.failed_at)
+            && !ttl_expired(FAILURE_RETRY_TTL, at)
+        {
+            let bundle = std::sync::Arc::clone(bundle);
+            self.rx = Some(rx);
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true, true, None));
+            });
+            return;
+        }
         let cached_findings = self.cached_findings.clone();
         let cached_snapshot = self.cached_snapshot.clone();
         self.rx = Some(rx);
@@ -162,7 +200,9 @@ impl MonitorCollector {
                 Err(e) => {
                     tracing::warn!("monitor collection task panicked: {e}");
                     (
-                        empty_bundle_with_reason(format!("monitor data collection panicked: {e}")),
+                        std::sync::Arc::new(empty_bundle_with_reason(format!(
+                            "monitor data collection panicked: {e}"
+                        ))),
                         false,
                         false,
                         None,
@@ -174,11 +214,31 @@ impl MonitorCollector {
     }
 
     /// Returns `Some(bundle)` once the collection completes, `None` while
-    /// pending; a tier's cache is written only when it re-ran on an available bundle.
-    pub async fn poll(&mut self) -> Option<MonitorDataBundle> {
+    /// pending; a tier's cache is written only when it re-ran on an available
+    /// bundle. A both-tiers-fresh cycle re-ships the cached `Arc` by
+    /// refcount, so an unchanged bundle keeps the pointer it had last tick.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<MonitorDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
+                match result {
+                    Some((ref bundle, ..)) if bundle.available => {
+                        self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                        self.cached_failed_bundle = None;
+                        self.failed_at = None;
+                    }
+                    Some((ref bundle, ..)) => {
+                        let is_reship = self
+                            .cached_failed_bundle
+                            .as_ref()
+                            .is_some_and(|p| std::sync::Arc::ptr_eq(p, bundle));
+                        if !is_reship {
+                            self.cached_failed_bundle = Some(std::sync::Arc::clone(bundle));
+                            self.failed_at = Some(std::time::Instant::now());
+                        }
+                    }
+                    None => {}
+                }
                 if let Some((ref bundle, findings_used, snapshot_used, ref fresh_cluster)) = result
                     && bundle.available
                 {
@@ -201,8 +261,10 @@ impl MonitorCollector {
     }
 
     /// Invalidate both cache tiers so the next collection re-runs everything.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
+        self.cached_bundle = None;
+        self.cached_failed_bundle = None;
+        self.failed_at = None;
         self.cached_findings = None;
         self.findings_fresh_at = None;
         self.cached_snapshot = None;
@@ -227,12 +289,19 @@ async fn collect_real_monitor(
             Ok(Ok(client)) => client,
             Ok(Err(e)) => {
                 tracing::debug!("monitor backend unavailable: {e}");
-                return (empty_bundle_with_reason(format!("{e}")), false, false, None);
+                return (
+                    std::sync::Arc::new(empty_bundle_with_reason(format!("{e}"))),
+                    false,
+                    false,
+                    None,
+                );
             }
             Err(e) => {
                 tracing::warn!("monitor construction task panicked: {e}");
                 return (
-                    empty_bundle_with_reason(format!("monitor backend construction panicked: {e}")),
+                    std::sync::Arc::new(empty_bundle_with_reason(format!(
+                        "monitor backend construction panicked: {e}"
+                    ))),
                     false,
                     false,
                     None,
@@ -256,7 +325,9 @@ async fn collect_real_monitor(
         Err(e) => {
             tracing::warn!("monitor collection task panicked: {e}");
             (
-                empty_bundle_with_reason(format!("monitor data collection panicked: {e}")),
+                std::sync::Arc::new(empty_bundle_with_reason(format!(
+                    "monitor data collection panicked: {e}"
+                ))),
                 false,
                 false,
                 None,
@@ -396,7 +467,12 @@ fn collect_monitor_with_client(
             findings,
             unavailable_reason: None,
         };
-        (bundle, findings_served, snapshot_served, fresh_cluster)
+        (
+            std::sync::Arc::new(bundle),
+            findings_served,
+            snapshot_served,
+            fresh_cluster,
+        )
     }
 }
 
@@ -739,7 +815,7 @@ mod cadence_oracle {
         assert_eq!(
             ss_spawn_count(&runner),
             0,
-            "a both-tier cache hit must spawn NOTHING — no ss, no conntrack, no iptables-save"
+            "a both-tier cache hit must spawn NOTHING: no ss, no conntrack, no iptables-save"
         );
         assert!(
             runner.calls().is_empty(),
@@ -939,6 +1015,68 @@ mod cadence_oracle {
             "a healthy cluster is fresh for the full 8s TTL, not the 4s backoff"
         );
         assert_eq!(fourth.connections.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn degraded_bundle_is_reshipped_by_refcount_within_retry_ttl() {
+        fn deliver_degraded(
+            collector: &mut MonitorCollector,
+            bundle: std::sync::Arc<MonitorDataBundle>,
+        ) {
+            let (tx, rx) = oneshot::channel();
+            tx.send((bundle, false, false, None))
+                .expect("receiver alive");
+            collector.rx = Some(rx);
+        }
+
+        let mut collector = MonitorCollector::new();
+        let degraded = std::sync::Arc::new(empty_bundle_with_reason("backend gone".into()));
+        deliver_degraded(&mut collector, std::sync::Arc::clone(&degraded));
+        let first = collector.poll().await.expect("delivery completes");
+        assert!(!first.available);
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &degraded),
+            "poll hands the delivered Arc through"
+        );
+        assert!(
+            collector.cached_failed_bundle.is_some(),
+            "a degraded delivery arms the failure-retry slot"
+        );
+
+        collector.start();
+        let second = collector.poll().await.expect("re-ship completes");
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "a cycle inside the retry window re-ships the degraded Arc"
+        );
+        let armed_at = collector.failed_at;
+        collector.start();
+        let _ = collector.poll().await.expect("second re-ship completes");
+        assert_eq!(
+            collector.failed_at, armed_at,
+            "a re-ship must not re-arm the retry clock"
+        );
+
+        let ttl = TtlOffsetGuard::failure_ttl_only();
+        collector.start();
+        drop(ttl);
+        assert!(
+            collector.rx.is_some(),
+            "an expired retry window must fall through to a real collection"
+        );
+        collector.rx = None;
+
+        let retry = std::sync::Arc::new(empty_bundle_with_reason("still gone".into()));
+        deliver_degraded(&mut collector, std::sync::Arc::clone(&retry));
+        let third = collector.poll().await.expect("re-derivation completes");
+        assert!(
+            std::sync::Arc::ptr_eq(&third, &retry),
+            "a re-derived degraded bundle is the new retry slot"
+        );
+        assert_ne!(
+            collector.failed_at, armed_at,
+            "a genuinely new degraded delivery re-arms the retry clock"
+        );
     }
 
     #[tokio::test]

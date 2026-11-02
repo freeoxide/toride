@@ -308,13 +308,17 @@ impl TailscaleService {
             .map_err(|e| crate::Error::CommandFailed {
                 program: spec.program.clone(),
                 code: None,
-                stderr: toride_runner::display::scrub_stderr(spec, &e.to_string()),
+                stderr: toride_runner::display::scrub_stderr(spec, &e.to_string())
+                    .trim()
+                    .to_owned(),
             })?;
         if !output.success {
             return Err(crate::Error::CommandFailed {
                 program: spec.program.clone(),
                 code: output.exit_code,
-                stderr: toride_runner::display::scrub_stderr(spec, &output.stderr),
+                stderr: toride_runner::display::scrub_stderr(spec, &output.stderr)
+                    .trim()
+                    .to_owned(),
             });
         }
         Ok(output)

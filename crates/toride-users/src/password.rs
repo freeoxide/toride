@@ -6,6 +6,29 @@
 use crate::spec::{Complexity, PasswordPolicy};
 use crate::{Error, Result};
 
+/// Run one `chage`/`usermod` invocation with captured output, mapping the
+/// shadow exit codes onto the typed variants.
+///
+/// # Errors
+///
+/// See the callers' docs; the mapping is shared with
+/// [`crate::user`]'s wrappers.
+#[cfg(feature = "client")]
+fn run_shadow_command(
+    program: &str,
+    bin: &std::path::Path,
+    args: &[String],
+    username: &str,
+) -> Result<()> {
+    let output = crate::capture::run_captured(program, bin, args)?;
+    if !output.status.success() {
+        return Err(crate::user::user_management_error(
+            program, username, &output,
+        ));
+    }
+    Ok(())
+}
+
 /// Apply a password policy to a user via `chage`.
 ///
 /// Sets the password aging parameters: maximum days, minimum days, and
@@ -14,41 +37,25 @@ use crate::{Error, Result};
 /// # Errors
 ///
 /// - [`Error::BinaryNotFound`] if `chage` is not on `$PATH`.
-/// - [`Error::UserNotFound`] if the user does not exist.
-/// - [`Error::CommandFailed`] if `chage` returns a non-zero exit code.
+/// - [`Error::UserNotFound`] if the user does not exist (shadow exit 6).
+/// - [`Error::CommandFailed`] (with the real exit code) if `chage` returns
+///   any other non-zero exit.
 #[cfg(feature = "client")]
 pub fn apply_password_policy(username: &str, policy: &PasswordPolicy) -> Result<()> {
     let chage = which::which("chage").map_err(|_| Error::BinaryNotFound("chage".into()))?;
 
-    // Set maximum days
-    duct::cmd(&chage, ["-M", &policy.max_days.to_string(), username])
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "chage".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
-
-    // Set minimum days
-    duct::cmd(&chage, ["-m", &policy.min_days.to_string(), username])
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "chage".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
-
-    // Set warning days
-    duct::cmd(&chage, ["-W", &policy.warn_days.to_string(), username])
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "chage".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
+    for flag_value in [
+        ("-M", policy.max_days.to_string()),
+        ("-m", policy.min_days.to_string()),
+        ("-W", policy.warn_days.to_string()),
+    ] {
+        run_shadow_command(
+            "chage",
+            &chage,
+            &[flag_value.0.to_owned(), flag_value.1, username.to_owned()],
+            username,
+        )?;
+    }
 
     tracing::info!(
         "applied password policy to {username}: max={} min={} warn={}",
@@ -66,19 +73,19 @@ pub fn apply_password_policy(username: &str, policy: &PasswordPolicy) -> Result<
 /// # Errors
 ///
 /// - [`Error::BinaryNotFound`] if `chage` is not on `$PATH`.
-/// - [`Error::CommandFailed`] if `chage` returns a non-zero exit code.
+/// - [`Error::UserNotFound`] if the user does not exist (shadow exit 6).
+/// - [`Error::CommandFailed`] (with the real exit code) if `chage` returns
+///   any other non-zero exit.
 #[cfg(feature = "client")]
 pub fn force_password_change(username: &str) -> Result<()> {
     let chage = which::which("chage").map_err(|_| Error::BinaryNotFound("chage".into()))?;
 
-    duct::cmd(&chage, ["-d", "0", username])
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "chage".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
+    run_shadow_command(
+        "chage",
+        &chage,
+        &["-d".to_owned(), "0".to_owned(), username.to_owned()],
+        username,
+    )?;
 
     tracing::info!("forced password change for {username}");
     Ok(())
@@ -92,19 +99,19 @@ pub fn force_password_change(username: &str) -> Result<()> {
 /// # Errors
 ///
 /// - [`Error::BinaryNotFound`] if `usermod` is not on `$PATH`.
-/// - [`Error::CommandFailed`] if `usermod` returns a non-zero exit code.
+/// - [`Error::UserNotFound`] if the user does not exist (shadow exit 6).
+/// - [`Error::CommandFailed`] (with the real exit code) if `usermod` returns
+///   any other non-zero exit.
 #[cfg(feature = "client")]
 pub fn lock_account(username: &str) -> Result<()> {
     let usermod = which::which("usermod").map_err(|_| Error::BinaryNotFound("usermod".into()))?;
 
-    duct::cmd(&usermod, ["-L", username])
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "usermod".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
+    run_shadow_command(
+        "usermod",
+        &usermod,
+        &["-L".to_owned(), username.to_owned()],
+        username,
+    )?;
 
     tracing::info!("locked account {username}");
     Ok(())
@@ -117,19 +124,19 @@ pub fn lock_account(username: &str) -> Result<()> {
 /// # Errors
 ///
 /// - [`Error::BinaryNotFound`] if `usermod` is not on `$PATH`.
-/// - [`Error::CommandFailed`] if `usermod` returns a non-zero exit code.
+/// - [`Error::UserNotFound`] if the user does not exist (shadow exit 6).
+/// - [`Error::CommandFailed`] (with the real exit code) if `usermod` returns
+///   any other non-zero exit.
 #[cfg(feature = "client")]
 pub fn unlock_account(username: &str) -> Result<()> {
     let usermod = which::which("usermod").map_err(|_| Error::BinaryNotFound("usermod".into()))?;
 
-    duct::cmd(&usermod, ["-U", username])
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "usermod".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
+    run_shadow_command(
+        "usermod",
+        &usermod,
+        &["-U".to_owned(), username.to_owned()],
+        username,
+    )?;
 
     tracing::info!("unlocked account {username}");
     Ok(())

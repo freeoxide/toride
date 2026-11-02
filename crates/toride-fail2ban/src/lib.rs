@@ -1,6 +1,10 @@
 //! Fail2ban-style intrusion prevention library for toride: log parsing,
 //! IP banning, and automated response via iptables/nftables/pf/firewalld.
 
+#![cfg_attr(
+    all(feature = "jail-lifecycle", feature = "regex-test"),
+    doc = include_str!("../README.md")
+)]
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![expect(
@@ -139,7 +143,6 @@ impl SystemPaths {
 /// paths, composing the client/service/doctor/jail-lifecycle modules.
 pub struct Fail2Ban {
     runner: Box<dyn command::Runner>,
-    #[expect(dead_code, reason = "kept for future path-aware operations")]
     paths: SystemPaths,
     dry_run: bool,
 }
@@ -173,12 +176,20 @@ impl Fail2Ban {
     /// Create a `Fail2Ban` instance with a custom runner and `/etc/fail2ban`
     /// paths; the config directory need not exist (useful for testing).
     pub fn with_runner(runner: Box<dyn command::Runner>) -> Self {
-        let paths = SystemPaths {
-            config_dir: PathBuf::from("/etc/fail2ban"),
-            jail_d: PathBuf::from("/etc/fail2ban/jail.d"),
-            filter_d: PathBuf::from("/etc/fail2ban/filter.d"),
-            action_d: PathBuf::from("/etc/fail2ban/action.d"),
-        };
+        Self::with_runner_and_paths(
+            runner,
+            SystemPaths {
+                config_dir: PathBuf::from("/etc/fail2ban"),
+                jail_d: PathBuf::from("/etc/fail2ban/jail.d"),
+                filter_d: PathBuf::from("/etc/fail2ban/filter.d"),
+                action_d: PathBuf::from("/etc/fail2ban/action.d"),
+            },
+        )
+    }
+
+    /// Create a `Fail2Ban` instance with an explicit runner and system paths;
+    /// the config directory need not exist.
+    pub fn with_runner_and_paths(runner: Box<dyn command::Runner>, paths: SystemPaths) -> Self {
         Self {
             runner,
             paths,
@@ -187,10 +198,32 @@ impl Fail2Ban {
     }
 
     /// Set dry-run mode: commands are logged but not executed.
+    ///
+    /// Every facade command path ([`test_config`](Self::test_config),
+    /// [`reload`](Self::reload), [`reload_jail`](Self::reload_jail),
+    /// [`ban_ip`](Self::ban_ip), [`unban_ip`](Self::unban_ip), and the
+    /// command steps of [`ensure_jail`](Self::ensure_jail) and
+    /// [`remove_jail`](Self::remove_jail)) returns success without spawning a
+    /// process, and the flag is propagated to the underlying runner so
+    /// borrowed sub-services ([`client`](Self::client),
+    /// [`doctor`](Self::doctor), [`regex_tester`](Self::regex_tester), ...)
+    /// skip execution too when their runner honors it.
+    /// [`ensure_jail`] still writes its `.local` config files.
     #[must_use]
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+        self.runner.set_dry_run(dry_run);
         self.dry_run = dry_run;
         self
+    }
+
+    /// Whether the facade is in dry-run mode.
+    #[must_use]
+    pub fn dry_run(&self) -> bool {
+        self.dry_run
+    }
+
+    fn skip_command(verb: &str) {
+        tracing::info!(verb, "dry-run: command skipped");
     }
 
     /// Return a [`client::Fail2BanClient`] borrowing this instance's runner.
@@ -218,26 +251,51 @@ impl Fail2Ban {
         regex_test::RegexTester::new(self.runner.as_ref())
     }
 
-    /// Run the diagnostic engine and return a [`report::DoctorReport`]; errors
-    /// only on fundamental failures — check failures arrive as [`report::Finding`]s.
+    /// Run the diagnostic engine against this instance's [`SystemPaths`] and
+    /// return a [`report::DoctorReport`]; errors only on fundamental failures.
+    /// Check failures arrive as [`report::Finding`]s.
     #[cfg(feature = "doctor")]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "matches by-value doctor() API across toride crates"
     )]
     pub fn doctor(&self, scope: doctor::DoctorScope) -> Result<report::DoctorReport> {
-        let doc = doctor::Doctor::new(self.runner.as_ref());
+        let doc = doctor::Doctor::with_paths(self.runner.as_ref(), self.paths.clone());
         doc.run(&scope)
     }
 
-    /// Write a jail specification to disk, validate it, test the config, and
-    /// reload the jail; errors at the first failing step.
+    /// Write a jail specification (and its inline filter and custom actions)
+    /// to disk, validate it, test the config, and reload the jail; errors at
+    /// the first failing step.
+    ///
+    /// A filter with non-empty `failregex` is materialized as
+    /// `filter.d/{namespace}-{name}.local` and referenced under that
+    /// namespaced name in the jail; actions with
+    /// [`ActionKind::Custom`](spec::ActionKind::Custom) are materialized as
+    /// `action.d/{namespace}-{name}.local` and referenced the same way. Stock
+    /// filters and actions are referenced by their bare stock names.
     #[cfg(all(feature = "jail-lifecycle", feature = "client"))]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "JailSpec is a builder product moved into the apply workflow"
+    )]
     pub fn ensure_jail(&self, spec: spec::JailSpec) -> Result<report::ApplyReport> {
         spec.validate()?;
 
         let mgr = ini::IniManager::new(&self.paths.config_dir)?;
         let mut report = mgr.write_jail(&spec)?;
+
+        if !spec.filter.failregex.is_empty() {
+            let filter_report = mgr.write_filter(&spec.filter)?;
+            report.extend_from(&filter_report);
+        }
+
+        for action in &spec.actions {
+            if action.kind == spec::ActionKind::Custom {
+                let action_report = mgr.write_action(action)?;
+                report.extend_from(&action_report);
+            }
+        }
 
         match self.test_config() {
             Ok(()) => {
@@ -280,9 +338,12 @@ impl Fail2Ban {
     }
 
     /// Remove a managed jail configuration, then test and reload; errors if
-    /// the file is not managed, missing, or the reload fails.
+    /// the file is not managed, missing, or the reload fails. Invalid jail
+    /// names are rejected with [`Error::Validation`] before any file path is
+    /// derived from the name.
     #[cfg(all(feature = "jail-lifecycle", feature = "client"))]
     pub fn remove_jail(&self, name: &str) -> Result<report::ApplyReport> {
+        crate::types::ensure_jail_operand(name)?;
         let mgr = ini::IniManager::new(&self.paths.config_dir)?;
         let mut report = mgr.remove_jail(name)?;
 
@@ -311,32 +372,71 @@ impl Fail2Ban {
     }
 
     /// Validate the current Fail2Ban configuration (`fail2ban-client --test`).
+    /// Skipped with a logged notice in dry-run mode.
     #[cfg(feature = "client")]
     pub fn test_config(&self) -> Result<()> {
+        if self.dry_run {
+            Self::skip_command("test_config");
+            return Ok(());
+        }
         self.client()?.test_config()
     }
 
     /// Reload the entire Fail2Ban configuration (`fail2ban-client reload`).
+    /// Skipped with a logged notice in dry-run mode.
     #[cfg(feature = "client")]
     pub fn reload(&self) -> Result<()> {
+        if self.dry_run {
+            Self::skip_command("reload");
+            return Ok(());
+        }
         self.client()?.reload()
     }
 
     /// Reload a single jail (`fail2ban-client reload <name>`).
+    /// Skipped with a logged notice in dry-run mode. Invalid jail names are
+    /// rejected with [`Error::Validation`] even in dry-run mode.
     #[cfg(feature = "client")]
     pub fn reload_jail(&self, name: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(name)?;
+        if self.dry_run {
+            Self::skip_command("reload_jail");
+            return Ok(());
+        }
         self.client()?.reload_jail(name)
     }
 
     /// Manually ban an IP in the given jail (`fail2ban-client set <jail> banip <ip>`).
+    /// Skipped with a logged notice in dry-run mode. Invalid jail names and
+    /// non-IP operands are rejected with [`Error::Validation`] even in
+    /// dry-run mode.
     #[cfg(feature = "client")]
     pub fn ban_ip(&self, jail: &str, ip: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
+        crate::types::ensure_ip_operand(ip)?;
+        if self.dry_run {
+            Self::skip_command("ban_ip");
+            return Ok(());
+        }
         self.client()?.ban_ip(jail, ip)
     }
 
     /// Manually unban an IP in the given jail (`fail2ban-client set <jail> unbanip <ip>`).
+    /// Skipped with a logged notice in dry-run mode. Invalid jail names and
+    /// non-IP operands are rejected with [`Error::Validation`] even in
+    /// dry-run mode.
     #[cfg(feature = "client")]
     pub fn unban_ip(&self, jail: &str, ip: &str) -> Result<()> {
+        crate::types::ensure_jail_operand(jail)?;
+        crate::types::ensure_ip_operand(ip)?;
+        if self.dry_run {
+            Self::skip_command("unban_ip");
+            return Ok(());
+        }
         self.client()?.unban_ip(jail, ip)
     }
 }
+
+#[cfg(test)]
+#[path = "lib.test.rs"]
+mod tests;

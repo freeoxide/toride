@@ -1,6 +1,8 @@
 //! Async About-toride data collection (LIVE READ-ONLY) via [`AboutCollector`],
 //! reusing the shared [`TorideStatus`] snapshot delivered by the app's tick.
 
+use std::sync::Arc;
+
 use tokio::sync::oneshot;
 
 use crate::about_convert;
@@ -59,9 +61,10 @@ impl AboutCollector {
         });
     }
 
-    /// Start a collection from an already-collected [`TorideStatus`] snapshot.
-    /// A no-op if a collection is already in-flight.
-    pub fn start_with_status(&mut self, status: TorideStatus) {
+    /// Start a collection from an already-collected [`TorideStatus`]
+    /// snapshot shared by refcount; a no-op if a collection is already
+    /// in-flight.
+    pub fn start_with_status(&mut self, status: Arc<TorideStatus>) {
         if self.rx.is_some() {
             return;
         }
@@ -251,7 +254,7 @@ mod tests {
     async fn start_with_status_serves_injected_snapshot_without_recollecting() {
         let status = crate::status_collector::tests::test_status("f03-shared-snapshot-host");
         let mut collector = AboutCollector::new();
-        collector.start_with_status(status);
+        collector.start_with_status(Arc::new(status));
         let bundle = collector.poll().await.expect("pure conversion completes");
 
         assert!(bundle.available, "conversion-only path is always available");
@@ -268,9 +271,13 @@ mod tests {
     #[tokio::test]
     async fn start_with_status_is_idempotent_while_pending() {
         let mut collector = AboutCollector::new();
-        collector.start_with_status(crate::status_collector::tests::test_status("first"));
+        collector.start_with_status(Arc::new(crate::status_collector::tests::test_status(
+            "first",
+        )));
         assert!(collector.is_pending());
-        collector.start_with_status(crate::status_collector::tests::test_status("second"));
+        collector.start_with_status(Arc::new(crate::status_collector::tests::test_status(
+            "second",
+        )));
         let bundle = collector.poll().await.expect("first feed completes");
         assert_eq!(
             bundle.system.hostname, "first",

@@ -52,7 +52,7 @@ const SCRIM_FG_FACTOR: f32 = 0.45;
 
 /// Configurable border styles for [`Modal`].
 pub enum ModalBorder {
-    /// No border — just the panel background.
+    /// No border: only the panel background.
     None,
     /// Standard ratatui border using the palette's `border_hi` color.
     Default,

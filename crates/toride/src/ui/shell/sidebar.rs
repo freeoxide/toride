@@ -65,8 +65,15 @@ impl Sidebar {
     }
 
     /// Hit-test a screen coordinate against the last-rendered item rects.
+    ///
+    /// Items stack vertically in one column, so a column outside the first
+    /// and last rect's x-range misses without scanning the stack.
     #[must_use]
     pub fn item_at(&self, col: u16, row: u16) -> Option<usize> {
+        let (first, last) = (self.hitboxes.first()?, self.hitboxes.last()?);
+        if col < first.x || col >= last.right() || row < first.y || row >= last.bottom() {
+            return None;
+        }
         self.hitboxes
             .iter()
             .position(|r| col >= r.x && col < r.right() && row >= r.y && row < r.bottom())
@@ -443,6 +450,46 @@ mod tests {
         assert_eq!(s.item_at(1, 2), Some(5));
         assert_eq!(s.item_at(1, 3), Some(6));
         assert_eq!(s.item_at(1, 4), Some(7));
+    }
+
+    #[test]
+    fn item_at_column_and_row_bounds_reject_outside_hits() {
+        let mut s = Sidebar::new(20);
+        s.hitboxes = vec![Rect::new(2, 5, 10, 1), Rect::new(2, 7, 10, 1)];
+
+        assert_eq!(s.item_at(2, 5), Some(0), "first item still hit-tests");
+        assert_eq!(s.item_at(11, 7), Some(1), "last item still hit-tests");
+        assert_eq!(
+            s.item_at(1, 5),
+            None,
+            "a column left of the stack misses without a scan"
+        );
+        assert_eq!(
+            s.item_at(12, 5),
+            None,
+            "a column right of the stack misses without a scan"
+        );
+        assert_eq!(
+            s.item_at(2, 4),
+            None,
+            "a row above the stack misses without a scan"
+        );
+        assert_eq!(
+            s.item_at(2, 8),
+            None,
+            "a row below the stack misses without a scan"
+        );
+        assert_eq!(
+            s.item_at(2, 6),
+            None,
+            "a gap row between items still misses"
+        );
+    }
+
+    #[test]
+    fn item_at_with_no_hitboxes_misses() {
+        let s = Sidebar::new(20);
+        assert_eq!(s.item_at(0, 0), None);
     }
 
     #[test]

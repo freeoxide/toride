@@ -14,12 +14,12 @@
 /// Two short flags are included as narrow exceptions because they carry
 /// passphrases in tools this workspace shells out to, and the secret would
 /// otherwise survive into captured stderr/args on failure:
-///   - `-N` — `ssh-keygen` new passphrase (`ssh-keygen -t ... -N <passphrase>`)
-///   - `-P` — `ssh-keygen` old passphrase (`ssh-keygen -y -f key -P <pass>`)
+///   - `-N`: `ssh-keygen` new passphrase (`ssh-keygen -t ... -N <passphrase>`)
+///   - `-P`: `ssh-keygen` old passphrase (`ssh-keygen -y -f key -P <pass>`)
 ///
 /// Redaction is opt-in (`spec.redact`), so these only take effect on specs that
 /// request it. Caveat: OpenSSH `ssh -N` (no remote command) takes no value, so a
-/// redacted `ssh -N ...` would over-redact the following token — the workspace
+/// redacted `ssh -N ...` would over-redact the following token; the workspace
 /// does not invoke `ssh -N`, and over-redaction is the safe failure direction.
 pub const REDACT_FLAGS: &[&str] = &[
     "--password",
@@ -40,11 +40,18 @@ pub const REDACT_FLAGS: &[&str] = &[
     "-P",
 ];
 
+/// Return the value half of a `--flag=value` argument, without allocating.
+pub(crate) fn strip_flag_value<'a>(arg: &'a str, flag: &str) -> Option<&'a str> {
+    arg.strip_prefix(flag)?.strip_prefix('=')
+}
+
 /// Redact sensitive values from a list of command arguments.
 ///
 /// Any argument that appears in `flags` causes the *next* argument to be
 /// replaced with `"***"`. Flag-value pairs joined by `=` (e.g.
-/// `--password=secret`) are also redacted.
+/// `--password=secret`) are redacted to `--password=***`; a bare `--flag=`
+/// with an empty inline value is treated as a standalone sensitive flag, so
+/// the argument after it (the real secret) is redacted.
 ///
 /// # Examples
 ///
@@ -71,15 +78,10 @@ pub fn redact_args(args: &[String], flags: &[&str]) -> Vec<String> {
             continue;
         }
 
-        // Check for `--flag=value` form.
         let mut handled = false;
         for flag in flags {
-            if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
+            if let Some(value) = strip_flag_value(arg, flag) {
                 if value.is_empty() {
-                    // `--flag=` with no inline value: treat it as a standalone
-                    // sensitive flag so the NEXT arg (the real secret, e.g.
-                    // `--token= hunter2`) is redacted. Without this the empty
-                    // value would be skipped and the following secret leaked.
                     redact_next = true;
                     result.push(arg.clone());
                 } else {
@@ -93,7 +95,6 @@ pub fn redact_args(args: &[String], flags: &[&str]) -> Vec<String> {
             continue;
         }
 
-        // Check if this arg is a sensitive flag (next arg gets redacted).
         if flags.contains(&arg.as_str()) {
             redact_next = true;
         }
@@ -101,8 +102,6 @@ pub fn redact_args(args: &[String], flags: &[&str]) -> Vec<String> {
         result.push(arg.clone());
     }
 
-    // If the last argument was a flag requiring redaction but there was no
-    // value after it, just keep the flag.
     result
 }
 

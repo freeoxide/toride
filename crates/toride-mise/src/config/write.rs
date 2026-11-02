@@ -2,19 +2,15 @@
 //!
 //! This module contains `impl Mise` methods that modify mise configuration:
 //!
-//! - `config_set` — set a key in a config file.
-//! - `settings_set` — set a mise setting.
-//! - `settings_unset` — remove a mise setting.
+//! - `config_set`: set a key in a config file.
+//! - `settings_set`: set a mise setting.
+//! - `settings_unset`: remove a mise setting.
 
 use camino::Utf8PathBuf;
 
 use crate::client::Mise;
 use crate::config::model::{ConfigWriteResult, SettingsEntry};
 use crate::error::MiseResult;
-
-// ---------------------------------------------------------------------------
-// impl Mise — write operations
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// Set a config key in the specified config file.
@@ -43,25 +39,35 @@ impl Mise {
 
         let existed = path.as_std_path().exists();
 
-        // Use toml_edit for precise in-place editing when available.
+        // Use toml_edit for precise in-place editing when available; both
+        // paths report the previous value so `changed` is computed, not
+        // hardcoded.
         #[cfg(feature = "toml")]
-        {
-            Self::config_set_toml_edit(&path, key, value, existed)?;
-        }
+        let old_value = Self::config_set_toml_edit(&path, key, value, existed)?;
 
         #[cfg(not(feature = "toml"))]
         {
+            let old = self.config_get(key).await.ok().flatten();
             self.run_checked(["config", "set", key, value]).await?;
             let _ = existed; // used below
+            return Ok(ConfigWriteResult {
+                path,
+                created: !existed,
+                key: Some(key.to_owned()),
+                changed: old.as_deref() != Some(value),
+                old_value: old,
+                new_value: Some(value.to_owned()),
+            });
         }
 
+        #[cfg(feature = "toml")]
         Ok(ConfigWriteResult {
             path,
             created: !existed,
             key: Some(key.to_owned()),
-            old_value: None,
+            changed: old_value.as_deref() != Some(value),
+            old_value,
             new_value: Some(value.to_owned()),
-            changed: true,
         })
     }
 
@@ -78,6 +84,8 @@ impl Mise {
         value: &SettingsEntry,
     ) -> MiseResult<ConfigWriteResult> {
         let mise_value = value.to_mise_value();
+        let old = self.settings_get(key).await.ok().flatten();
+        let old_value = old.as_ref().map(SettingsEntry::to_mise_value);
         self.run_checked(["settings", "set", key, &mise_value])
             .await?;
 
@@ -87,9 +95,9 @@ impl Mise {
             path,
             created: false,
             key: Some(key.to_owned()),
-            old_value: None,
+            changed: old_value.as_deref() != Some(mise_value.as_str()),
+            old_value,
             new_value: Some(mise_value),
-            changed: true,
         })
     }
 
@@ -101,17 +109,22 @@ impl Mise {
     ///
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn settings_add(&self, key: &str, value: &str) -> MiseResult<ConfigWriteResult> {
+        let old = self.settings_get(key).await.ok().flatten();
+        let old_value = old.as_ref().map(SettingsEntry::to_mise_value);
         self.run_checked(["settings", "add", key, value]).await?;
 
         let path = self.config_path().await?;
 
+        // An add only changes an array setting when the value is not already
+        // a member; for scalar settings mise's add behaves as a set.
+        let already_present = matches!(&old, Some(SettingsEntry::Array(items)) if items.iter().any(|item| item == value));
         Ok(ConfigWriteResult {
             path,
             created: false,
             key: Some(key.to_owned()),
-            old_value: None,
+            changed: !already_present,
+            old_value,
             new_value: Some(value.to_owned()),
-            changed: true,
         })
     }
 
@@ -125,16 +138,23 @@ impl Mise {
     /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero for
     /// a reason other than a missing key.
     pub async fn settings_unset(&self, key: &str) -> MiseResult<ConfigWriteResult> {
+        let old = self.settings_get(key).await.ok().flatten();
+        let old_value = old.as_ref().map(SettingsEntry::to_mise_value);
         let result = self.run_checked(["settings", "unset", key]).await;
         match result {
             Ok(_) => {}
-            Err(crate::error::MiseError::CommandFailed { stderr, .. }) => {
-                // If the key was not set, that is fine — treat as success.
+            Err(crate::error::MiseError::CommandFailed {
+                command: _,
+                exit_code,
+                stdout,
+                stderr,
+            }) => {
+                // If the key was not set, that is fine: treat as success.
                 if !stderr.contains("not set") && !stderr.contains("not found") {
                     return Err(crate::error::MiseError::CommandFailed {
                         command: format!("settings unset {key}"),
-                        exit_code: None,
-                        stdout: String::new(),
+                        exit_code,
+                        stdout,
                         stderr,
                     });
                 }
@@ -148,20 +168,18 @@ impl Mise {
             path,
             created: false,
             key: Some(key.to_owned()),
-            old_value: None,
+            changed: old_value.is_some(),
+            old_value,
             new_value: None,
-            changed: true,
         })
     }
-
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
 
     /// Perform a config set via `toml_edit` for lossless round-tripping.
     ///
     /// Reads the file (or creates an empty document), applies the key/value
-    /// edit, and writes the result back.
+    /// edit, writes the result back, and returns the previous leaf value
+    /// (rendered in the same plain form [`SettingsEntry::to_mise_value`]
+    /// produces) so callers can compute an honest `changed`.
     #[cfg(feature = "toml")]
     #[allow(clippy::too_many_lines)]
     fn config_set_toml_edit(
@@ -169,11 +187,11 @@ impl Mise {
         key: &str,
         value: &str,
         _existed: bool,
-    ) -> MiseResult<()> {
+    ) -> MiseResult<Option<String>> {
         use crate::config::model::SettingsEntry;
         use crate::error::ConfigError;
 
-        // Read unconditionally — handle file-not-found gracefully instead of
+        // Read unconditionally: handle file-not-found gracefully instead of
         // a TOCTOU-prone exists() + read() pair.
         let content = match fs_err::read_to_string(path.as_std_path()) {
             Ok(s) => s,
@@ -200,10 +218,12 @@ impl Mise {
         // navigating into nested tables.
         let parts: Vec<&str> = key.split('.').collect();
         let mut table = doc.as_table_mut();
+        let mut old_value: Option<String> = None;
 
         for (i, part) in parts.iter().enumerate() {
             if i == parts.len() - 1 {
-                // Leaf key — set the value with proper TOML typing.
+                // Leaf key: set the value with proper TOML typing.
+                old_value = plain_leaf_value(table.get(part));
                 let entry = SettingsEntry::from_raw(value);
                 let toml_value = match entry {
                     SettingsEntry::Bool(b) => toml_edit::value(b),
@@ -219,7 +239,7 @@ impl Mise {
                 };
                 table[*part] = toml_value;
             } else {
-                // Intermediate segment — ensure a sub-table exists.
+                // Intermediate segment: ensure a sub-table exists.
                 if !table.contains_key(part) {
                     table[*part] = toml_edit::Item::Table(toml_edit::Table::new());
                 }
@@ -300,13 +320,29 @@ impl Mise {
                 reason: e.to_string(),
             })?;
 
-        Ok(())
+        Ok(old_value)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/// The current leaf value rendered plainly (unquoted strings, decimal
+/// numbers), or `None` when the key is absent or not a value.
+#[cfg(feature = "toml")]
+fn plain_leaf_value(item: Option<&toml_edit::Item>) -> Option<String> {
+    let item = item?;
+    if let Some(flag) = item.as_bool() {
+        return Some(flag.to_string());
+    }
+    if let Some(number) = item.as_integer() {
+        return Some(number.to_string());
+    }
+    if let Some(float) = item.as_float() {
+        return Some(float.to_string());
+    }
+    if let Some(text) = item.as_str() {
+        return Some(text.to_owned());
+    }
+    item.as_array().map(std::string::ToString::to_string)
+}
 
 #[cfg(all(test, feature = "toml"))]
 mod tests {
@@ -320,6 +356,42 @@ mod tests {
         Mise::config_set_toml_edit(path, key, value, false)
             .expect("config_set_toml_edit should succeed");
         fs_err::read_to_string(path.as_std_path()).expect("written file should be readable")
+    }
+
+    #[tokio::test]
+    async fn config_set_computes_changed_and_old_value_honestly() {
+        use std::sync::Arc;
+
+        use toride_runner::FakeRunner;
+
+        let dir = TempDir::new().expect("tempdir");
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml")).expect("utf8 path");
+        fs_err::write(path.as_std_path(), "python = \"3.12\"\n").expect("seed write");
+
+        let mise = Mise::builder()
+            .runner(Arc::new(FakeRunner::new()) as Arc<dyn toride_runner::AsyncRunner>)
+            .binary(crate::binary::MiseBinary::from_path("/usr/bin/mise"))
+            .build()
+            .expect("client builds");
+
+        let unchanged = mise
+            .config_set("python", "3.12", Some(&path))
+            .await
+            .expect("set succeeds");
+        assert!(
+            !unchanged.changed,
+            "writing the identical value is no change"
+        );
+        assert_eq!(unchanged.old_value.as_deref(), Some("3.12"));
+        assert!(!unchanged.created);
+
+        let changed = mise
+            .config_set("python", "3.13", Some(&path))
+            .await
+            .expect("set succeeds");
+        assert!(changed.changed, "a different value is a change");
+        assert_eq!(changed.old_value.as_deref(), Some("3.12"));
+        assert_eq!(changed.new_value.as_deref(), Some("3.13"));
     }
 
     #[test]

@@ -84,7 +84,7 @@ impl Validator for MaxLength {
     }
 }
 
-/// Validates that the value is a valid TCP/UDP port number (1–65535) or empty.
+/// Validates that the value is a valid TCP/UDP port number (1-65535) or empty.
 ///
 /// Empty values are allowed (port is typically optional). Use `Required` alongside
 /// this validator if the port must be provided.
@@ -100,7 +100,7 @@ impl Validator for Port {
         match trimmed.parse::<u16>() {
             Ok(p) if p > 0 => None,
             _ => Some(ValidationError::new(
-                "Must be a valid port number (1–65535)",
+                "Must be a valid port number (1-65535)",
             )),
         }
     }

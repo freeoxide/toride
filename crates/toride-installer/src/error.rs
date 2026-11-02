@@ -137,6 +137,16 @@ pub enum Error {
         asset: String,
     },
 
+    /// The fetched checksum file body was not valid UTF-8, so no digest line
+    /// can be parsed from it at all. Distinct from
+    /// [`Error::NoChecksumEntry`], which means a readable file carried no
+    /// matching entry.
+    #[error("checksum file at {url} is not valid UTF-8")]
+    ChecksumNotUtf8 {
+        /// The checksum-file URL that was fetched.
+        url: String,
+    },
+
     /// The tool publishes no checksum; verification fell back to the size
     /// floor only. Returned only when a caller explicitly requests strict
     /// verification via `crate::Verifier::Strict`.

@@ -6,18 +6,18 @@
 //! [`Verifier::Strict`] ([`Verifier::Lenient`] only behind an explicit
 //! [`DirectBackend::with_verifier`] opt); tarball extraction for archive
 //! URLs; and the atomic `0o755` install write. No package manager is
-//! involved — this is the one backend every platform shares.
+//! involved: this is the one backend every platform shares.
 //!
 //! The manifest is the ledger: `list_installed` reports nothing (a
 //! directory listing cannot attribute binaries to toride), presence rides
 //! the filesystem probe behind [`Backend::status`], and uninstalls replay
-//! the record's installed path — deleting only the canonicalized
+//! the record's installed path, deleting only the canonicalized
 //! install-dir binary, never anything else.
 //!
 //! The async operations await toride-installer's pipeline directly; the
 //! `_sync` twins drive the same code through a current-thread tokio
 //! runtime created per call (the `direct` feature necessarily pulls tokio
-//! in), so an all-sync embedder gets direct downloads too — never call
+//! in), so an all-sync embedder gets direct downloads too; never call
 //! the sync twins from inside an async context.
 
 use std::path::Path;
@@ -45,7 +45,7 @@ use crate::plan::{
 /// (`~/.local/bin`, matching toride-installer's default), or
 /// [`DirectBackend::detect`] (the
 /// [`detect_backends`](crate::apps::AppsBuilder::detect_backends) wiring
-/// name — there is no manager binary to detect, so it never probes).
+/// name: there is no manager binary to detect, so it never probes).
 /// [`DirectBackend::install_dir`] is the directory records resolve their
 /// binary paths against.
 pub struct DirectBackend {
@@ -74,7 +74,7 @@ impl DirectBackend {
         Ok(Self::at(dir))
     }
 
-    /// The backend over `install_dir`, verifying strictly — the injectable
+    /// The backend over `install_dir`, verifying strictly: the injectable
     /// spelling tests and embedders pin the install location with.
     #[must_use]
     pub fn at(install_dir: impl Into<Utf8PathBuf>) -> Self {
@@ -84,7 +84,7 @@ impl DirectBackend {
         }
     }
 
-    /// The host wiring — [`DirectBackend::new`] under the name the
+    /// The host wiring: [`DirectBackend::new`] under the name the
     /// builder's detect pass calls; nothing to detect (no manager binary).
     ///
     /// # Errors
@@ -94,14 +94,14 @@ impl DirectBackend {
         Self::new()
     }
 
-    /// The directory direct installs write into — the base every recorded
+    /// The directory direct installs write into: the base every recorded
     /// binary path resolves against.
     #[must_use]
     pub const fn install_dir(&self) -> &Utf8PathBuf {
         &self.install_dir
     }
 
-    /// Set the verification policy — the explicit opt-in
+    /// Set the verification policy: the explicit opt-in
     /// [`Verifier::Lenient`] (size-floor sanity check only) replaces the
     /// strict default; consume-and-return.
     #[must_use]
@@ -122,7 +122,7 @@ impl DirectBackend {
         };
         if !is_single_path_component(bin_name) {
             return Err(Error::Command(toride_runner::Error::Other(format!(
-                "the direct bin_name `{bin_name}` is not a single path component — \
+                "the direct bin_name `{bin_name}` is not a single path component: \
                  refusing a destination outside the install dir"
             ))));
         }
@@ -191,7 +191,7 @@ impl DirectBackend {
             return Err(Error::DirectUninstallFailed {
                 path: bin_path.to_owned(),
                 reason: format!(
-                    "it does not live in the install dir {} — only the canonicalized \
+                    "it does not live in the install dir {}: only the canonicalized \
                      install-dir binary is removed",
                     self.install_dir
                 ),
@@ -276,7 +276,7 @@ impl Backend for DirectBackend {
     }
 }
 
-/// A resolver that answers with the URL the plan already carries — the
+/// A resolver that answers with the URL the plan already carries: the
 /// direct method's URL is the fully-resolved artifact address, so there is
 /// nothing to resolve.
 struct UrlResolver {
@@ -308,7 +308,7 @@ fn probe(id: &str) -> BackendStatus {
     }
 }
 
-/// Forward the planning target to the installer's target type — inert for
+/// Forward the planning target to the installer's target type: inert for
 /// a fixed-URL resolver, but the honest relay of the request's context.
 fn artifact_target(target: Target) -> ArtifactTarget {
     ArtifactTarget {
@@ -324,7 +324,7 @@ fn artifact_target(target: Target) -> ArtifactTarget {
     }
 }
 
-/// The runtime the sync twin blocks on — current-thread, I/O and time
+/// The runtime the sync twin blocks on: current-thread, I/O and time
 /// enabled (reqwest needs both; the installer's blocking steps ride its
 /// dedicated blocking pool). Created per call and dropped on the calling
 /// (sync) thread, so nothing ever drops a runtime from async context.
@@ -347,14 +347,14 @@ fn misrouted_operation(operation: &Operation) -> Error {
 
 fn unsupported_archive(url: &str) -> Error {
     Error::Command(toride_runner::Error::Other(format!(
-        "the direct pipeline cannot extract the archive at {url} — \
+        "the direct pipeline cannot extract the archive at {url}: \
          it installs single binaries and tar.gz/tar.xz tarballs only"
     )))
 }
 
 fn direct_update_refused() -> Error {
     Error::Command(toride_runner::Error::Other(
-        "direct records have no update verb — re-run ensure_installed to re-download".to_owned(),
+        "direct records have no update verb: re-run ensure_installed to re-download".to_owned(),
     ))
 }
 

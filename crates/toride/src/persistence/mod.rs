@@ -2,7 +2,7 @@
 //!
 //! Saves and restores the user's selected [`Theme`] so the choice survives
 //! restarts. The value lives in a single TOML file at the standard per-OS config
-//! location — `<config_dir>/toride/config.toml` (resolved via [`dirs`]) — as a
+//! location: `<config_dir>/toride/config.toml` (resolved via [`dirs`]), as a
 //! `theme = "<label>"` row. The label matches [`Theme::label`], so the Settings
 //! section's existing config-file reader surfaces the persisted choice directly
 //! with no separate read path.
@@ -14,10 +14,21 @@
 //! logged but otherwise swallowed.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
 use crate::ui::theme::Theme;
+
+/// Serializes every `config.toml` read-modify-write cycle so two fire-and-forget
+/// saves (theme and animations) cannot interleave and drop one another's key.
+static CONFIG_SAVE_LOCK: Mutex<()> = Mutex::new(());
+
+fn save_lock() -> MutexGuard<'static, ()> {
+    CONFIG_SAVE_LOCK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 /// Subdirectory under the OS config dir that holds toride's files.
 const APP_DIR: &str = "toride";
@@ -95,8 +106,8 @@ fn config_path() -> Option<PathBuf> {
 /// Load the persisted theme.
 ///
 /// Reads `<config_dir>/toride/config.toml`, parses it as TOML, and resolves the
-/// `theme` label via [`Theme::from_label`]. Any failure — no config dir, missing
-/// file, unreadable file, malformed TOML, or an unrecognized theme label — is
+/// `theme` label via [`Theme::from_label`]. Any failure: no config dir, missing
+/// file, unreadable file, malformed TOML, or an unrecognized theme label: is
 /// logged at debug level and yields [`Theme::default`]. This keeps the app
 /// launching normally on a fresh install or with a corrupt config.
 #[must_use]
@@ -113,9 +124,11 @@ pub fn load_theme() -> Theme {
 /// Writes `theme = "<label>"` to `<config_dir>/toride/config.toml`, creating the
 /// `toride/` directory (and parents) if needed. Any other keys already present
 /// in the file are preserved (the file is round-tripped through a TOML table).
+/// Concurrent saves are serialized on a process-wide lock, so a racing theme
+/// save and animations save cannot drop either key.
 ///
-/// Failures are logged but otherwise swallowed — a read-only HOME or a missing
-/// config dir must never crash the running TUI; the choice simply won't persist
+/// Failures are logged but otherwise swallowed: a read-only HOME or a missing
+/// config dir must never crash the running TUI; the choice will not persist
 /// and the app reverts to the default on next launch.
 pub fn save_theme(theme: Theme) {
     let Some(path) = config_path() else {
@@ -130,7 +143,7 @@ fn load_theme_from(path: &Path) -> Theme {
     let contents = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            // Missing file is the common case on a fresh install — debug, not
+            // Missing file is the common case on a fresh install: debug, not
             // warn. Anything else (permission denied, IO error) is warn.
             if e.kind() == std::io::ErrorKind::NotFound {
                 tracing::debug!(
@@ -158,7 +171,7 @@ fn load_theme_from(path: &Path) -> Theme {
     if let Some(theme) = cfg.theme.as_deref().and_then(Theme::from_label) {
         theme
     } else {
-        // Present but empty/unrecognized — fall back to the default rather
+        // Present but empty/unrecognized: fall back to the default rather
         // than coercing a corrupt label into a wrong theme.
         if let Some(label) = cfg.theme.as_deref() {
             tracing::warn!(
@@ -178,6 +191,7 @@ fn load_theme_from(path: &Path) -> Theme {
 /// the user's toride config is owner-only and a crash mid-write cannot leave a
 /// truncated config.
 fn save_theme_to(path: &Path, theme: Theme) {
+    let _guard = save_lock();
     // Load + merge so unrelated keys survive the write. A missing/unreadable
     // file starts from an empty config (the theme becomes the sole key).
     let mut table: toml::Table = std::fs::read_to_string(path)
@@ -211,8 +225,8 @@ fn save_theme_to(path: &Path, theme: Theme) {
 
 /// Load the persisted animation preference.
 ///
-/// Any failure — no config dir, missing file, unreadable file, malformed TOML,
-/// or an unrecognized label — is logged at debug/warn and yields
+/// Any failure: no config dir, missing file, unreadable file, malformed TOML,
+/// or an unrecognized label: is logged at debug/warn and yields
 /// [`AnimPref::Auto`] (run the virtualization probe). This keeps the app
 /// launching normally on a fresh install or with a corrupt config.
 #[must_use]
@@ -227,7 +241,7 @@ pub fn load_animations() -> AnimPref {
 /// Persist the animation preference so it survives the next launch.
 ///
 /// Writes `animations = "<label>"`, preserving any other keys already in the
-/// file (round-tripped through a TOML table). Failures are swallowed — a
+/// file (round-tripped through a TOML table). Failures are swallowed: a
 /// read-only HOME must never crash the running TUI.
 pub fn save_animations(pref: AnimPref) {
     let Some(path) = config_path() else {
@@ -283,6 +297,7 @@ fn load_animations_from(path: &Path) -> AnimPref {
 /// Like [`save_theme_to`], the write is delegated to
 /// [`toride_fs::atomic_write_with_perms`] with explicit `0600` permissions.
 fn save_animations_to(path: &Path, pref: AnimPref) {
+    let _guard = save_lock();
     let mut table: toml::Table = std::fs::read_to_string(path)
         .ok()
         .and_then(|c| toml::from_str(&c).ok())
@@ -311,7 +326,7 @@ fn save_animations_to(path: &Path, pref: AnimPref) {
 /// The atomic write fsyncs on both sides of the rename and sets the mode up
 /// front (independent of umask), so a crash mid-write cannot leave a truncated
 /// config and the file is never briefly world-readable. Errors are logged and
-/// swallowed — a read-only HOME must never crash the running TUI.
+/// swallowed: a read-only HOME must never crash the running TUI.
 fn write_config_atomic(path: &Path, serialized: &str) {
     // 0600: the user's toride config may carry preferences but should still be
     // owner-only (no group/other read), matching the sensitivity of a per-user
@@ -375,7 +390,7 @@ mod tests {
         for &theme in Theme::all() {
             let dir = tempfile::tempdir().unwrap();
             let path = config_under(dir.path());
-            // Config dir + file do not exist yet — save must create them.
+            // Config dir + file do not exist yet: save must create them.
             assert!(!path.exists());
             save_theme_to(&path, theme);
             assert!(path.exists(), "save created the config file");
@@ -390,7 +405,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn save_theme_writes_with_owner_only_0600_mode() {
-        // The user's config file must be owner-only (0600) — atomic_write_with_perms
+        // The user's config file must be owner-only (0600): atomic_write_with_perms
         // sets the mode up front independent of umask, so this holds regardless of
         // the test environment's umask.
         let dir = tempfile::tempdir().unwrap();
@@ -428,7 +443,7 @@ mod tests {
     #[test]
     fn save_preserves_existing_unrelated_keys() {
         // A config that already has other keys must NOT lose them when the
-        // theme is updated — the file is round-tripped through a TOML table.
+        // theme is updated: the file is round-tripped through a TOML table.
         let dir = tempfile::tempdir().unwrap();
         let path = write_config(dir.path(), "log_level = \"debug\"\ntimeout = 30\n");
         save_theme_to(&path, Theme::Nord);
@@ -606,5 +621,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_config(dir.path(), "theme = \"Charm\"\n");
         assert_eq!(load_animations_from(&path), AnimPref::Auto);
+    }
+
+    #[test]
+    fn concurrent_theme_and_animations_saves_keep_both_keys() {
+        use std::sync::Barrier;
+        for _ in 0..100 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = write_config(dir.path(), "theme = \"Nord\"\n");
+            let barrier = Barrier::new(2);
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    barrier.wait();
+                    save_animations_to(&path, AnimPref::Off);
+                });
+                s.spawn(|| {
+                    barrier.wait();
+                    save_theme_to(&path, Theme::Gruvbox);
+                });
+            });
+            let after = fs::read_to_string(&path).unwrap();
+            assert!(
+                after.contains("animations = \"off\""),
+                "animations key lost to a racing theme save: {after}"
+            );
+            assert!(
+                after.contains("theme = \"Gruvbox Dark\""),
+                "theme key lost to a racing animations save: {after}"
+            );
+        }
     }
 }

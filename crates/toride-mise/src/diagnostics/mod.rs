@@ -27,10 +27,6 @@ use crate::binary::MiseBinary;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// DiagnosticKind
-// ---------------------------------------------------------------------------
-
 /// Classification of a mise diagnostic finding.
 ///
 /// Each variant maps to a category of issue that `mise doctor` (or related
@@ -62,10 +58,6 @@ pub enum DiagnosticKind {
     /// An issue that does not fit any of the above categories.
     Other,
 }
-
-// ---------------------------------------------------------------------------
-// Diagnostic
-// ---------------------------------------------------------------------------
 
 /// A single diagnostic finding from a mise health check.
 ///
@@ -125,10 +117,6 @@ fn kind_label(kind: &DiagnosticKind) -> &'static str {
         DiagnosticKind::Other => "OTHER",
     }
 }
-
-// ---------------------------------------------------------------------------
-// DoctorReport
-// ---------------------------------------------------------------------------
 
 /// The result of running `mise doctor`.
 ///
@@ -191,10 +179,6 @@ impl DoctorReport {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// DiagnosticsBuilder
-// ---------------------------------------------------------------------------
 
 /// Fluent builder for running a selective set of diagnostic checks against a
 /// [`Mise`] client.
@@ -285,7 +269,7 @@ impl<'a> DiagnosticsBuilder<'a> {
         for kind in &self.checks {
             match kind {
                 DiagnosticKind::BinaryMissing => {
-                    // Try discovering the binary — via the async wrapper, so
+                    // Try discovering the binary: via the async wrapper, so
                     // the detector's version probes stay off the async
                     // runtime worker.
                     if MiseBinary::discover_async().await.is_err() {
@@ -387,7 +371,6 @@ impl<'a> DiagnosticsBuilder<'a> {
                     }
                 },
                 _ => {
-                    // For unrecognised checks, just run doctor and extract.
                     let report = self.mise.doctor().await?;
                     warnings.extend(report.warnings);
                     errors.extend(report.errors);
@@ -404,10 +387,6 @@ impl<'a> DiagnosticsBuilder<'a> {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Parsing helpers
-// ---------------------------------------------------------------------------
 
 /// Parse the raw `mise doctor` output into a structured [`DoctorReport`].
 ///
@@ -499,10 +478,6 @@ fn classify_line(text: &str) -> Diagnostic {
     Diagnostic::new(kind, text)
 }
 
-// ---------------------------------------------------------------------------
-// Mise impl — doctor & trust methods
-// ---------------------------------------------------------------------------
-
 impl Mise {
     /// Run `mise doctor` and return a parsed report.
     ///
@@ -576,10 +551,6 @@ impl Mise {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

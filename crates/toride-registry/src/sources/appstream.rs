@@ -1,4 +1,4 @@
-//! `AppStream` / DEP-11 adapter — normalizes Debian/Ubuntu distro catalogs
+//! `AppStream` / DEP-11 adapter: normalizes Debian/Ubuntu distro catalogs
 //! into [`App`]s.
 //!
 //! ```
@@ -55,7 +55,7 @@ const APP_COMPONENT_TYPES: [&str; 2] = ["desktop-application", "console-applicat
 /// component document, in catalog order.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dep11Catalog {
-    /// The first YAML document — the catalog header.
+    /// The first YAML document: the catalog header.
     pub header: Dep11Header,
     /// One entry per component document, in catalog order.
     pub components: Vec<Dep11Component>,
@@ -65,24 +65,24 @@ pub struct Dep11Catalog {
 /// optional on the wire.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dep11Header {
-    /// `File: DEP-11` — format marker.
+    /// `File: DEP-11`: format marker.
     #[serde(rename = "File", default)]
     pub file: Option<String>,
-    /// `Version` — spec version targeted; a bare number on the wire is
+    /// `Version`: spec version targeted; a bare number on the wire is
     /// tolerated (coerced to text).
     #[serde(rename = "Version", default, deserialize_with = "de_opt_text")]
     pub version: Option<String>,
-    /// `Origin` — repo identity; scopes the emitted `Distro` install rows.
+    /// `Origin`: repo identity; scopes the emitted `Distro` install rows.
     #[serde(rename = "Origin", default)]
     pub origin: Option<String>,
-    /// `MediaBaseUrl` — base URL for relative icon/screenshot media URLs.
+    /// `MediaBaseUrl`: base URL for relative icon/screenshot media URLs.
     #[serde(rename = "MediaBaseUrl", default)]
     pub media_base_url: Option<String>,
-    /// `Time` — catalog generation timestamp (ISO-8601 or basic-format;
+    /// `Time`: catalog generation timestamp (ISO-8601 or basic-format;
     /// kept as the source spells it).
     #[serde(rename = "Time", default)]
     pub time: Option<String>,
-    /// `Architecture` — optional multiarch disambiguator.
+    /// `Architecture`: optional multiarch disambiguator.
     #[serde(rename = "Architecture", default)]
     pub architecture: Option<String>,
 }
@@ -91,55 +91,55 @@ pub struct Dep11Header {
 /// fields are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dep11Component {
-    /// `Type` — only `desktop-application` and `console-application`
+    /// `Type`: only `desktop-application` and `console-application`
     /// components become [`App`]s.
     #[serde(rename = "Type", default)]
     pub type_: Option<String>,
-    /// `ID` — component id; legacy `.desktop`-suffixed and reverse-DNS
+    /// `ID`: component id; legacy `.desktop`-suffixed and reverse-DNS
     /// styles coexist.
     #[serde(rename = "ID", default)]
     pub id: Option<String>,
-    /// `Package` — the distro package name `apt` knows; a bare number on
+    /// `Package`: the distro package name `apt` knows; a bare number on
     /// the wire is tolerated.
     #[serde(rename = "Package", default, deserialize_with = "de_opt_text")]
     pub package: Option<String>,
-    /// `Name` — localized display name, `C` mandatory.
+    /// `Name`: localized display name, `C` mandatory.
     #[serde(rename = "Name", default, deserialize_with = "de_locale_map")]
     pub name: LocaleMap,
-    /// `Summary` — localized one-liner, `C` mandatory.
+    /// `Summary`: localized one-liner, `C` mandatory.
     #[serde(rename = "Summary", default, deserialize_with = "de_locale_map")]
     pub summary: LocaleMap,
-    /// `Description` — localized HTML; stripped to plain text at emission.
+    /// `Description`: localized HTML; stripped to plain text at emission.
     #[serde(rename = "Description", default, deserialize_with = "de_locale_map")]
     pub description: LocaleMap,
-    /// `ProjectLicense` — SPDX expression (`GPL-3.0-or-later`).
+    /// `ProjectLicense`: SPDX expression (`GPL-3.0-or-later`).
     #[serde(rename = "ProjectLicense", default)]
     pub project_license: Option<String>,
-    /// `Developer` — `{id, name:{locales}}`; optional.
+    /// `Developer`: `{id, name:{locales}}`; optional.
     #[serde(rename = "Developer", default)]
     pub developer: Option<Dep11Developer>,
-    /// `Releases` — newest first per spec; often absent.
+    /// `Releases`: newest first per spec; often absent.
     #[serde(rename = "Releases", default)]
     pub releases: Vec<Dep11Release>,
-    /// `Provides` — typed capabilities; `binaries` is the tool-detection
+    /// `Provides`: typed capabilities; `binaries` is the tool-detection
     /// join key.
     #[serde(rename = "Provides", default)]
     pub provides: Option<Dep11Provides>,
-    /// `Launchable` — `desktop-id` entries that launch the app.
+    /// `Launchable`: `desktop-id` entries that launch the app.
     #[serde(rename = "Launchable", default)]
     pub launchable: Option<Dep11Launchable>,
-    /// `Categories` — freedesktop menu categories (`Network`, `Utility`).
+    /// `Categories`: freedesktop menu categories (`Network`, `Utility`).
     #[serde(rename = "Categories", default)]
     pub categories: Vec<String>,
 }
 
-/// `Developer` dict — upstream developer identity.
+/// `Developer` dict: upstream developer identity.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dep11Developer {
-    /// `id` — reverse-DNS developer id (`org.gnome`).
+    /// `id`: reverse-DNS developer id (`org.gnome`).
     #[serde(default)]
     pub id: Option<String>,
-    /// `name` — localized developer name (`C`: "The GNOME Project").
+    /// `name`: localized developer name (`C`: "The GNOME Project").
     #[serde(default, deserialize_with = "de_locale_map")]
     pub name: LocaleMap,
 }
@@ -147,13 +147,13 @@ pub struct Dep11Developer {
 /// One published release.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dep11Release {
-    /// `version` — release version string; tolerated as a bare number.
+    /// `version`: release version string; tolerated as a bare number.
     #[serde(default, deserialize_with = "de_opt_text")]
     pub version: Option<String>,
-    /// `type` — `stable` / `development`.
+    /// `type`: `stable` / `development`.
     #[serde(rename = "type", default)]
     pub type_: Option<String>,
-    /// `unix-timestamp` — release time, unix seconds.
+    /// `unix-timestamp`: release time, unix seconds.
     #[serde(
         rename = "unix-timestamp",
         default,
@@ -162,15 +162,15 @@ pub struct Dep11Release {
     pub unix_timestamp: Option<i64>,
 }
 
-/// `Provides` dict — only `binaries` and `mediatypes` are modeled; the
+/// `Provides` dict: only `binaries` and `mediatypes` are modeled; the
 /// other spec keys are ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dep11Provides {
-    /// `binaries` — executables the package installs on PATH; the
+    /// `binaries`: executables the package installs on PATH; the
     /// tool-detection join key.
     #[serde(default)]
     pub binaries: Vec<String>,
-    /// `mediatypes` — MIME/scheme handlers; not mapped to [`App`].
+    /// `mediatypes`: MIME/scheme handlers; not mapped to [`App`].
     #[serde(default)]
     pub mediatypes: Vec<String>,
 }
@@ -178,7 +178,7 @@ pub struct Dep11Provides {
 /// `Launchable` dict.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dep11Launchable {
-    /// `desktop-id` — `.desktop` ids launching the app.
+    /// `desktop-id`: `.desktop` ids launching the app.
     #[serde(rename = "desktop-id", default)]
     pub desktop_id: Vec<String>,
 }
@@ -323,7 +323,7 @@ fn strip_html(html: &str) -> String {
     decoded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Decode the [`Arch`] from a DEP-11 catalog filename or URL — the YAML
+/// Decode the [`Arch`] from a DEP-11 catalog filename or URL: the YAML
 /// names no arch. `None` → emitted Apps carry `platforms = []`.
 #[must_use]
 pub fn decode_catalog_arch(filename_or_url: &str) -> Option<Arch> {
@@ -370,6 +370,42 @@ pub struct AppstreamAdapter {
     family: DistroFamily,
     repo: Option<String>,
     arch: Option<Arch>,
+    search_keys: Vec<Vec<String>>,
+}
+
+/// Hit cap for [`AppstreamAdapter::search`], matching the homebrew
+/// adapter's [`MAX_SEARCH_HITS`](crate::sources::homebrew::MAX_SEARCH_HITS).
+const MAX_SEARCH_HITS: usize = 50;
+
+fn component_search_keys(component: &Dep11Component) -> Vec<String> {
+    let mut keys = Vec::new();
+    keys.extend(component.name.values().map(|text| text.to_lowercase()));
+    keys.extend(component.summary.values().map(|text| text.to_lowercase()));
+    if let Some(id) = &component.id {
+        keys.push(id.to_lowercase());
+    }
+    if let Some(package) = &component.package {
+        keys.push(package.to_lowercase());
+    }
+    keys.extend(
+        component
+            .categories
+            .iter()
+            .map(|category| category.to_lowercase()),
+    );
+    if let Some(provides) = &component.provides {
+        keys.extend(provides.binaries.iter().map(|value| value.to_lowercase()));
+        keys.extend(provides.mediatypes.iter().map(|value| value.to_lowercase()));
+    }
+    if let Some(launchable) = &component.launchable {
+        keys.extend(
+            launchable
+                .desktop_id
+                .iter()
+                .map(|value| value.to_lowercase()),
+        );
+    }
+    keys
 }
 
 impl AppstreamAdapter {
@@ -379,15 +415,21 @@ impl AppstreamAdapter {
     pub fn new(catalog: Dep11Catalog, arch: Option<Arch>) -> Self {
         let repo = catalog.header.origin.clone();
         let family = decode_family(catalog.header.origin.as_deref());
+        let search_keys = catalog
+            .components
+            .iter()
+            .map(component_search_keys)
+            .collect();
         Self {
             catalog,
             family,
             repo,
             arch,
+            search_keys,
         }
     }
 
-    /// Parse catalog text (raw, decompressed — what
+    /// Parse catalog text (raw, decompressed: what
     /// `AppstreamClient::fetch_catalog` (feature `http`) returns) into an
     /// adapter.
     ///
@@ -541,40 +583,6 @@ fn component_binaries(component: &Dep11Component) -> Vec<String> {
     binaries
 }
 
-fn component_matches(component: &Dep11Component, needle: &str) -> bool {
-    let locale_hit = |map: &LocaleMap| {
-        map.values()
-            .any(|text| text.to_lowercase().contains(needle))
-    };
-    let list_hit = |values: &[String]| {
-        values
-            .iter()
-            .any(|value| value.to_lowercase().contains(needle))
-    };
-    locale_hit(&component.name)
-        || locale_hit(&component.summary)
-        || component
-            .id
-            .as_deref()
-            .is_some_and(|id| id.to_lowercase().contains(needle))
-        || component
-            .package
-            .as_deref()
-            .is_some_and(|id| id.to_lowercase().contains(needle))
-        || component
-            .categories
-            .iter()
-            .any(|category| category.to_lowercase().contains(needle))
-        || component
-            .provides
-            .as_ref()
-            .is_some_and(|provides| list_hit(&provides.binaries) || list_hit(&provides.mediatypes))
-        || component
-            .launchable
-            .as_ref()
-            .is_some_and(|launchable| list_hit(&launchable.desktop_id))
-}
-
 #[async_trait::async_trait]
 impl Adapter for AppstreamAdapter {
     fn source(&self) -> SourceKind {
@@ -582,7 +590,7 @@ impl Adapter for AppstreamAdapter {
     }
 
     /// Look up one app by package name or component ID; a row scoped to
-    /// a different repo is simply not here (`Ok(None)`).
+    /// a different repo is not here (`Ok(None)`).
     ///
     /// # Errors
     ///
@@ -608,11 +616,12 @@ impl Adapter for AppstreamAdapter {
     }
 
     /// Case-insensitive substring search over app-typed components in
-    /// catalog order; an empty/whitespace query returns no hits.
+    /// catalog order, capped at [`MAX_SEARCH_HITS`] converted rows; an
+    /// empty/whitespace query returns no hits.
     ///
     /// # Errors
     ///
-    /// Never — the catalog is already in memory; `Result` per the
+    /// Never: the catalog is already in memory; `Result` per the
     /// [`Adapter`] contract.
     async fn search(&self, query: &str) -> Result<Vec<App>> {
         let needle = query.trim().to_lowercase();
@@ -623,8 +632,10 @@ impl Adapter for AppstreamAdapter {
             .catalog
             .components
             .iter()
-            .filter(|component| component_matches(component, &needle))
-            .filter_map(|component| self.component_to_app(component))
+            .zip(&self.search_keys)
+            .filter(|(_, keys)| keys.iter().any(|field| field.contains(&needle)))
+            .filter_map(|(component, _)| self.component_to_app(component))
+            .take(MAX_SEARCH_HITS)
             .collect())
     }
 }
@@ -719,7 +730,7 @@ impl AppstreamClient {
         }
     }
 
-    /// The decompressed cached catalog for one scope, when a copy exists —
+    /// The decompressed cached catalog for one scope, when a copy exists:
     /// no freshness check, no network; `Ok(None)` = nothing cached yet.
     ///
     /// # Errors

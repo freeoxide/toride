@@ -4,7 +4,7 @@ Date: 2026-09-28. All endpoints below were fetched live from this sandbox (HTTP 
 stated otherwise); fixtures live in `crates/toride-registry/tests/fixtures/flathub/`
 (provenance in that directory's `_meta.json`, `synthetic: false` throughout).
 
-Flathub is the Linux GUI-app catalog (Flatpak). Its web API is **discovery + metadata only** —
+Flathub is the Linux GUI-app catalog (Flatpak). Its web API is **discovery + metadata only**:
 actual installation goes through the `flatpak` CLI against the Flathub OSTree remote (see
 [Installing](#installing-what-the-api-does-not-do)).
 
@@ -15,7 +15,7 @@ complete OpenAPI 3.1 spec:
 
 - `GET https://flathub.org/api/v2/openapi.json` → fixture `openapi-v2.json` (432 KB, ~200 routes).
   This is the authoritative surface; generated API clients come from it.
-- Search: `POST https://flathub.org/api/v2/search` — body `{"query": "brave browser"}`.
+- Search: `POST https://flathub.org/api/v2/search`: body `{"query": "brave browser"}`.
 - App detail: `GET https://flathub.org/api/v2/appstream/{app_id}` (optional `?locale=`).
 
 Negative results, also verified live:
@@ -28,10 +28,10 @@ Negative results, also verified live:
   `GET /api/v2/addon/{app_id}` (e.g. codecs), `GET /api/v2/app-picks/...`. All write/admin
   routes require auth and are irrelevant for a read-only registry client.
 
-## Search — `POST /api/v2/search`
+## Search: `POST /api/v2/search`
 
 Request (`SearchQuery` in the OpenAPI spec; `query` is the only required key):
-`{"query": "...", "filters": [...], "hits_per_page": 21, "page": 1}` — defaults `hits_per_page=21`, `page=1`.
+`{"query": "...", "filters": [...], "hits_per_page": 21, "page": 1}`: defaults `hits_per_page=21`, `page=1`.
 
 Response is a Meilisearch envelope (Flathub's search index is Meilisearch):
 
@@ -48,7 +48,7 @@ Fixtures: `search-brave-browser.json` (13 hits), `search-visual-studio-code.json
 | Field | Type (observed) | Example (brave hit) |
 |---|---|---|
 | `app_id` | string, **required** | `"com.brave.Browser"` |
-| `id` | string, required | `"com_brave_Browser"` — `app_id` with dots→underscores (Meilisearch PK quirk) |
+| `id` | string, required | `"com_brave_Browser"`: `app_id` with dots→underscores (Meilisearch PK quirk) |
 | `name` | string, required | `"Brave"` |
 | `summary` | string, required | `"Fast Internet, AI, Adblock"` |
 | `description` | string (markdown-ish), required | full long description |
@@ -73,9 +73,9 @@ Fixtures: `search-brave-browser.json` (13 hits), `search-visual-studio-code.json
 | `keywords`, `localized_keywords`, `sub_categories`, `translations` | optional | `["vscode"]`, `["WebBrowser"]`, `{}` |
 
 `main_categories` is `anyOf[string, string[]]` in the schema but a bare string in both live
-samples — deserialize defensively.
+samples: deserialize defensively.
 
-## App detail — `GET /api/v2/appstream/{app_id}`
+## App detail: `GET /api/v2/appstream/{app_id}`
 
 Full AppStream metadata. The response `type` discriminates `oneOf` Desktop / Addon /
 Localization / Generic / Runtime schemas; both sampled apps are `desktop-application`
@@ -91,7 +91,7 @@ Localization / Generic / Runtime schemas; both sampled apps are `desktop-applica
 | `developer_name` | `"Brave Software"` |
 | `project_license`, `is_free_license` | `"MPL-2.0"`, `true` |
 | `categories` | `["Network","WebBrowser"]` |
-| `releases[]` | `{version, type: "stable", timestamp: "1790208000", date, date_eol, description, urgency, url}` — most recent first; **`releases[0].version` is the current release** (brave `1.96.59`, vscode `1.138.0`); exactly 4 recent releases returned in both samples |
+| `releases[]` | `{version, type: "stable", timestamp: "1790208000", date, date_eol, description, urgency, url}`: most recent first; **`releases[0].version` is the current release** (brave `1.96.59`, vscode `1.138.0`); exactly 4 recent releases returned in both samples |
 | `bundle` | `{type: "flatpak", value: "app/com.brave.Browser/x86_64/stable", runtime: "org.freedesktop.Platform/x86_64/25.08", sdk: "org.freedesktop.Sdk/x86_64/25.08"}` |
 | `urls` | `{homepage, help, faq, contact, donation, translate, vcs_browser, bugtracker, contribute}` (many null) |
 | `icons[]` | `{type: "remote", url, width: 128, height: 128, scale}` |
@@ -109,7 +109,7 @@ Reverse-DNS, case-sensitive: `com.brave.Browser`, `com.visualstudio.code`. It is
 everywhere: search `hits[].app_id`, the `appstream/{app_id}` path, `bundle.value`
 (`app/{app_id}/{arch}/stable`), media URLs under `dl.flathub.org/media/{dotted→slash path}/`,
 `.flatpakref` `Name=`, and the `flatpak install/run` CLI argument. Watch the search-hit `id`
-(`com_brave_Browser`, underscores) — it is the Meilisearch document key, not the app id.
+(`com_brave_Browser`, underscores): it is the Meilisearch document key, not the app id.
 
 ## Installing (what the API does *not* do)
 
@@ -128,7 +128,7 @@ flatpak update
 `https://dl.flathub.org/repo/appstream/{app_id}.flatpakref` (fixture
 `com.brave.Browser.flatpakref`, HTTP 200) is the per-app pointer file desktop software centers
 consume; it carries the same repo URL + GPG key + `RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo`.
-Transfers are OSTree static deltas from `dl.flathub.org`, integrity via GPG — not via any API-supplied checksum.
+Transfers are OSTree static deltas from `dl.flathub.org`, integrity via GPG: not via any API-supplied checksum.
 
 A tool that only wants discovery/metadata can use this HTTP API; a tool that installs must
 shell out to `flatpak` (or link libflatpak).
@@ -144,11 +144,11 @@ shell out to `flatpak` (or link libflatpak).
 - **Version availability is opaque.** There is a single `stable` branch per arch
   (`bundle.value`); `releases[]` lists only recent releases (4 observed) and there is no endpoint
   to enumerate or select older versions. "What version would I get?" = `releases[0].version`,
-  but only at query time — it changes without notice.
+  but only at query time: it changes without notice.
 - **Search envelope leaks Meilisearch internals** (`processingTimeMs`, `facetDistribution`,
-  `facetStats`) — treat as unstable; the stable contract is the OpenAPI spec itself.
+  `facetStats`): treat as unstable; the stable contract is the OpenAPI spec itself.
 - **`main_categories` anyOf string/array**, `runtime`/`arches`/`icon` nullable despite being
-  "required" (required = key present, not non-null) — deserialize permissively.
+  "required" (required = key present, not non-null): deserialize permissively.
 - **Search `id` vs `app_id`** (underscores vs dots) is an easy conflation bug.
 - **No documented rate limit** in the live OpenAPI spec; nothing verified either way.
 - `docs.flathub.org/docs/for-users/installation/` 404'd when fetched; user-facing setup docs

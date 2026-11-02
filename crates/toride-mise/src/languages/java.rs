@@ -10,10 +10,6 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// JavaHelper
-// ---------------------------------------------------------------------------
-
 /// Typed helper for interacting with Java via mise.
 ///
 /// Borrows a [`Mise`] client so it can be used without taking

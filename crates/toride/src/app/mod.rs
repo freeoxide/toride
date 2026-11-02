@@ -3,6 +3,7 @@
 mod input;
 mod render;
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use color_eyre::eyre::Result;
@@ -14,6 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::about_data::AboutCollector;
 use crate::action::Action;
+use crate::data::Section;
 use crate::fail2ban_data::Fail2banCollector;
 use crate::logs_data::LogsCollector;
 use crate::navigation::{Navigator, Screen};
@@ -39,7 +41,6 @@ use crate::toride_wireguard_data::WireguardCollector;
 use crate::ufw_kit_data::FirewallCollector;
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::dashboard::DashboardScreen;
-use crate::ui::screens::help::HelpScreen;
 use crate::ui::screens::quit::QuitModal;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::theme::Theme;
@@ -56,8 +57,6 @@ pub struct App {
     nav: Navigator,
     welcome: WelcomeScreen,
     dashboard: DashboardScreen,
-    #[allow(dead_code)]
-    help: HelpScreen,
     help_modal: InteractiveModal<Action>,
     quit_visible: bool,
     quit_modal: QuitModal,
@@ -99,6 +98,7 @@ pub struct App {
     ssh_write_task: Option<tokio::task::JoinHandle<()>>,
     ssh_write_cooldown: Option<Instant>,
     pending_persist: Option<PersistOp>,
+    dashboard_grace: u8,
 }
 
 impl Default for App {
@@ -154,10 +154,10 @@ impl App {
             ssh_ops_in_flight: 0,
             ssh_revert_pending: false,
             ssh_write_task: None,
+            dashboard_grace: 0,
             nav: Navigator::new(),
             welcome,
             dashboard,
-            help: HelpScreen::new(),
             help_modal: InteractiveModal::display("Help").dimensions(52, 16),
             quit_visible: false,
             quit_modal: QuitModal::new(),
@@ -376,6 +376,91 @@ impl App {
         in_flight > 0 || cooldown_elapsed_secs.is_some_and(|s| s < 5)
     }
 
+    /// Refresh ticks the full collector set keeps running after the operator
+    /// leaves the Dashboard, so its managed-services cards and sidebar badges
+    /// still land one more fresh snapshot before going quiet.
+    const DASHBOARD_GRACE_TICKS: u8 = 2;
+
+    /// Start the per-section collectors this tick: the status collector always
+    /// runs (it feeds the header gauges); every section collector runs while
+    /// the Dashboard is active (its cards read them all) and for
+    /// [`Self::DASHBOARD_GRACE_TICKS`] ticks after leaving it; otherwise only
+    /// the active section's collector runs.
+    fn start_section_collectors(&mut self) {
+        let active = self.dashboard.current_section();
+        let dashboard = active == Section::Dashboard;
+        let run_all = dashboard || self.dashboard_grace > 0;
+        self.dashboard_grace = if dashboard {
+            Self::DASHBOARD_GRACE_TICKS
+        } else {
+            self.dashboard_grace.saturating_sub(1)
+        };
+        let due = |s: Section| run_all || s == active;
+
+        let skip_ssh = Self::should_skip_ssh_refresh(
+            self.ssh_ops_in_flight,
+            self.ssh_write_cooldown.map(|t| t.elapsed().as_secs()),
+        );
+        if !skip_ssh && due(Section::Ssh) {
+            self.ssh_write_cooldown = None;
+            self.ssh_collector.start();
+        }
+        if due(Section::Fail2ban) {
+            self.fail2ban_collector.start();
+        }
+        if due(Section::Firewall) {
+            self.ufw_kit_collector.start();
+        }
+        if due(Section::Harden) {
+            self.toride_harden_collector.start();
+        }
+        if due(Section::WireGuard) {
+            self.toride_wireguard_collector.start();
+        }
+        if due(Section::Updates) {
+            self.toride_updates_collector.start();
+        }
+        if due(Section::Users) {
+            self.toride_users_collector.start();
+        }
+        if due(Section::Audit) {
+            self.toride_audit_collector.start();
+        }
+        if due(Section::Monitor) {
+            self.toride_monitor_collector.start();
+        }
+        if due(Section::Backup) {
+            self.toride_backup_collector.start();
+        }
+        if due(Section::Proxy) {
+            self.toride_proxy_collector.start();
+        }
+        if due(Section::Cloud) {
+            self.toride_cloud_collector.start();
+        }
+        if due(Section::Tailscale) {
+            self.toride_tailscale_collector.start();
+        }
+        if due(Section::Mise) {
+            self.toride_mise_collector.start();
+        }
+        if due(Section::Logs) {
+            self.logs_collector.start();
+        }
+        if due(Section::Settings) {
+            self.settings_collector.start();
+        }
+        if due(Section::Templates) {
+            self.templates_collector.start();
+        }
+        if due(Section::Tools) {
+            self.tools_collector.start();
+        }
+        if due(Section::Setup) {
+            self.setup_collector.start();
+        }
+    }
+
     fn should_revert_now(in_flight: usize) -> bool {
         in_flight == 0
     }
@@ -507,7 +592,7 @@ impl App {
                 }
 
                 Some(status) = self.collector.poll(), if self.collector.is_pending() => {
-                    self.about_collector.start_with_status(status.clone());
+                    self.about_collector.start_with_status(Arc::clone(&status));
                     self.dashboard.set_status(status);
                     self.needs_redraw = true;
                 }
@@ -525,68 +610,81 @@ impl App {
                 }
 
                 Some(b) = self.fail2ban_collector.poll(), if self.fail2ban_collector.is_pending() => {
-                    self.dashboard.set_fail2ban_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_fail2ban_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.ufw_kit_collector.poll(), if self.ufw_kit_collector.is_pending() => {
-                    self.dashboard.set_ufw_kit_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_ufw_kit_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_harden_collector.poll(), if self.toride_harden_collector.is_pending() => {
-                    self.dashboard.set_toride_harden_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_harden_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_wireguard_collector.poll(), if self.toride_wireguard_collector.is_pending() => {
-                    self.dashboard.set_toride_wireguard_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_wireguard_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_updates_collector.poll(), if self.toride_updates_collector.is_pending() => {
-                    self.dashboard.set_toride_updates_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_updates_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_users_collector.poll(), if self.toride_users_collector.is_pending() => {
-                    self.dashboard.set_toride_users_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_users_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_audit_collector.poll(), if self.toride_audit_collector.is_pending() => {
-                    self.dashboard.set_toride_audit_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_audit_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_monitor_collector.poll(), if self.toride_monitor_collector.is_pending() => {
-                    self.dashboard.set_toride_monitor_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_monitor_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_backup_collector.poll(), if self.toride_backup_collector.is_pending() => {
-                    self.dashboard.set_toride_backup_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_backup_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_proxy_collector.poll(), if self.toride_proxy_collector.is_pending() => {
-                    self.dashboard.set_toride_proxy_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_proxy_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_cloud_collector.poll(), if self.toride_cloud_collector.is_pending() => {
-                    self.dashboard.set_toride_cloud_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_cloud_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_tailscale_collector.poll(), if self.toride_tailscale_collector.is_pending() => {
-                    self.dashboard.set_toride_tailscale_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_tailscale_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.toride_mise_collector.poll(), if self.toride_mise_collector.is_pending() => {
-                    self.dashboard.set_toride_mise_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_toride_mise_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(b) = self.about_collector.poll(), if self.about_collector.is_pending() => {
@@ -594,8 +692,9 @@ impl App {
                     self.needs_redraw = true;
                 }
                 Some(b) = self.logs_collector.poll(), if self.logs_collector.is_pending() => {
-                    self.dashboard.set_logs_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_logs_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
                 Some(b) = self.settings_collector.poll(), if self.settings_collector.is_pending() => {
                     self.dashboard.set_settings_data(b);
@@ -606,12 +705,14 @@ impl App {
                     self.needs_redraw = true;
                 }
                 Some(b) = self.tools_collector.poll(), if self.tools_collector.is_pending() => {
-                    self.dashboard.set_tools_data(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_tools_data(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
                 Some(b) = self.setup_collector.poll(), if self.setup_collector.is_pending() => {
-                    self.dashboard.set_setup_offers(b);
-                    self.needs_redraw = true;
+                    if self.dashboard.set_setup_offers(&b) {
+                        self.needs_redraw = true;
+                    }
                 }
 
                 Some(err) = self.ssh_error_rx.recv() => {
@@ -657,33 +758,7 @@ impl App {
                     if matches!(self.nav.current(), Screen::Dashboard) {
                         self.dashboard.tick_clock();
                         self.collector.start();
-                        let skip_ssh = Self::should_skip_ssh_refresh(
-                            self.ssh_ops_in_flight,
-                            self.ssh_write_cooldown
-                                .map(|t| t.elapsed().as_secs()),
-                        );
-                        if !skip_ssh {
-                            self.ssh_write_cooldown = None;
-                            self.ssh_collector.start();
-                        }
-                        self.fail2ban_collector.start();
-                        self.ufw_kit_collector.start();
-                        self.toride_harden_collector.start();
-                        self.toride_wireguard_collector.start();
-                        self.toride_updates_collector.start();
-                        self.toride_users_collector.start();
-                        self.toride_audit_collector.start();
-                        self.toride_monitor_collector.start();
-                        self.toride_backup_collector.start();
-                        self.toride_proxy_collector.start();
-                        self.toride_cloud_collector.start();
-                        self.toride_tailscale_collector.start();
-                        self.toride_mise_collector.start();
-                        self.logs_collector.start();
-                        self.settings_collector.start();
-                        self.templates_collector.start();
-                        self.tools_collector.start();
-                        self.setup_collector.start();
+                        self.start_section_collectors();
                         self.needs_redraw = true;
                     }
                 }
@@ -1084,6 +1159,56 @@ mod tests {
             app.ssh_revert_pending = false;
         }
         assert!(!app.ssh_revert_pending);
+    }
+
+    #[tokio::test]
+    async fn dashboard_section_starts_every_collector() {
+        let mut app = App::new_for_test(AnimPref::Off, true);
+        app.start_section_collectors();
+        assert!(app.fail2ban_collector.is_pending());
+        assert!(app.ufw_kit_collector.is_pending());
+        assert!(app.toride_harden_collector.is_pending());
+        assert!(app.tools_collector.is_pending());
+        assert!(app.logs_collector.is_pending());
+    }
+
+    #[tokio::test]
+    async fn inactive_section_collectors_do_not_start() {
+        let mut app = App::new_for_test(AnimPref::Off, true);
+        app.dashboard.select_section(crate::data::Section::Tools);
+        app.start_section_collectors();
+        assert!(app.tools_collector.is_pending(), "active section runs");
+        assert!(
+            !app.fail2ban_collector.is_pending(),
+            "inactive sections must not spawn collectors"
+        );
+        assert!(!app.logs_collector.is_pending());
+        assert!(!app.ssh_collector.is_pending());
+    }
+
+    #[tokio::test]
+    async fn section_grace_expires_after_two_ticks() {
+        let mut app = App::new_for_test(AnimPref::Off, true);
+        app.start_section_collectors();
+        let _ = app.fail2ban_collector.poll().await;
+        app.dashboard.select_section(crate::data::Section::Tools);
+        app.start_section_collectors();
+        assert!(
+            app.fail2ban_collector.is_pending(),
+            "the first tick after leaving must still run the collector (grace)"
+        );
+        let _ = app.fail2ban_collector.poll().await;
+        app.start_section_collectors();
+        assert!(
+            app.fail2ban_collector.is_pending(),
+            "the second tick after leaving must still run the collector (grace)"
+        );
+        let _ = app.fail2ban_collector.poll().await;
+        app.start_section_collectors();
+        assert!(
+            !app.fail2ban_collector.is_pending(),
+            "grace must expire after SECTION_GRACE_TICKS"
+        );
     }
 
     #[tokio::test]

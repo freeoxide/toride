@@ -2,7 +2,7 @@
 source: crates/toride/src/ui/screens/setup/mod.rs
 expression: out
 ---
-"╭ SETUP · 37 suggestions · 8 bundles ──────────────────────────────────────────────────────────────────────────────────╮"
+"╭ SETUP · 38 suggestions · 9 bundles ──────────────────────────────────────────────────────────────────────────────────╮"
 "│ OrbStack  paid for commercial use                                                                                    │"
 "│ Docker engine and Linux VMs for macOS in one app.                                                                    │"
 "│                                                                                                                      │"
@@ -14,8 +14,8 @@ expression: out
 "│ actions                                                                                                              │"
 "│   1. install orbstack (brew cask)                                                                                    │"
 "│                                                                                                                      │"
-"│ enter: install   esc: back                                                                                           │"
-"│                                                                                                                      │"
+"│   install  not approved yet                                                                                          │"
+"│ enter: approve for install   esc: back                                                                               │"
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "│                                                                                                                      │"

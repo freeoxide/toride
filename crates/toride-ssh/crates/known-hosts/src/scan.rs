@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use toride_ssh_core::HostSpec;
 use toride_ssh_core::{Error, Result, runner::CliRunner};
 
 /// A host key discovered by `ssh-keyscan`.
@@ -41,8 +42,9 @@ impl ScannedHostKey {
 /// the plaintext hostname. Callers that need hashed entries should use
 /// [`add_host_hashed`] or [`add_to_known_hosts`].
 pub async fn scan_host(host: &str, runner: &dyn CliRunner) -> Result<Vec<ScannedHostKey>> {
-    let raw = runner.run("ssh-keyscan", vec![host.to_owned()]).await?;
-    Ok(parse_keyscan_output(host, &raw))
+    let host = HostSpec::parse(host)?.host().to_owned();
+    let raw = runner.run("ssh-keyscan", vec![host.clone()]).await?;
+    Ok(parse_keyscan_output(&host, &raw))
 }
 
 /// Scan a host with `-H` (hashed hostname) and parse the output.
@@ -50,10 +52,11 @@ pub async fn scan_host(host: &str, runner: &dyn CliRunner) -> Result<Vec<Scanned
 /// Used internally by [`add_to_known_hosts`] so that written entries contain
 /// hashed hostnames for privacy.
 async fn scan_host_hashed(host: &str, runner: &dyn CliRunner) -> Result<Vec<ScannedHostKey>> {
+    let host = HostSpec::parse(host)?.host().to_owned();
     let raw = runner
-        .run("ssh-keyscan", vec!["-H".to_owned(), host.to_owned()])
+        .run("ssh-keyscan", vec!["-H".to_owned(), host.clone()])
         .await?;
-    Ok(parse_keyscan_output(host, &raw))
+    Ok(parse_keyscan_output(&host, &raw))
 }
 
 /// Parse raw `ssh-keyscan` output into a list of [`ScannedHostKey`] values.
@@ -115,17 +118,20 @@ pub async fn add_to_known_hosts(known_hosts_path: &Path, keys: &[ScannedHostKey]
             std::fs::create_dir_all(parent)?;
         }
 
+        #[cfg(unix)]
+        let newly_created = !path.exists();
+
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)?;
-        // Set 0644 permissions on newly created files (world-readable).
-        // SSH expects known_hosts to be readable by all users.
+
+        // New files get the world-readable 0644 ssh expects; a pre-existing
+        // file keeps its mode, so appending never relaxes a 0600 known_hosts.
         #[cfg(unix)]
-        {
+        if newly_created {
             use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o644))
-                .ok(); // Ignore error if file already existed with different perms.
+            file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
         }
         file.write_all(buf.as_bytes())?;
         Ok(())
@@ -153,3 +159,15 @@ pub async fn add_host_hashed(
 #[cfg(test)]
 #[path = "scan.test.rs"]
 mod tests;
+
+#[cfg(test)]
+mod hostspec_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn scan_host_rejects_leading_dash_host() {
+        let runner = toride_ssh_core::MockCliRunner::new();
+        let err = scan_host("-oProxyCommand=evil", &runner).await.unwrap_err();
+        assert!(matches!(err, toride_ssh_core::Error::InvalidHost(_)));
+    }
+}

@@ -1,10 +1,6 @@
 use super::*;
 use crate::spec::FrameworkRuleBlock;
 
-// ---------------------------------------------------------------------------
-// upsert_block — insert new
-// ---------------------------------------------------------------------------
-
 #[test]
 fn upsert_block_should_insert_new_block() {
     let content = "*filter\n:INPUT DROP\nCOMMIT\n";
@@ -19,10 +15,6 @@ fn upsert_block_should_insert_new_block() {
     assert!(result.contains("<<< ufw-kit myapp-nat"));
     assert!(result.contains("*nat"));
 }
-
-// ---------------------------------------------------------------------------
-// upsert_block — replace existing
-// ---------------------------------------------------------------------------
 
 #[test]
 fn upsert_block_should_replace_existing_block() {
@@ -45,10 +37,6 @@ COMMIT
     assert!(result.contains("*nat"));
     assert!(!result.contains("*old-content"));
 }
-
-// ---------------------------------------------------------------------------
-// remove_block
-// ---------------------------------------------------------------------------
 
 #[test]
 fn remove_block_should_remove_existing_block() {
@@ -74,10 +62,6 @@ fn remove_block_should_return_unchanged_if_not_found() {
     assert_eq!(result, content);
 }
 
-// ---------------------------------------------------------------------------
-// list_blocks
-// ---------------------------------------------------------------------------
-
 #[test]
 fn list_blocks_should_find_all_blocks() {
     let content = "\
@@ -100,10 +84,6 @@ fn list_blocks_should_return_empty_for_no_blocks() {
     assert_eq!(blocks, Vec::<String>::new());
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn upsert_block_should_handle_empty_content() {
     let block = FrameworkRuleBlock {
@@ -123,10 +103,6 @@ fn remove_block_should_handle_content_without_trailing_newline() {
     assert!(result.contains("before"));
     assert!(!result.contains(">>> ufw-kit block"));
 }
-
-// ---------------------------------------------------------------------------
-// Weird edge-case tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn upsert_block_should_preserve_content_after_end_marker() {
@@ -150,15 +126,73 @@ remaining content
 
 #[test]
 fn list_blocks_should_handle_multiple_on_same_line() {
-    // This shouldn't happen in practice but let's be robust
     let content = "# >>> ufw-kit a\n# >>> ufw-kit b\n";
     let blocks = list_blocks(content);
     assert_eq!(blocks.len(), 2);
 }
 
-// ---------------------------------------------------------------------------
-// write_framework_file and rollback tests
-// ---------------------------------------------------------------------------
+#[test]
+fn upsert_block_should_not_replace_prefix_matching_block_id() {
+    let content = "\
+# >>> ufw-kit foo-bar
+keep me
+# <<< ufw-kit foo-bar
+";
+
+    let block = FrameworkRuleBlock {
+        id: "foo".into(),
+        content: "new".into(),
+        ipv6: false,
+    };
+
+    let result = upsert_block(content, &block).unwrap();
+    assert!(
+        result.contains("keep me"),
+        "upserting 'foo' must leave block 'foo-bar' intact: {result}"
+    );
+    assert!(result.contains(">>> ufw-kit foo\n"));
+    assert!(result.contains("<<< ufw-kit foo\n"));
+}
+
+#[test]
+fn remove_block_should_not_remove_prefix_matching_block_id() {
+    let content = "\
+# >>> ufw-kit foo-bar
+keep me
+# <<< ufw-kit foo-bar
+";
+
+    let result = remove_block(content, "foo").unwrap();
+    assert_eq!(
+        result, content,
+        "removing 'foo' must not touch block 'foo-bar'"
+    );
+}
+
+#[test]
+fn upsert_block_should_error_on_orphan_start_marker() {
+    let content = "# >>> ufw-kit orphan\nuser content\n";
+    let block = FrameworkRuleBlock {
+        id: "orphan".into(),
+        content: "new".into(),
+        ipv6: false,
+    };
+
+    let result = upsert_block(content, &block);
+    assert!(
+        result.is_err(),
+        "an orphan start marker must fail closed instead of appending"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("orphan"), "error names the block id: {err}");
+}
+
+#[test]
+fn remove_block_should_error_on_orphan_start_marker() {
+    let content = "# >>> ufw-kit orphan\nuser content\n";
+    let result = remove_block(content, "orphan");
+    assert!(result.is_err());
+}
 
 #[test]
 fn write_framework_file_should_return_none_for_new_file() {
@@ -192,7 +226,6 @@ fn write_framework_file_should_backup_when_requested() {
 
     write_framework_file(&path, "updated\n", Some(&backup_dir)).unwrap();
 
-    // Verify backup was created
     assert!(backup_dir.join("before.rules").exists());
     assert_eq!(
         std::fs::read_to_string(backup_dir.join("before.rules")).unwrap(),
@@ -207,7 +240,6 @@ fn rollback_framework_file_should_restore_previous() {
 
     std::fs::write(&path, "original\n").unwrap();
 
-    // Simulate: write new, then rollback
     let previous = write_framework_file(&path, "new\n", None).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
 
@@ -220,7 +252,6 @@ fn rollback_framework_file_should_remove_new_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("test.rules");
 
-    // Simulate: write new file (no previous), then rollback
     let previous = write_framework_file(&path, "new\n", None).unwrap();
     assert!(path.exists());
 

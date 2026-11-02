@@ -1,1 +1,1 @@
-[{"tool":"node","version":"22.0.0","requested":"22","installed":true,"active":true,"source":{}}]
+{"node":[{"version":"22.0.0","requested_version":"22","install_path":"/home/user/.local/share/mise/installs/node/22.0.0","source":{"type":"mise.toml","path":".mise.toml"},"installed":true,"active":true}]}

@@ -25,7 +25,7 @@ pub fn convert_snapshot(report: &toride_monitor::report::MonitorReport) -> Snaps
     }
 }
 
-/// Convert backend outbound connections 1:1. An unset port renders as just
+/// Convert backend outbound connections 1:1. An unset port renders as only
 /// the IP; empty protocol/state render as `"?"` / `"—"` placeholders.
 pub fn convert_connections(
     conns: &[toride_monitor::report::ConnectionInfo],
@@ -270,7 +270,7 @@ mod tests {
             ip_version: IpVersion::V4,
             local_addr: ip("0.0.0.0"),
             local_port: 22,
-            remote_addr: ip("0.0.0.0"),
+            remote_addr: Some(ip("0.0.0.0")),
             remote_port: 0,
             state: PortState::Listen,
             process_name: Some("sshd".into()),
@@ -300,7 +300,7 @@ mod tests {
                 ip_version: IpVersion::V4,
                 local_addr: ip("0.0.0.0"),
                 local_port: 22,
-                remote_addr: ip("0.0.0.0"),
+                remote_addr: Some(ip("0.0.0.0")),
                 remote_port: 0,
                 state: PortState::Listen,
                 process_name: Some("sshd".into()),
@@ -311,7 +311,7 @@ mod tests {
                 ip_version: IpVersion::V6,
                 local_addr: ip("::"),
                 local_port: 5353,
-                remote_addr: ip("::"),
+                remote_addr: Some(ip("::")),
                 remote_port: 0,
                 state: PortState::Unknown("UDP".into()),
                 process_name: None,
@@ -319,7 +319,7 @@ mod tests {
             },
         ];
         let rows = convert_ports(&ports);
-        assert_eq!(rows.len(), ports.len(), "1:1 mapping — no rows filtered");
+        assert_eq!(rows.len(), ports.len(), "1:1 mapping: no rows filtered");
         assert_eq!(rows[1].local_addr, "::");
         assert_eq!(rows[1].ip_version, "IPv6");
     }

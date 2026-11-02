@@ -10,10 +10,6 @@ use crate::error::{Error, Result};
 use crate::paths::UpdatePaths;
 use crate::spec::Schedule;
 
-// ---------------------------------------------------------------------------
-// ScheduleManager
-// ---------------------------------------------------------------------------
-
 /// Manages the automatic update schedule.
 ///
 /// On APT systems, configures `APT::Periodic` settings and optionally a
@@ -76,8 +72,8 @@ impl<'a> ScheduleManager<'a> {
         info!("Querying current update schedule");
 
         match self.pkg_mgr {
-            PackageManager::Apt => self.get_apt_schedule(),
-            PackageManager::Dnf => self.get_dnf_schedule(),
+            PackageManager::Apt => Ok(self.get_apt_schedule()),
+            PackageManager::Dnf => Ok(self.get_dnf_schedule()),
             PackageManager::Unknown => Ok(None),
         }
     }
@@ -104,10 +100,6 @@ impl<'a> ScheduleManager<'a> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // APT schedule helpers
-    // -----------------------------------------------------------------------
-
     fn set_apt_schedule(&self, schedule: &Schedule) -> Result<()> {
         let interval = match schedule {
             Schedule::Daily => "1",
@@ -133,15 +125,20 @@ impl<'a> ScheduleManager<'a> {
         Ok(())
     }
 
-    fn get_apt_schedule(&self) -> Result<Option<Schedule>> {
-        let Ok(content) = std::fs::read_to_string(&self.paths.auto_upgrades_enabled) else {
-            return Ok(None);
+    fn get_apt_schedule(&self) -> Option<Schedule> {
+        if let Ok(content) = std::fs::read_to_string(&self.paths.auto_upgrades_enabled)
+            && let Some(schedule) = parse_apt_periodic_interval(&content)
+        {
+            return Some(schedule);
+        }
+        let Ok(content) = std::fs::read_to_string(self.managed_timer_path()) else {
+            return None;
         };
-        Ok(parse_apt_periodic_interval(&content))
+        parse_on_calendar(&content)
     }
 
-    /// Disable APT scheduling by writing a `0` interval and disabling the
-    /// custom timer (if present).
+    /// Disable APT scheduling by writing a `0` interval, disabling the
+    /// toride-owned custom timer (if present), and removing its unit files.
     fn remove_apt_schedule(&self) -> Result<()> {
         let disabled = "APT::Periodic::Update-Package-Lists \"0\";\n\
                         APT::Periodic::Unattended-Upgrade \"0\";\n";
@@ -149,24 +146,21 @@ impl<'a> ScheduleManager<'a> {
             .map_err(|e| Error::ScheduleConfig(format!("failed to clear APT schedule: {e}")))?;
         // Best-effort: disable any toride-managed custom timer.
         self.disable_managed_timer();
+        self.remove_owned_timer_units()?;
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // DNF schedule helpers
-    // -----------------------------------------------------------------------
 
     fn set_dnf_schedule(&self, schedule: &Schedule) -> Result<()> {
         let calendar = schedule_to_calendar(schedule);
         self.create_systemd_timer(&calendar)
     }
 
-    fn get_dnf_schedule(&self) -> Result<Option<Schedule>> {
+    fn get_dnf_schedule(&self) -> Option<Schedule> {
         let timer_path = self.managed_timer_drop_in();
         let Ok(content) = std::fs::read_to_string(&timer_path) else {
-            return Ok(None);
+            return None;
         };
-        Ok(parse_on_calendar(&content))
+        parse_on_calendar(&content)
     }
 
     /// Remove the DNF schedule by deleting the drop-in and reloading systemd.
@@ -184,10 +178,6 @@ impl<'a> ScheduleManager<'a> {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Systemd timer
-    // -----------------------------------------------------------------------
-
     /// The drop-in directory + file path for the toride-managed timer override.
     ///
     /// Drop-ins are `*.conf` files inside a `<unit>.d/` directory. The
@@ -199,12 +189,29 @@ impl<'a> ScheduleManager<'a> {
         dir.join("toride.conf")
     }
 
+    /// The path of the toride-owned timer unit file (apt custom schedules
+    /// only; dnf overrides the distro `dnf-automatic.timer` via a drop-in).
+    fn managed_timer_path(&self) -> std::path::PathBuf {
+        self.paths.systemd_timer_d.join(self.timer_unit_name())
+    }
+
+    /// The path of the toride-owned `.service` unit the timer triggers.
+    fn managed_service_path(&self) -> std::path::PathBuf {
+        self.paths.systemd_timer_d.join("toride-updates.service")
+    }
+
     /// The timer unit name for the detected package manager.
     fn timer_unit_name(&self) -> &'static str {
         match self.pkg_mgr {
             PackageManager::Dnf => "dnf-automatic.timer",
             _ => "toride-updates.timer",
         }
+    }
+
+    /// Whether toride owns (creates) the timer unit, as opposed to overriding
+    /// a distro-shipped one with a drop-in.
+    fn owns_timer_unit(&self) -> bool {
+        self.pkg_mgr != PackageManager::Dnf
     }
 
     fn create_systemd_timer(&self, calendar_expr: &str) -> Result<()> {
@@ -218,6 +225,29 @@ impl<'a> ScheduleManager<'a> {
         // control bytes) into the raw `OnCalendar=` interpolation below.
         sanitize_calendar_expr(calendar_expr)?;
 
+        if self.owns_timer_unit() {
+            self.write_owned_timer_units(calendar_expr)?;
+        } else {
+            self.write_timer_drop_in(calendar_expr)?;
+        }
+
+        // Reload systemd so the new unit / drop-in is picked up.
+        self.daemon_reload()?;
+
+        // Enable the timer so the schedule actually fires; `[Install]`
+        // sections in drop-ins are ignored by systemd, so enabling must be an
+        // explicit systemctl call.
+        self.enable_timer_unit()?;
+
+        Ok(())
+    }
+
+    /// Write the full `toride-updates.timer` and `.service` units.
+    ///
+    /// The apt backend has no distro timer that runs an arbitrary
+    /// `OnCalendar` expression, so both units must exist under
+    /// `/etc/systemd/system` before the schedule can fire.
+    fn write_owned_timer_units(&self, calendar_expr: &str) -> Result<()> {
         let timer_unit = format!(
             "[Unit]\n\
              Description=Automatic security updates (toride-managed)\n\n\
@@ -227,6 +257,44 @@ impl<'a> ScheduleManager<'a> {
              RandomizedDelaySec=300\n\n\
              [Install]\n\
              WantedBy=timers.target\n"
+        );
+        let service_unit = "[Unit]\n\
+             Description=Apply automatic security updates (toride-managed)\n\
+             After=network-online.target\n\
+             Wants=network-online.target\n\n\
+             [Service]\n\
+             Type=oneshot\n\
+             ExecStart=/usr/bin/unattended-upgrades -v\n";
+
+        let timer_path = self.managed_timer_path();
+        if let Some(parent) = timer_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::ScheduleConfig(format!(
+                    "failed to create unit dir {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        crate::backup::backup_config(&timer_path)?;
+        toride_fs::atomic_write(&timer_path, &timer_unit)
+            .map_err(|e| Error::ScheduleConfig(format!("failed to write timer unit: {e}")))?;
+
+        let service_path = self.managed_service_path();
+        crate::backup::backup_config(&service_path)?;
+        toride_fs::atomic_write(&service_path, service_unit).map_err(|e| {
+            Error::ScheduleConfig(format!("failed to write timer service unit: {e}"))
+        })?;
+
+        Ok(())
+    }
+
+    /// Write the `[Timer]` drop-in overriding a distro timer's schedule.
+    fn write_timer_drop_in(&self, calendar_expr: &str) -> Result<()> {
+        let drop_in = format!(
+            "[Timer]\n\
+             OnCalendar={calendar_expr}\n\
+             Persistent=true\n\
+             RandomizedDelaySec=300\n"
         );
 
         let timer_path = self.managed_timer_drop_in();
@@ -243,12 +311,39 @@ impl<'a> ScheduleManager<'a> {
 
         crate::backup::backup_config(&timer_path)?;
 
-        toride_fs::atomic_write(&timer_path, &timer_unit)
+        toride_fs::atomic_write(&timer_path, &drop_in)
             .map_err(|e| Error::ScheduleConfig(format!("failed to write timer unit: {e}")))?;
 
-        // Reload systemd so the drop-in is picked up.
-        self.daemon_reload()?;
+        Ok(())
+    }
 
+    /// Remove the toride-owned timer and service units, if present.
+    fn remove_owned_timer_units(&self) -> Result<()> {
+        let unit_paths = [self.managed_timer_path(), self.managed_service_path()];
+        if !unit_paths.iter().any(|p| p.exists()) {
+            return Ok(());
+        }
+        for path in unit_paths {
+            if path.exists()
+                && let Err(e) = std::fs::remove_file(&path)
+            {
+                return Err(Error::ScheduleConfig(format!(
+                    "failed to remove unit {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+        self.daemon_reload()?;
+        Ok(())
+    }
+
+    /// `systemctl enable --now <unit>` so the timer starts firing.
+    fn enable_timer_unit(&self) -> Result<()> {
+        let unit = self.timer_unit_name();
+        let spec = toride_runner::CommandSpec::new("systemctl").args(["enable", "--now", unit]);
+        self.runner.run_checked(&spec).map_err(|e| {
+            Error::CommandFailed(format!("systemctl enable --now {unit} failed: {e}"))
+        })?;
         Ok(())
     }
 
@@ -269,10 +364,6 @@ impl<'a> ScheduleManager<'a> {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Parsers / helpers
-// ---------------------------------------------------------------------------
 
 /// Sanitize a systemd `OnCalendar=` expression before it is interpolated into a
 /// timer unit file.
@@ -325,8 +416,8 @@ fn parse_apt_periodic_interval(content: &str) -> Option<Schedule> {
                 "1" => Some(Schedule::Daily),
                 "7" => Some(Schedule::Weekly),
                 "30" => Some(Schedule::Monthly),
-                // "0" (and empty) disables the timer in APT — the codebase's
-                // own remove_apt_schedule writes "0" to disable — so treat it
+                // "0" (and empty) disables the timer in APT (the codebase's
+                // own remove_apt_schedule writes "0" to disable), so treat it
                 // as absent rather than a custom schedule, matching the doc.
                 "0" | "" => None,
                 _ => Some(Schedule::Custom(val.to_owned())),
@@ -370,10 +461,6 @@ fn apt_directive_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 fn daemon_reload_spec() -> toride_runner::CommandSpec {
     toride_runner::CommandSpec::new("systemctl").arg("daemon-reload")
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -445,9 +532,11 @@ mod tests {
     }
 
     #[test]
-    fn set_dnf_schedule_creates_drop_in_and_reloads() {
+    fn set_dnf_schedule_creates_drop_in_reloads_and_enables() {
         let dir = tempfile::tempdir().unwrap();
-        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout(""))
+            .push_response(CommandOutput::from_stdout(""));
         mgr_at(&runner, dir.path(), PackageManager::Dnf)
             .set_schedule(&Schedule::Weekly)
             .unwrap();
@@ -460,24 +549,75 @@ mod tests {
         let content = std::fs::read_to_string(&drop_in).unwrap();
         assert!(content.contains("OnCalendar=weekly"));
         assert!(content.contains("[Timer]"));
-        // daemon-reload must have been invoked.
+        assert!(!content.contains("[Install]"), "drop-ins cannot install");
         runner.assert_called_with(&CommandSpec::new("systemctl").arg("daemon-reload"));
+        runner.assert_called_with(&CommandSpec::new("systemctl").args([
+            "enable",
+            "--now",
+            "dnf-automatic.timer",
+        ]));
     }
 
+    /// A custom schedule on apt must create the real timer and service units
+    /// (a drop-in alone never fires: the `toride-updates.timer` base unit does
+    /// not ship with the distro, and `[Install]` in a drop-in is ignored).
     #[test]
-    fn set_custom_schedule_creates_timer_for_apt() {
+    fn set_custom_schedule_creates_real_units_and_enables_for_apt() {
         let dir = tempfile::tempdir().unwrap();
-        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout(""))
+            .push_response(CommandOutput::from_stdout(""));
         mgr_at(&runner, dir.path(), PackageManager::Apt)
             .set_schedule(&Schedule::Custom("Mon *-*-* 04:00:00".into()))
             .unwrap();
-        let drop_in = dir
-            .path()
-            .join("systemd")
-            .join("toride-updates.timer.d")
-            .join("toride.conf");
-        let content = std::fs::read_to_string(&drop_in).unwrap();
-        assert!(content.contains("OnCalendar=Mon *-*-* 04:00:00"));
+        let timer = dir.path().join("systemd").join("toride-updates.timer");
+        let service = dir.path().join("systemd").join("toride-updates.service");
+        let timer_content = std::fs::read_to_string(&timer).unwrap();
+        assert!(timer_content.contains("OnCalendar=Mon *-*-* 04:00:00"));
+        assert!(timer_content.contains("WantedBy=timers.target"));
+        let service_content = std::fs::read_to_string(&service).unwrap();
+        assert!(service_content.contains("ExecStart=/usr/bin/unattended-upgrades -v"));
+        runner.assert_called_with(&CommandSpec::new("systemctl").arg("daemon-reload"));
+        runner.assert_called_with(&CommandSpec::new("systemctl").args([
+            "enable",
+            "--now",
+            "toride-updates.timer",
+        ]));
+    }
+
+    #[test]
+    fn get_apt_custom_schedule_reads_timer_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("systemd")).unwrap();
+        std::fs::write(
+            dir.path().join("systemd").join("toride-updates.timer"),
+            "[Timer]\nOnCalendar=Mon *-*-* 04:00:00\n",
+        )
+        .unwrap();
+        let runner = FakeRunner::new();
+        let sched = mgr_at(&runner, dir.path(), PackageManager::Apt)
+            .get_schedule()
+            .unwrap();
+        assert_eq!(sched, Some(Schedule::Custom("Mon *-*-* 04:00:00".into())));
+    }
+
+    #[test]
+    fn remove_apt_schedule_removes_owned_units_and_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let systemd = dir.path().join("systemd");
+        std::fs::create_dir_all(&systemd).unwrap();
+        let timer = systemd.join("toride-updates.timer");
+        let service = systemd.join("toride-updates.service");
+        std::fs::write(&timer, "[Timer]\nOnCalendar=daily\n").unwrap();
+        std::fs::write(&service, "[Service]\nType=oneshot\n").unwrap();
+
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        mgr_at(&runner, dir.path(), PackageManager::Apt)
+            .remove_schedule()
+            .unwrap();
+        assert!(!timer.exists(), "timer unit should be removed");
+        assert!(!service.exists(), "service unit should be removed");
+        runner.assert_called_with(&CommandSpec::new("systemctl").arg("daemon-reload"));
     }
 
     #[test]

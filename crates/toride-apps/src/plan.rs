@@ -5,7 +5,7 @@
 //! and the caller's options: the concrete [`BackendId`] to route to, the
 //! exact operation args (cask token vs formula name, flatpak remote + ref
 //! (installs) or bare app id (uninstalls) + installation kind, distro
-//! manager + package name), a `dry_run` slot, and — for distro managers —
+//! manager + package name), a `dry_run` slot, and, for distro managers,
 //! an explicit `requires_elevation: true` requirement that toride never
 //! satisfies itself (no auto-sudo).
 //!
@@ -15,17 +15,17 @@
 //!
 //! ## Planning rules
 //!
-//! 1. **Availability** — installs of apps the source marked `disabled` are
+//! 1. **Availability**: installs of apps the source marked `disabled` are
 //!    refused ([`Error::AppDisabled`]);
 //!    `deprecated` still plans (warning is the caller's job). Uninstalls
-//!    skip this check — removing a disabled app must stay possible.
-//! 2. **Platform claims** — *install-only gate*: when the app declares
+//!    skip this check: removing a disabled app must stay possible.
+//! 2. **Platform claims** (*install-only gate*): when the app declares
 //!    `platforms`, at least one claim must match the target's OS (and arch,
 //!    where the claim declares one). Empty `platforms` skips the check
-//!    entirely ("unknown", not "universal") — the model's documented
+//!    entirely ("unknown", not "universal"), the model's documented
 //!    contract. Uninstalls skip it too: claims gate whether to install
 //!    onto a target, not whether removal from it is possible.
-//! 3. **Method routing** — casks are macOS-only, formulae also plan on Linux
+//! 3. **Method routing**: casks are macOS-only, formulae also plan on Linux
 //!    (Linuxbrew); flatpak is Linux-only; distro methods plan only when the
 //!    host target's family equals the method's family; direct downloads
 //!    plan under the `direct` feature when the artifact's declared arch
@@ -35,15 +35,15 @@
 //!    name is derivable (without the feature, or off those gates,
 //!    `Direct` is unroutable here). All
 //!    unroutable input (an unknown distro family, a host arch flatpak
-//!    cannot spell an install ref for) fails **here, at plan time** — never
+//!    cannot spell an install ref for) fails **here, at plan time**, never
 //!    deferred to a confusing execute-time error.
-//! 4. **Version selection** — [`InstallOptions::version`] spells the exact
+//! 4. **Version selection**: [`InstallOptions::version`] spells the exact
 //!    thing to install in each method's native addressing: the brew token
 //!    becomes `token@<version>` (the versioned name brew itself manages),
 //!    the flatpak ref's branch segment becomes the version. Versions that
-//!    cannot be spelled at all — empty ones, a brew token that already
+//!    cannot be spelled at all (empty ones, a brew token that already
 //!    names a versioned track, a flatpak version carrying the ref
-//!    separator — fail **here, at plan time**
+//!    separator) fail **here, at plan time**
 //!    ([`Error::InvalidVersion`]), inside the routed method's arm so that
 //!    routing refusals always outrank version refusals; distro and direct
 //!    methods take no version operand (the direct URL already addresses
@@ -107,7 +107,7 @@ pub struct Target {
     /// CPU architecture of the host.
     pub arch: Arch,
     /// Linux distro family, when the host is Linux and the family is known.
-    /// `None` means "Linux, family undetected" — distro methods then have no
+    /// `None` means "Linux, family undetected": distro methods then have no
     /// applicable backend. (Runtime detection from `/etc/os-release` is the
     /// distro backend's concern, not the planner's.)
     pub distro: Option<DistroFamily>,
@@ -144,9 +144,17 @@ impl Target {
     }
 
     /// The host this code runs on, from compile-time OS/arch constants.
-    /// Distro family detection is runtime work (`/etc/os-release`) and is
-    /// left to the distro backend — `distro` is `None` here until that
-    /// layer fills it in.
+    ///
+    /// Every non-macOS/Windows host is planned as the Linux world here;
+    /// methods that need more precision (distro family) fail loudly at
+    /// plan time. A CPU architecture [`Arch`] cannot spell (riscv64,
+    /// ppc64le, s390x, loongarch64, ...) refuses to compile instead of
+    /// falling back to `X86_64`, which would pin flatpak refs to the
+    /// wrong arch and flag `arch_mismatch` backwards. Distro family
+    /// detection is runtime work (`/etc/os-release`) and is left to the
+    /// distro backend: `distro` is `None` here until that layer fills it
+    /// in.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))]
     #[must_use]
     pub fn host() -> Self {
         let os = if cfg!(target_os = "macos") {
@@ -154,9 +162,6 @@ impl Target {
         } else if cfg!(target_os = "windows") {
             Os::Windows
         } else {
-            // Every other host toride runs on today is treated as the
-            // Linux/flatpak/distro world; methods that need more precision
-            // (distro family) fail loudly at plan time instead.
             Os::Linux
         };
         let arch = if cfg!(target_arch = "aarch64") {
@@ -168,6 +173,17 @@ impl Target {
         };
         Self::new(os, arch)
     }
+
+    /// The refusal arm of [`Target::host`]: architectures with no
+    /// [`Arch`] spelling fail the build rather than plan as `X86_64`.
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64")))]
+    #[must_use]
+    pub fn host() -> Self {
+        compile_error!(
+            "toride-apps: this target_arch has no Arch spelling, so Target::host() refuses \
+             to compile rather than plan installs for the wrong architecture"
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +193,7 @@ impl Target {
 /// Which Flatpak installation an operation targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum FlatpakInstallation {
-    /// Per-user installation (`--user`) — no root needed. The planner's
+    /// Per-user installation (`--user`), no root needed. The planner's
     /// default, matching the elevation principle: user-scope installs never
     /// require sudo.
     #[default]
@@ -203,13 +219,13 @@ impl FlatpakInstallation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum PackageManager {
-    /// Debian/Ubuntu — `apt`.
+    /// Debian/Ubuntu: `apt`.
     Apt,
-    /// Fedora — `dnf`.
+    /// Fedora: `dnf`.
     Dnf,
-    /// Arch — `pacman`.
+    /// Arch: `pacman`.
     Pacman,
-    /// Alpine — `apk`.
+    /// Alpine: `apk`.
     Apk,
 }
 
@@ -245,7 +261,7 @@ impl PackageManager {
         }
     }
 
-    /// The per-package upgrade verb tokens — a slice because apt spells the
+    /// The per-package upgrade verb tokens: a slice because apt spells the
     /// per-app verb `install --only-upgrade` (bare `upgrade` would upgrade
     /// the world) and pacman's carries its database sync (`--sync --refresh`).
     #[must_use]
@@ -258,7 +274,7 @@ impl PackageManager {
     }
 
     /// The manager a distro family selects. `None` for families this crate
-    /// does not route (future registry families — the planner then reports
+    /// does not route (future registry families: the planner then reports
     /// [`Error::UnsupportedMethod`] rather than guessing).
     #[must_use]
     pub fn for_family(family: DistroFamily) -> Option<Self> {
@@ -273,7 +289,7 @@ impl PackageManager {
     }
 }
 
-/// One concrete backend operation with its exact argv — the payload the
+/// One concrete backend operation with its exact argv: the payload the
 /// plan types carry.
 ///
 /// [`Operation::argv`] renders the *canonical* command. Backends may add
@@ -313,7 +329,7 @@ pub enum Operation {
     },
     /// `flatpak uninstall <installation-flag> <app-id>`.
     FlatpakUninstall {
-        /// Dotted reverse-DNS app id (`com.brave.Browser`) — deliberately a
+        /// Dotted reverse-DNS app id (`com.brave.Browser`), deliberately a
         /// partial ref, not an arch-pinned `app/<id>/<arch>/stable` one:
         /// flatpak resolves it against the *installed* refs at execute
         /// time, so the plan never guesses the installed arch from the
@@ -326,24 +342,24 @@ pub enum Operation {
     /// `snap install <name> [--channel=<track>/<risk>[/<branch>]]`. There is
     /// no registry `InstallMethod::Snap` to route yet (snapcraft.io source
     /// data is a later registry round), so snap operations are constructed
-    /// at this seam directly — the argv contract is the same as every
+    /// at this seam directly: the argv contract is the same as every
     /// routed method's.
     SnapInstall {
         /// Snap name (`firefox`).
         name: String,
         /// Channel the install pins (`esr/stable`, `latest/beta`);
-        /// `None` rides the snap's default channel — the publisher's
+        /// `None` rides the snap's default channel: the publisher's
         /// default track at stable risk, `latest/stable` unless the
         /// publisher pinned a different default track.
         channel: Option<String>,
     },
-    /// `snap remove <name>` — snap's own uninstall verb.
+    /// `snap remove <name>`: snap's own uninstall verb.
     SnapUninstall {
         /// Snap name.
         name: String,
     },
     /// `<manager> <install-verb> <package>` (e.g. `pacman --sync firefox`).
-    /// Requires elevation — see the `requires_elevation` slot on the plan.
+    /// Requires elevation: see the `requires_elevation` slot on the plan.
     DistroInstall {
         /// The family's package manager.
         manager: PackageManager,
@@ -373,12 +389,12 @@ pub enum Operation {
         /// User vs system installation.
         installation: FlatpakInstallation,
     },
-    /// `snap refresh <name>` — snap's own per-snap upgrade verb.
+    /// `snap refresh <name>`: snap's own per-snap upgrade verb.
     SnapUpdate {
         /// Snap name.
         name: String,
     },
-    /// `<manager> <update-verb-tokens> <package>` — apt `install
+    /// `<manager> <update-verb-tokens> <package>`: apt `install
     /// --only-upgrade`, dnf `upgrade`, pacman `--sync --refresh`, apk
     /// `upgrade`. Requires elevation.
     DistroUpdate {
@@ -387,7 +403,7 @@ pub enum Operation {
         /// Package name the manager knows.
         package: String,
     },
-    /// `npm install [-g] <package>[@<version>]` — the `@`-joined spec is the
+    /// `npm install [-g] <package>[@<version>]`: the `@`-joined spec is the
     /// versioned name npm itself addresses.
     NpmInstall {
         /// npm package name.
@@ -395,7 +411,7 @@ pub enum Operation {
         /// Exact version, spelled `package@<version>`; `None` takes the
         /// registry's current.
         version: Option<Version>,
-        /// `true` installs globally (`-g`) — the CLI-tool scope this crate's
+        /// `true` installs globally (`-g`), the CLI-tool scope this crate's
         /// npm backend manages.
         global: bool,
     },
@@ -403,18 +419,18 @@ pub enum Operation {
     NpmUninstall {
         /// npm package name.
         package: String,
-        /// `true` removes the global install (`-g`) — must match the install
+        /// `true` removes the global install (`-g`), must match the install
         /// scope.
         global: bool,
     },
-    /// `npm update [-g] <package>` — npm's own per-package upgrade verb.
+    /// `npm update [-g] <package>`: npm's own per-package upgrade verb.
     NpmUpdate {
         /// npm package name.
         package: String,
         /// `true` updates the global install (`-g`).
         global: bool,
     },
-    /// `cargo install [--version <v>] <crate>` — cargo has no separate
+    /// `cargo install [--version <v>] <crate>`: cargo has no separate
     /// upgrade verb; re-installing fetches the requested (or latest) version.
     CargoInstall {
         /// Crate name as published on crates.io.
@@ -429,7 +445,7 @@ pub enum Operation {
         #[serde(rename = "crate")]
         crate_: String,
     },
-    /// `cargo install --force <crate>` — cargo's upgrade story: an installed
+    /// `cargo install --force <crate>`: cargo's upgrade story, an installed
     /// crate only re-installs (at latest) under `--force`.
     CargoUpdate {
         /// Crate name to upgrade.
@@ -470,7 +486,7 @@ pub enum Operation {
         /// Package name to upgrade.
         package: String,
     },
-    /// `mise install <tool>[@<version>]` — the mise backend then runs
+    /// `mise install <tool>[@<version>]`: the mise backend then runs
     /// `mise use --global` with the same spec so the tool's shims are active
     /// (gated with the `mise` feature). `None` addresses `tool@latest`, the
     /// mise-native spelling of the manager's current.
@@ -487,7 +503,7 @@ pub enum Operation {
         /// mise tool name.
         tool: String,
     },
-    /// `mise upgrade <tool>` — mise's own upgrade verb (gated with the
+    /// `mise upgrade <tool>`: mise's own upgrade verb (gated with the
     /// `mise` feature).
     #[cfg(feature = "mise")]
     MiseUpdate {
@@ -495,7 +511,7 @@ pub enum Operation {
         tool: String,
     },
     /// Direct download executed through toride-installer's verified
-    /// pipeline — no manager argv exists, so the canonical render names
+    /// pipeline: no manager argv exists, so the canonical render names
     /// the pipeline's own operands: fetch `url`, verify against
     /// `checksum` (when the source published one), install as `bin_name`
     /// (gated with the `direct` feature).
@@ -511,7 +527,7 @@ pub enum Operation {
     },
     /// Delete the recorded install-dir binary, and nothing else (gated
     /// with the `direct` feature). The path is the manifest record's own
-    /// provenance — a direct uninstall cannot be planned from registry
+    /// provenance: a direct uninstall cannot be planned from registry
     /// data, only replayed.
     #[cfg(feature = "direct")]
     DirectUninstall {
@@ -522,7 +538,7 @@ pub enum Operation {
 
 impl Operation {
     /// The canonical argv for this operation, program first. Exact and
-    /// stable — argv tests pin it. Plan summaries render
+    /// stable: argv tests pin it. Plan summaries render
     /// [`Operation::execution_steps`], which can append further steps.
     #[must_use]
     pub fn argv(&self) -> Vec<String> {
@@ -631,7 +647,7 @@ impl Operation {
     }
 
     /// Every command execution unconditionally runs for this operation,
-    /// in order — the value the plan `summary()` methods render;
+    /// in order: the value the plan `summary()` methods render;
     /// [`crate::apps::UpdatePreview`] renders [`Operation::argv`] instead.
     #[must_use]
     pub fn execution_steps(&self) -> Vec<Vec<String>> {
@@ -648,8 +664,12 @@ impl Operation {
 
     /// Build a ready-to-dispatch [`CommandSpec`](toride_runner::CommandSpec)
     /// from this operation's canonical argv, wired per the crate's command
-    /// helper (captured, stdin-null). Backends start from this and add their
-    /// runtime flags on top.
+    /// helper (captured, stdin-null). This is the canonical render for
+    /// display and dry-run; backends derive their executed argv from it.
+    /// The brew/npm/pipx/cargo/uv set dispatches it verbatim, while the
+    /// distro, flatpak, snap, and mise backends layer interactivity
+    /// suppression and, for distro managers, the scriptable program
+    /// spelling (`apt-get`, not the interactive `apt`) on top.
     #[must_use]
     pub fn command_spec(&self) -> toride_runner::CommandSpec {
         let mut argv = self.argv();
@@ -755,7 +775,7 @@ impl Operation {
 pub struct InstallOptions {
     /// The exact thing to install, in the method's native version spelling
     /// (`None` = whatever the manager considers current). Homebrew renders
-    /// it into the token (`token@<version>` — the versioned name brew
+    /// it into the token (`token@<version>`: the versioned name brew
     /// manages and every later probe addresses); flatpak renders it into
     /// the install ref's branch segment. An unspellable version (empty, a
     /// brew token already carrying a versioned track, a flatpak version
@@ -771,7 +791,7 @@ impl InstallOptions {
         Self { version: None }
     }
 
-    /// Select an exact version — consume-and-return.
+    /// Select an exact version: consume-and-return.
     #[must_use]
     pub fn version(mut self, version: Option<Version>) -> Self {
         self.version = version;
@@ -816,7 +836,7 @@ fn rendered_steps(operation: &Operation) -> String {
 }
 
 impl InstallPlan {
-    /// Mark this plan (not) a dry run — consume-and-return.
+    /// Mark this plan (not) a dry run: consume-and-return.
     #[must_use]
     pub const fn dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
@@ -863,21 +883,21 @@ pub struct UninstallPlan {
     pub backend: BackendId,
     /// The exact operation to perform.
     pub operation: Operation,
-    /// Dry-run slot — same contract as [`InstallPlan::dry_run`].
+    /// Dry-run slot: same contract as [`InstallPlan::dry_run`].
     pub dry_run: bool,
     /// The operation requires root privileges (distro managers).
     pub requires_elevation: bool,
 }
 
 impl UninstallPlan {
-    /// Mark this plan (not) a dry run — consume-and-return.
+    /// Mark this plan (not) a dry run: consume-and-return.
     #[must_use]
     pub const fn dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }
 
-    /// Human summary for dry-run rendering — same shape as
+    /// Human summary for dry-run rendering: same shape as
     /// [`InstallPlan::summary`].
     #[must_use]
     pub fn summary(&self) -> String {
@@ -908,7 +928,7 @@ impl UninstallPlan {
     }
 }
 
-/// A concrete, executable upgrade derived from a manifest record — the
+/// A concrete, executable upgrade derived from a manifest record: the
 /// update-path mirror of [`UninstallPlan`]: built from the record's own
 /// identifiers, never re-planned from registry data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -919,21 +939,21 @@ pub struct UpdatePlan {
     pub backend: BackendId,
     /// The exact operation to perform.
     pub operation: Operation,
-    /// Dry-run slot — same contract as [`InstallPlan::dry_run`].
+    /// Dry-run slot: same contract as [`InstallPlan::dry_run`].
     pub dry_run: bool,
     /// The operation requires root privileges (distro managers).
     pub requires_elevation: bool,
 }
 
 impl UpdatePlan {
-    /// Mark this plan (not) a dry run — consume-and-return.
+    /// Mark this plan (not) a dry run: consume-and-return.
     #[must_use]
     pub const fn dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }
 
-    /// Human summary for dry-run rendering — same shape as
+    /// Human summary for dry-run rendering: same shape as
     /// [`InstallPlan::summary`].
     #[must_use]
     pub fn summary(&self) -> String {
@@ -981,7 +1001,9 @@ struct Resolved {
 /// Derive the concrete install plan for `app` on `target`.
 ///
 /// Checks the app's availability (disabled apps are refused), its platform
-/// claims (skipped when the app declares none), then routes the app's
+/// claims (skipped when the app declares none; os and arch claims only:
+/// a `min_release` claim is not enforced, because the host's OS release
+/// is not part of [`Target`]), then routes the app's
 /// [`InstallMethod`] to a backend operation with exact argv. A version in
 /// `options` is spelled into the operation's native addressing (see
 /// [`InstallOptions::version`]).
@@ -1025,14 +1047,14 @@ pub fn plan_install(app: &App, target: &Target, options: &InstallOptions) -> Res
 /// Skips **both** install-only gates, deliberately: availability
 /// (uninstalling a deprecated or disabled app must stay possible) and
 /// platform claims (the claims gate whether to install onto a target, not
-/// whether removal from it is possible — an app can outlive the claims its
+/// whether removal from it is possible: an app can outlive the claims its
 /// source declared). Method routing applies exactly as for
 /// [`plan_install`]: the uninstall operation comes from the same
 /// [`InstallMethod`] routing rules.
 ///
 /// # Errors
 ///
-/// [`Error::UnsupportedMethod`] only — the routing failures of
+/// [`Error::UnsupportedMethod`] only: the routing failures of
 /// [`plan_install`]; never [`Error::AppDisabled`] nor
 /// [`Error::PlatformMismatch`], which are install-only gates.
 pub fn plan_uninstall(
@@ -1051,7 +1073,7 @@ pub fn plan_uninstall(
 }
 
 /// Refuse targets the app's platform claims do not cover. Empty claims skip
-/// the check ("unknown", not "universal") — the model's documented rule.
+/// the check ("unknown", not "universal"), the model's documented rule.
 /// `min_release` claims are not yet enforced: the host's OS release is not
 /// part of [`Target`] (punted until a caller needs it).
 fn check_platform_claims(app: &App, target: Target) -> Result<()> {
@@ -1095,7 +1117,7 @@ enum Action<'a> {
 }
 
 /// Route one install method on one target to its backend and operation,
-/// building the verb that matches `action`. Dispatch only — the per-method
+/// building the verb that matches `action`. Dispatch only: the per-method
 /// rules live in the `resolve_*` helpers below.
 fn resolve_operation(app: &App, target: Target, action: Action<'_>) -> Result<Resolved> {
     match &app.install {
@@ -1186,7 +1208,7 @@ fn resolve_homebrew(
                         app: app.id.as_str().to_owned(),
                         version: version.as_str().to_owned(),
                         reason: format!(
-                            "the token `{token}` already names a versioned track — joining would address `{token}@{version}`"
+                            "the token `{token}` already names a versioned track: joining would address `{token}@{version}`"
                         ),
                     });
                 }
@@ -1195,7 +1217,7 @@ fn resolve_homebrew(
                         app: app.id.as_str().to_owned(),
                         version: version.as_str().to_owned(),
                         reason: format!(
-                            "the version carries brew's separator — joining would address `{token}@{version}`"
+                            "the version carries brew's separator: joining would address `{token}@{version}`"
                         ),
                     });
                 }
@@ -1247,14 +1269,14 @@ pub(crate) fn mise_spec(tool: &str, version: Option<&Version>) -> String {
 }
 
 /// Refuse a version too empty to spell, inside a routed method's install
-/// arm — routing refusals outrank version refusals for every method, so
+/// arm: routing refusals outrank version refusals for every method, so
 /// this check runs after the arm's own OS/family gates.
 fn ensure_spellable_version(app: &App, version: &Version) -> Result<()> {
     if version.as_str().trim().is_empty() {
         return Err(Error::InvalidVersion {
             app: app.id.as_str().to_owned(),
             version: version.as_str().to_owned(),
-            reason: "the version is empty — it would address `token@` or a branchless ref"
+            reason: "the version is empty: it would address `token@` or a branchless ref"
                 .to_owned(),
         });
     }
@@ -1295,7 +1317,7 @@ fn resolve_flatpak(
                     return Err(Error::InvalidVersion {
                         app: app.id.as_str().to_owned(),
                         version: version.as_str().to_owned(),
-                        reason: "the version would add a ref segment — it cannot spell a branch"
+                        reason: "the version would add a ref segment: it cannot spell a branch"
                             .to_owned(),
                     });
                 }
@@ -1374,13 +1396,13 @@ fn resolve_distro(
         backend: BackendId::Distro(family),
         operation,
         // Every distro manager needs root to mutate packages, and toride
-        // never auto-sudoes — this flag is the plan-level requirement the
+        // never auto-sudoes: this flag is the plan-level requirement the
         // executor must satisfy.
         requires_elevation: true,
     })
 }
 
-/// npm arm: global CLI-tool scope (`-g` — the npm backend's managed
+/// npm arm: global CLI-tool scope (`-g`: the npm backend's managed
 /// scope), the version spelled as the `@`-joined spec npm itself
 /// addresses.
 fn resolve_npm(
@@ -1526,7 +1548,7 @@ fn resolve_mise(app: &App, action: Action<'_>, tool: &str, pin: Option<&str>) ->
 }
 
 /// The version a language arm plans at: the caller's request, the
-/// method's own pin, or — when both name one — only an equal pair (a
+/// method's own pin, or (when both name one) only an equal pair (a
 /// differing request would silently install something never named).
 fn pinned_version(
     app: &App,
@@ -1544,7 +1566,7 @@ fn pinned_version(
             app: app.id.as_str().to_owned(),
             version: requested.as_str().to_owned(),
             reason: format!(
-                "the method already pins `{method_pin}` — the request names a different one"
+                "the method already pins `{method_pin}`: the request names a different one"
             ),
         }),
     }
@@ -1570,7 +1592,7 @@ fn ensure_bare_operand(
             app: app.id.as_str().to_owned(),
             version: version.as_str().to_owned(),
             reason: format!(
-                "the {kind} `{operand}` already names a versioned spec — joining would address `{operand}{sep}{version}`"
+                "the {kind} `{operand}` already names a versioned spec: joining would address `{operand}{sep}{version}`"
             ),
         });
     }
@@ -1578,8 +1600,8 @@ fn ensure_bare_operand(
 }
 
 /// Direct arm (the `direct` feature): the URL is the fully-resolved
-/// artifact address, so the gates are about what the address claims —
-/// its arch, its checksum, its archive shape — and about deriving a
+/// artifact address, so the gates are about what the address claims:
+/// its arch, its checksum, its archive shape, and about deriving a
 /// single-file name to install as. The install lands in the direct
 /// backend's install dir (never root-owned), so no elevation is
 /// required.
@@ -1608,7 +1630,7 @@ fn resolve_direct(
         return Err(unsupported(
             app,
             target,
-            "the URL names no file — a direct install downloads one named artifact",
+            "the URL names no file: a direct install downloads one named artifact",
         ));
     }
     let checksum = direct_digest(checksum).map_err(|reason| unsupported(app, target, reason))?;
@@ -1618,7 +1640,7 @@ fn resolve_direct(
             app,
             target,
             &format!(
-                "the artifact `{}` is an archive the direct pipeline cannot extract — it installs single binaries and tar.gz/tar.xz tarballs only",
+                "the artifact `{}` is an archive the direct pipeline cannot extract: it installs single binaries and tar.gz/tar.xz tarballs only",
                 url_asset_name(url).unwrap_or(url)
             ),
         ));
@@ -1626,7 +1648,7 @@ fn resolve_direct(
     let Some(bin_name) = direct_bin_name(app, url, artifact) else {
         let reason = match artifact {
             DirectArtifact::TarballGz | DirectArtifact::TarballXz => {
-                "the tarball's entry can only be named by the app's binaries — the URL's archive name is not an entry name"
+                "the tarball's entry can only be named by the app's binaries: the URL's archive name is not an entry name"
             }
             _ => "neither the app's binaries nor the URL name a single file to install as",
         };
@@ -1652,7 +1674,7 @@ fn resolve_direct(
         Action::Uninstall { .. } => Err(unsupported(
             app,
             target,
-            "a direct uninstall replays the manifest record's installed path — it cannot be planned from registry data",
+            "a direct uninstall replays the manifest record's installed path: it cannot be planned from registry data",
         )),
     }
 }
@@ -1674,16 +1696,16 @@ pub(crate) fn direct_digest(
             algo: ChecksumAlgo::Sha256,
             ..
         }) => Err("the sha256 digest is not 64 hex characters"),
-        Some(_) => Err("the checksum is not sha256 — toride-installer verifies sha256 only"),
+        Some(_) => Err("the checksum is not sha256: toride-installer verifies sha256 only"),
     }
 }
 
 /// The on-disk name a direct install installs as, per artifact kind: a
 /// tarball's entry can only be named by the app's `binaries` (the URL's
-/// archive name is never an entry name — extracting an entry called
+/// archive name is never an entry name: extracting an entry called
 /// `rg-1.0.tar.gz` cannot succeed), while a single binary falls back to
 /// the URL's own asset name. `None` when nothing names a single path
-/// component — a name carrying a separator (or an absolute path, or
+/// component: a name carrying a separator (or an absolute path, or
 /// `.`/`..`) would join the install dir into a destination outside it.
 #[cfg(feature = "direct")]
 pub(crate) fn direct_bin_name(app: &App, url: &str, artifact: DirectArtifact) -> Option<String> {
@@ -1709,7 +1731,7 @@ pub(crate) fn direct_bin_name(app: &App, url: &str, artifact: DirectArtifact) ->
     }
 }
 
-/// Whether `name` is one plain path component — non-empty, no separator,
+/// Whether `name` is one plain path component: non-empty, no separator,
 /// not `.` or `..`. Only such a name can join an install dir without
 /// escaping it (`/base`.join(`/etc/evil`) is `/etc/evil`).
 #[cfg(feature = "direct")]
@@ -1717,7 +1739,7 @@ pub(crate) fn is_single_path_component(name: &str) -> bool {
     !name.is_empty() && !name.contains(['/', '\\']) && !matches!(name, "." | "..")
 }
 
-/// The last path segment of `url` (query and fragment stripped) — the
+/// The last path segment of `url` (query and fragment stripped), the
 /// artifact's own name; `None` for URLs that name no file (no path, or a
 /// trailing slash).
 #[cfg(feature = "direct")]
@@ -1728,7 +1750,7 @@ pub(crate) fn url_asset_name(url: &str) -> Option<&str> {
     (!name.is_empty()).then_some(name)
 }
 
-/// Whether `digest` is exactly 64 hex characters — the shape of a sha256
+/// Whether `digest` is exactly 64 hex characters: the shape of a sha256
 /// digest (the installer compares case-insensitively; the shape itself is
 /// refused here when wrong).
 #[cfg(feature = "direct")]
@@ -1736,7 +1758,7 @@ fn is_sha256_hex(digest: &str) -> bool {
     digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// What a direct URL's artifact is, by its conventional extension — one
+/// What a direct URL's artifact is, by its conventional extension: one
 /// classification shared by the planner (which refuses
 /// [`DirectArtifact::Unsupported`] at plan time) and the backend (which
 /// maps it onto toride-installer's artifact kinds), so the two can never
@@ -1750,9 +1772,9 @@ pub(crate) enum DirectArtifact {
     TarballGz,
     /// An xz-compressed tarball.
     TarballXz,
-    /// An archive or package container the pipeline cannot extract — any
+    /// An archive or package container the pipeline cannot extract: any
     /// `.tar*` outside gzip/xz (bare, zstd, lzma, …) and every known
-    /// container suffix (zip, deb, rpm, jar, whl, dmg, …) — refused at
+    /// container suffix (zip, deb, rpm, jar, whl, dmg, …), refused at
     /// plan time rather than installed as broken bytes. The `.tar*`
     /// family is closed by rule (the stem check), not by suffix list.
     Unsupported,
@@ -1784,7 +1806,7 @@ pub(crate) fn direct_artifact(url: &str) -> DirectArtifact {
 
 /// The flatpak arch component of an install ref for a host arch
 /// (`x86_64`, `aarch64`, `i386`). `None` for arch variants this crate
-/// cannot map — the planner then fails at plan time rather than emitting
+/// cannot map: the planner then fails at plan time rather than emitting
 /// flatpak's `all` wildcard, which is not an installable app ref.
 fn flatpak_arch(arch: Arch) -> Option<&'static str> {
     match arch {
@@ -1827,6 +1849,17 @@ mod tests {
 
     fn macos() -> Target {
         Target::macos(Arch::X86_64)
+    }
+
+    #[test]
+    fn host_reports_this_arch_honestly() {
+        let host = Target::host();
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(host.arch, Arch::X86_64);
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(host.arch, Arch::Aarch64);
+        #[cfg(target_arch = "x86")]
+        assert_eq!(host.arch, Arch::X86);
     }
 
     fn linux(family: DistroFamily) -> Target {

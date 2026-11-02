@@ -10,10 +10,6 @@ use std::str::FromStr;
 
 use crate::{Error, Result};
 
-// ---------------------------------------------------------------------------
-// Allowlist validators
-// ---------------------------------------------------------------------------
-
 /// Allowed characters for a job name: `[A-Za-z0-9._-]`.
 ///
 /// Job names are interpolated into root-owned systemd unit filenames and
@@ -37,7 +33,7 @@ const CRON_FIELD_EXTRA: &[char] = &['*', '/', ',', '-'];
 /// Returns `true` when `field` matches the safe cron-field allowlist
 /// `^[0-9*/,-]+$` (non-empty, digits or `*` `/` `,` `-`).
 ///
-/// This is a *lexical* guard only — it rejects characters that could break out
+/// This is a *lexical* guard only: it rejects characters that could break out
 /// of the cron line (`;`, whitespace, shell metacharacters, etc.). Range/step
 /// validity is still checked by [`Schedule::validate`] / `cron_to_oncalendar`.
 pub fn is_valid_cron_field(field: &str) -> bool {
@@ -46,10 +42,6 @@ pub fn is_valid_cron_field(field: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_digit() || CRON_FIELD_EXTRA.contains(&c))
 }
-
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
 
 /// Supported backup backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -85,10 +77,6 @@ impl FromStr for Backend {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Retention policy
-// ---------------------------------------------------------------------------
 
 /// Retention policy defining how many snapshots to keep for each time period.
 ///
@@ -152,6 +140,30 @@ impl RetentionPolicy {
             || self.keep_monthly.is_some()
             || self.keep_yearly.is_some()
     }
+
+    /// Render the policy as backend `--keep-*` flag/value pairs (all five
+    /// knobs, in canonical order), e.g.
+    /// `["--keep-hourly", "24", "--keep-daily", "7"]`.
+    ///
+    /// Both `restic forget` and `borg prune` spell these flags identically, so
+    /// this is the single mapping every prune/forget path uses; callers that
+    /// cannot represent a knob must reject the policy instead of dropping it.
+    #[must_use]
+    pub fn keep_args(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut push = |flag: &str, n: Option<u32>| {
+            if let Some(n) = n {
+                out.push(flag.to_owned());
+                out.push(n.to_string());
+            }
+        };
+        push("--keep-hourly", self.keep_hourly);
+        push("--keep-daily", self.keep_daily);
+        push("--keep-weekly", self.keep_weekly);
+        push("--keep-monthly", self.keep_monthly);
+        push("--keep-yearly", self.keep_yearly);
+        out
+    }
 }
 
 impl Default for RetentionPolicy {
@@ -159,10 +171,6 @@ impl Default for RetentionPolicy {
         Self::default_policy()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Schedule
-// ---------------------------------------------------------------------------
 
 /// Backup schedule specification.
 ///
@@ -221,10 +229,6 @@ impl Schedule {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Encryption
-// ---------------------------------------------------------------------------
-
 /// Encryption configuration for backup repositories.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -253,10 +257,6 @@ impl fmt::Display for Encryption {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// BackupSpec
-// ---------------------------------------------------------------------------
 
 /// Complete specification for a backup job.
 ///
@@ -370,10 +370,6 @@ impl BackupSpec {
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,5 +449,45 @@ mod tests {
         Schedule::new("*/15 2 1,15 * 1-5")
             .validate()
             .expect("list/range/step cron is valid");
+    }
+
+    #[test]
+    fn keep_args_render_all_five_knobs_in_order() {
+        let policy = RetentionPolicy {
+            keep_hourly: Some(24),
+            keep_daily: Some(7),
+            keep_weekly: None,
+            keep_monthly: Some(6),
+            keep_yearly: Some(3),
+        };
+        assert_eq!(
+            policy.keep_args(),
+            vec![
+                "--keep-hourly".to_string(),
+                "24".into(),
+                "--keep-daily".into(),
+                "7".into(),
+                "--keep-monthly".into(),
+                "6".into(),
+                "--keep-yearly".into(),
+                "3".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn keep_args_hourly_only_policy_is_representable() {
+        let policy = RetentionPolicy {
+            keep_hourly: Some(6),
+            keep_daily: None,
+            keep_weekly: None,
+            keep_monthly: None,
+            keep_yearly: None,
+        };
+        assert!(policy.validate().is_ok());
+        assert_eq!(
+            policy.keep_args(),
+            vec!["--keep-hourly".to_string(), "6".into()]
+        );
     }
 }

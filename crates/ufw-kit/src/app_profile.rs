@@ -101,9 +101,14 @@ pub fn remove_app_profile(paths: &UfwPaths, name: &str, namespace: &str) -> Resu
 }
 
 /// Render an app profile to string without writing.
-#[must_use]
-pub fn render_profile(spec: &AppProfileSpec) -> String {
-    spec.render()
+///
+/// # Errors
+///
+/// Returns the spec's validation error; rendering never emits unvalidated
+/// text into INI content that ufw parses as root.
+pub fn render_profile(spec: &AppProfileSpec) -> Result<String> {
+    spec.validate()?;
+    Ok(spec.render())
 }
 
 /// Parse an app profile from INI content.

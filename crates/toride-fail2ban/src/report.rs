@@ -15,10 +15,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Re-exports from toride-diagnostic-types
-// ---------------------------------------------------------------------------
-
 /// Re-export of the shared [`toride_diagnostic_types::Severity`] type.
 ///
 /// The shared type uses `Important` where this crate uses `Error`. See
@@ -37,10 +33,6 @@ pub use toride_diagnostic_types::Finding as SharedFinding;
 /// The shared type has a different API (requires `domain` and `checked_at`).
 /// See the local [`DoctorReport`] for the fail2ban-specific API.
 pub use toride_diagnostic_types::DoctorReport as SharedDoctorReport;
-
-// ---------------------------------------------------------------------------
-// Severity
-// ---------------------------------------------------------------------------
 
 /// Diagnostic severity level for doctor findings.
 ///
@@ -73,10 +65,6 @@ impl std::fmt::Display for Severity {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Finding
-// ---------------------------------------------------------------------------
 
 /// A single structured finding produced by the doctor or returned in an
 /// apply/rollback report.
@@ -171,10 +159,6 @@ impl From<&Finding> for SharedFinding {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ApplyReport
-// ---------------------------------------------------------------------------
-
 /// Report returned after successfully applying configuration changes.
 ///
 /// Contains every file that was written or removed, paths to backups created,
@@ -216,11 +200,16 @@ impl ApplyReport {
     pub fn is_empty(&self) -> bool {
         self.files_written.is_empty() && self.files_removed.is_empty() && self.findings.is_empty()
     }
-}
 
-// ---------------------------------------------------------------------------
-// RollbackReport
-// ---------------------------------------------------------------------------
+    /// Merge another report's file lists, backups, and findings into this
+    /// one; used when one apply step writes several files.
+    pub fn extend_from(&mut self, other: &Self) {
+        self.files_written.extend_from_slice(&other.files_written);
+        self.files_removed.extend_from_slice(&other.files_removed);
+        self.backup_paths.extend_from_slice(&other.backup_paths);
+        self.findings.extend_from_slice(&other.findings);
+    }
+}
 
 /// Report returned after a rollback triggered by a failed apply.
 ///
@@ -250,10 +239,6 @@ impl RollbackReport {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// DoctorReport
-// ---------------------------------------------------------------------------
 
 /// Aggregated doctor report containing all findings from a diagnostic run.
 ///
@@ -322,17 +307,14 @@ impl DoctorReport {
     /// Convert this report into a shared [`SharedDoctorReport`].
     ///
     /// Maps all local findings to shared findings. The `domain` is set to
-    /// `"fail2ban"` and `checked_at` is set to a placeholder timestamp.
+    /// `"fail2ban"` and `checked_at` carries the shared report's RFC 3339 UTC
+    /// timestamp.
     pub fn to_shared(&self) -> SharedDoctorReport {
         let shared_findings: Vec<SharedFinding> =
             self.findings.iter().map(Finding::to_shared).collect();
         SharedDoctorReport::new("fail2ban", shared_findings)
     }
 }
-
-// ---------------------------------------------------------------------------
-// RegexTestResult
-// ---------------------------------------------------------------------------
 
 /// Result of running `fail2ban-regex` to validate a filter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -383,10 +365,6 @@ impl RegexTestResult {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// StatusReport
-// ---------------------------------------------------------------------------
 
 /// Status report for a single jail, typically derived from
 /// `fail2ban-client status <jail>`.

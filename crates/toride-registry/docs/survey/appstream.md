@@ -13,9 +13,9 @@ sibling `_meta.json` (flathub-style, per-filename).
 
 Two layers, one standard:
 
-- **metainfo** — upstream-authored XML per project, shipped *inside* the app's
+- **metainfo**: upstream-authored XML per project, shipped *inside* the app's
   package at `/usr/share/metainfo/<id>.metainfo.xml` (older: `.appdata.xml`).
-- **catalog** (a.k.a. collection data) — distro-built aggregation of all
+- **catalog** (a.k.a. collection data): distro-built aggregation of all
   metainfo + `.desktop`-derived data for one repo, published by the distro for
   software centers. This is the "which GUI apps exist in which repo" database
   and the layer toride cares about.
@@ -41,24 +41,24 @@ Root element `<components>` with attributes:
 | `media_baseurl` | base URL; all media/screenshot/icon URLs become relative |
 | `architecture` | optional, disambiguates multiarch ID conflicts |
 
-Per-app `<component>` — at minimum `<id/>`, `<name/>`, `<summary/>`,
+Per-app `<component>`: at minimum `<id/>`, `<name/>`, `<summary/>`,
 `<pkgname/>` (apps also need `<icon/>`). The `type` attribute distinguishes
 kinds (`desktop-application`, `console-application`, `font`, …). Relevant
 children, exact tag names:
 
-- `<id/>` — short unique id, usually lowercase
-- `<pkgname/>` — **the distro package to install** (repeatable; `<source_pkgname/>` optional)
-- `<name/>`, `<summary/>`, `<description/>` — translated as a whole (xml:lang)
-- `<project_license/>` — SPDX expression (e.g. `GPL-3.0-or-later`); note
+- `<id/>`: short unique id, usually lowercase
+- `<pkgname/>`: **the distro package to install** (repeatable; `<source_pkgname/>` optional)
+- `<name/>`, `<summary/>`, `<description/>`: translated as a whole (xml:lang)
+- `<project_license/>`: SPDX expression (e.g. `GPL-3.0-or-later`); note
   `metadata_license` is a metainfo-only tag, catalogs carry `project_license`
-- `<url type="homepage"/>` — repeatable, typed (homepage/bugtracker/translate/…)
-- `<icon/>` — types `stock`, `cached`, `remote`, `local`; `width`/`height`/`scale`
+- `<url type="homepage"/>`: repeatable, typed (homepage/bugtracker/translate/…)
+- `<icon/>`: types `stock`, `cached`, `remote`, `local`; `width`/`height`/`scale`
 - `<categories/>` → `<category>` children (freedesktop menu spec)
 - `<keywords/>` → `<keyword>` (translated as a whole)
 - `<provides/>` → typed children: **`<binary>`**, `<mediatype>`, `<library>`, `<font>`
 - `<releases/>` → `<release version="…" date="…" timestamp="…">` with optional
   `<description>` and `<size type="download">` / `type="installed"`
-- `<launchable type="desktop-id"/>` — the `.desktop` id(s) that launch the app
+- `<launchable type="desktop-id"/>`: the `.desktop` id(s) that launch the app
 - `<languages/>` → `<lang percentage="…">`; `<content_rating/>`; `<bundle/>`
   (`package`, `flatpak`, `appimage`, `snap`, …); `<suggests/>`;
   `<compulsory_for_desktop/>`; `<developer/>`
@@ -79,7 +79,7 @@ https://deb.debian.org/debian/dists/<suite>/<component>/dep11/icons-<size>.tar.g
 Measured on sid/main: `Components-amd64.yml.gz` 8,708,066 B (last-modified
 2026-09-27T20:10Z, ~18 h before this survey's fetch); icon tarballs
 `icons-48x48.tar.gz` 3,480,048 B,
-`icons-64x64.tar.gz` 6,862,394 B, `icons-128x128.tar.gz` 10,233,919 B — not
+`icons-64x64.tar.gz` 6,862,394 B, `icons-128x128.tar.gz` 10,233,919 B: not
 tiny, so they were **not** downloaded during this survey. The catalog's own
 header field `Origin: debian-sid-main` confirms the spec's
 `<suite>-<component>` origin convention. Same layout verified on Ubuntu
@@ -90,18 +90,18 @@ header field `Origin: debian-sid-main` confirms the spec's
 
 - `repomd.xml` of `releases/{37,38,39,40,43,44}/Everything/x86_64/os` and
   `updates/43/Everything/x86_64` lists **no `appstream` / `appstream-icons`
-  data type** (only primary/filelists/other/group/updateinfo) — checked via
+  data type** (only primary/filelists/other/group/updateinfo): checked via
   `curl` of each `repodata/repomd.xml`.
 - The `fedora-appstream-metadata` RPM (successor of `appstream-data`) in F43
   release, F43 updates and F44 release is a **~12 KB stub**: its zstd/cpio
   payload contains only `usr/share/metainfo/org.fedoraproject.fedora.metainfo.xml`
   (the OS "operating-system" component) + a license file. Saved as
-  `fedora-43-os-metainfo.xml` — a live sample of the metainfo XML flavor, not
+  `fedora-43-os-metainfo.xml`: a live sample of the metainfo XML flavor, not
   a catalog.
 - So Fedora's distro-wide GUI-app catalog is **not URL-addressable** today;
   historically it shipped in the `appstream-data` package to
   `/usr/share/app-info/` (Richard Hughes, "Actually shipping AppStream
-  metadata in the repodata", 2014 —
+  metadata in the repodata", 2014:
   <https://blogs.gnome.org/hughsie/2014/12/17/actually-shipping-appstream-metadata-in-the-repodata/>;
   the "Fedora still does not ship AppStream metadata as part of the regular
   repository metadata, but in a package instead" situation is also noted in
@@ -132,7 +132,7 @@ map 1:1 to the XML tags, with localized fields as dicts carrying a mandatory
 mappings worth noting:
 
 - `Provides:` dict with keys `libraries`, **`binaries`**, `fonts`,
-  `modaliases`, `mediatypes`, `firmware`, `python3`, `dbus`, `ids` —
+  `modaliases`, `mediatypes`, `firmware`, `python3`, `dbus`, `ids`:
   e.g. live fixture: `Provides: {mediatypes: [text/html, …, x-scheme-handler/https]}`
   (firefox-esr) and `Provides: {binaries: [amsynth]}` (amsynth, sid/main)
 - `Launchable:` dict keyed by launchable type:
@@ -145,7 +145,7 @@ mappings worth noting:
 - Screenshots may carry `source-image` and/or `videos` (mutually exclusive);
   version relations use two-char operators `== != << >> <= >=`
 - **Strictness:** "Fields not mentioned in this document are not recognized by
-  DEP-11 YAML parsers" — a DEP-11 parser may reject unknown keys, so a toride
+  DEP-11 YAML parsers": a DEP-11 parser may reject unknown keys, so a toride
   serde model should use `#[serde(default)]` + ignore-unknown semantics rather
   than deny_unknown_fields.
 
@@ -168,7 +168,7 @@ mappings worth noting:
 
 (`Url` sub-keys observed: homepage 1,427, bugtracker 1,011, help 459,
 translate 362, donation 306, faq 98, contact 76, contribute 74.) Takeaway:
-`Provides`, `Releases`, `ProjectLicense` are **optional** — model them as
+`Provides`, `Releases`, `ProjectLicense` are **optional**: model them as
 `Option<…>`; `Package` is near-universal but one component lacked it.
 
 Two ID styles coexist in the same catalog: legacy `.desktop`-suffixed IDs
@@ -185,7 +185,7 @@ which carry upstream metainfo fields like `Releases`, `Branding`,
 | `Name` / `Summary` (`C` locale) | `<name/>` / `<summary/>` | display name / one-liner |
 | `Package` | `<pkgname/>` | **distro package name** → install action |
 | `ProjectLicense` | `<project_license/>` | SPDX license |
-| `Provides.binaries` | `<provides><binary>` | **binary names on PATH — the join key for tool detection** |
+| `Provides.binaries` | `<provides><binary>` | **binary names on PATH: the join key for tool detection** |
 | `Provides.mediatypes` | `<provides><mediatype>` | MIME/scheme handlers (weaker signal) |
 | `Launchable.desktop-id` | `<launchable type="desktop-id"/>` | `.desktop` id; matches `Type: desktop-application` IDs |
 | `Releases[].version` / `unix-timestamp` | `<release>` | latest published version + date |
@@ -201,12 +201,12 @@ freedesktop catalog layout) and `/var/(lib|cache)/swcatalog`, plus legacy
 `/usr/share/app-info{,/yaml}` and `/var/cache/app-info` (spec §3.2). Key
 subcommands (Debian manpage appstreamcli 1.2.0):
 
-- `appstreamcli refresh-cache` — rebuild the pool cache (root; `--force`)
-- `appstreamcli search TERM` / `appstreamcli get ID` — query the pool
-- `appstreamcli what-provides TYPE TERM` — "Return components which provide a
+- `appstreamcli refresh-cache`: rebuild the pool cache (root; `--force`)
+- `appstreamcli search TERM` / `appstreamcli get ID`: query the pool
+- `appstreamcli what-provides TYPE TERM`: "Return components which provide a
   given item", e.g. `appstreamcli what-provides mediatype "text/xml"`; the
   manpage documents `mediatype` and `lib` types (the upstream `provides`
-  item-type set also includes binary/lib/font/modalias/mimetype — the fixture's
+  item-type set also includes binary/lib/font/modalias/mimetype: the fixture's
   `Provides: binaries:` ↔ `<provides><binary>` is exactly the item class this
   queries)
 - `appstreamcli validate FILES` (+ `--pedantic`), `convert FILE1 FILE2`
@@ -221,7 +221,7 @@ subcommands (Debian manpage appstreamcli 1.2.0):
 | `libappstream` / `libappstream-sys` | 0.4.0 | FFI bindings to the C libappstream (full format support incl. DEP-11) at the cost of a C toolchain + system lib |
 | `appstream-glib(-sys)` | 0.0.1 | abandoned bindings to the older appstream-glib C library |
 
-**Recommendation:** don't pull either. DEP-11 YAML is flat and stable — parse
+**Recommendation:** don't pull either. DEP-11 YAML is flat and stable: parse
 it directly with `serde_yaml` into a small model (`Type`, `ID`, `Package`,
 `Name`/`Summary` maps, `Provides.binaries`, `Launchable`, `Releases`,
 `Origin` header), defaulting every field (§4 strictness). This keeps toride's
@@ -231,7 +231,7 @@ those fields.
 ## 7. What a toride adapter would do (app → distro package name)
 
 1. **Fetch** `dists/<suite>/<component>/dep11/Components-<arch>.yml.gz` for
-   the target distro (Debian/Ubuntu layouts are identical; Fedora has none —
+   the target distro (Debian/Ubuntu layouts are identical; Fedora has none:
    §3), decompress with `flate2`, feed the stream to a multi-doc YAML reader
    (`serde_yaml::Deserializer::from_reader` yields one document per
    component; first document = header → keep `Origin` as the repo identity).
@@ -241,7 +241,7 @@ those fields.
    `Provides.binaries` (falling back to `Package` exact-match, then
    `Launchable.desktop-id` / `ID` basename). `Provides: binaries: [amsynth]`
    is the shape; the majority of components lack `binaries` entirely (54% of
-   sid/main has no `Provides` block at all — .desktop-derived ones like
+   sid/main has no `Provides` block at all: .desktop-derived ones like
    firefox carry only `mediatypes`), so `Package`/ID matching is the
    necessary fallback.
 4. **Emit** a normalized entry: app id, C-locale name/summary, license,
@@ -249,7 +249,7 @@ those fields.
    **install target = `Package`** scoped to the repo from `Origin`/URL
    (`debian sid main` → `apt install <package>`; `ubuntu noble main` → same
    with the right sources).
-5. Cache the catalog (8.7 MB gz / ~27 MB raw for sid/main — download and
+5. Cache the catalog (8.7 MB gz / ~27 MB raw for sid/main: download and
    stream-split, don't hold it all in memory; `CID-Index-<arch>.json.gz` is a
    lighter id→summary index if full entries aren't needed).
 
@@ -259,7 +259,7 @@ those fields.
 |---|---|---|
 | `tests/fixtures/appstream/debian-sid-main-amd64.yml` | 9,439 | **live** (subset + trimmed, see `_meta.json`) |
 | `tests/fixtures/appstream/fedora-43-os-metainfo.xml` | 3,898 | **live** (verbatim from the stub RPM) |
-| `tests/fixtures/appstream/_meta.json` | — | per-file provenance (`{"synthetic": false, "url": …}`) |
+| `tests/fixtures/appstream/_meta.json` |: | per-file provenance (`{"synthetic": false, "url": …}`) |
 
 `debian-sid-main-amd64.yml` keeps the verbatim DEP-11 header plus 3 real
 components from the live sid/main catalog: `firefox-esr.desktop` (Package
@@ -272,6 +272,6 @@ were altered.
 
 **Honesty notes:** brave and VS Code are not packaged in Debian sid/main at
 all (verified by ID grep over the full catalog), so the ask's "brave or code"
-alternative could not come from Debian — `org.gnome.TextEditor` was chosen as
+alternative could not come from Debian: `org.gnome.TextEditor` was chosen as
 the third representative component instead. No fixture in this survey is
 synthetic; both were cut from live-fetched data.

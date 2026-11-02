@@ -78,7 +78,7 @@ impl std::fmt::Display for RebootPolicy {
 ///     security_only: true,
 ///     schedule: Schedule::Daily,
 ///     reboot: RebootPolicy::WhenNeeded,
-///     origins: vec!["origin=Debian,codename=${distro_codename},label=Debian-Security".into()],
+///     origins: vec!["${distro_id}:${distro_codename}-security".into()],
 /// };
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,8 +94,21 @@ pub struct UpdateSpec {
     /// APT origin patterns to match for update selection.
     ///
     /// On Debian/Ubuntu, each entry is an `Unattended-Upgrade::Allowed-Origins`
-    /// pattern. Ignored on DNF-backed systems.
+    /// pattern. Ignored on DNF-backed systems. The default set comes from
+    /// [`default_security_origins`].
     pub origins: Vec<String>,
+}
+
+/// Default `Allowed-Origins` patterns for security-only updates.
+///
+/// The `${distro_id}:${distro_codename}-security` shorthand is expanded by
+/// unattended-upgrades itself from the host's os-release, matching the stock
+/// Debian and Ubuntu `50unattended-upgrades` files. A literal
+/// `origin=Debian,...,label=Debian-Security` default matches no Ubuntu
+/// archive and silently disables automatic security updates there.
+#[must_use]
+pub fn default_security_origins() -> Vec<String> {
+    vec!["${distro_id}:${distro_codename}-security".to_owned()]
 }
 
 impl Default for UpdateSpec {
@@ -105,7 +118,7 @@ impl Default for UpdateSpec {
             security_only: true,
             schedule: Schedule::Daily,
             reboot: RebootPolicy::WhenNeeded,
-            origins: vec!["origin=Debian,codename=${distro_codename},label=Debian-Security".into()],
+            origins: default_security_origins(),
         }
     }
 }

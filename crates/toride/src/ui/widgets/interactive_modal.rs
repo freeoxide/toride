@@ -16,7 +16,7 @@
 //! // Open
 //! modal.open();
 //!
-//! // Input — returns ModalEvent
+//! // Input: returns ModalEvent
 //! match modal.handle_key(code) {
 //!     ModalEvent::Closed => { /* user pressed Esc */ }
 //!     ModalEvent::Consumed => { /* key swallowed */ }
@@ -112,7 +112,7 @@ impl<A: Copy + PartialEq> InteractiveModal<A> {
         }
     }
 
-    /// Alias for [`new`](Self::new) — emphasises that this is a display-only
+    /// Alias for [`new`](Self::new): emphasises that this is a display-only
     /// modal with no interactive buttons.
     #[must_use]
     pub fn display(title: &'static str) -> Self {
@@ -179,7 +179,7 @@ impl<A: Copy + PartialEq> InteractiveModal<A> {
     /// - `Enter` (with buttons) → activates focused button → `Button(A)`
     /// - `Tab` / `Right` (with buttons) → cycle focus forward → `Consumed`
     /// - `BackTab` / `Left` (with buttons) → cycle focus backward → `Consumed`
-    /// - Any other key → `Consumed` (swallowed — nothing leaks through)
+    /// - Any other key → `Consumed` (swallowed: nothing leaks through)
     pub fn handle_key(&mut self, code: KeyCode) -> ModalEvent<A> {
         if code == KeyCode::Esc {
             self.close();

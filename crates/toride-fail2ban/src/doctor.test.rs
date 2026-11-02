@@ -486,6 +486,64 @@ fn check_permissions_finds_config_dir_safe_when_present() {
 }
 
 #[test]
+fn check_safety_honors_with_paths_and_never_writes() {
+    use crate::SystemPaths;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let jail_d = dir.path().join("jail.d");
+    std::fs::create_dir_all(&jail_d).expect("jail.d");
+
+    let mut fake = FakeRunner::new();
+    // `id -u` answers root, so the metadata/uid probe must report writable.
+    fake.with_response("id", &["-u"], ok_output("0"));
+
+    let paths = SystemPaths::with_config_dir(dir.path().to_path_buf()).expect("paths");
+    let doctor = Doctor::with_paths(&fake, paths);
+    let findings = doctor.check_safety();
+
+    assert!(
+        has_finding(&findings, "safety.rollback-writable"),
+        "the custom config tree must be probed: {findings:?}"
+    );
+    // The writability check must not leave probe files behind in jail.d
+    // (the old implementation wrote and removed `.doctor-write-test`).
+    let leftovers: Vec<_> = std::fs::read_dir(&jail_d)
+        .expect("jail.d readable")
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.file_name())
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no probe files may remain: {leftovers:?}"
+    );
+}
+
+#[test]
+fn check_safety_reports_missing_config_dir_as_info() {
+    use crate::SystemPaths;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let fake = FakeRunner::new();
+
+    let missing = dir.path().join("nonexistent");
+    let doctor = Doctor::with_paths(
+        &fake,
+        SystemPaths {
+            config_dir: missing.clone(),
+            jail_d: missing.join("jail.d"),
+            filter_d: missing.join("filter.d"),
+            action_d: missing.join("action.d"),
+        },
+    );
+    let findings = doctor.check_safety();
+
+    assert!(
+        has_finding(&findings, "safety.config-dir-missing"),
+        "a missing tree is informational, not a writability failure: {findings:?}"
+    );
+}
+
+#[test]
 fn check_safety_always_reports_dry_run_available() {
     let fake = FakeRunner::new();
     let doctor = Doctor::new(&fake);
@@ -641,6 +699,24 @@ fn run_with_jail_scope() {
     let doctor = Doctor::new(&fake);
     let report = doctor.run(&DoctorScope::Jail("sshd".to_string())).unwrap();
     assert!(has_finding(&report.findings, "jail.exists"));
+}
+
+#[test]
+fn jail_scope_rejects_option_like_names_without_spawning() {
+    let fake = FakeRunner::new();
+    let doctor = Doctor::new(&fake);
+
+    let result = doctor.run(&DoctorScope::Jail("-h".to_string()));
+    assert!(
+        matches!(result, Err(crate::Error::Validation(_))),
+        "expected Error::Validation, got: {result:?}"
+    );
+
+    let calls = fake.calls();
+    assert!(
+        calls.is_empty(),
+        "a rejected jail scope must never spawn fail2ban-client"
+    );
 }
 
 #[test]
@@ -1486,7 +1562,7 @@ fn check_regex_attack_not_matched_warning() {
             "Failed password for root from 192.168.1.100 port 22 ssh2",
             "^some weird pattern <HOST>$",
         ],
-        ok_output("No match"),
+        ok_output("Lines: 1 lines, 0 matched, 1 missed"),
     );
     fake.with_response(
         regex_bin,
@@ -1494,7 +1570,7 @@ fn check_regex_attack_not_matched_warning() {
             "authentication failure; rhost=10.0.0.1 user=admin",
             "^some weird pattern <HOST>$",
         ],
-        ok_output("No match"),
+        ok_output("Lines: 1 lines, 0 matched, 1 missed"),
     );
     fake.with_response(
         regex_bin,

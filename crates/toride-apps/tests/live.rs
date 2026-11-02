@@ -1,4 +1,4 @@
-//! Live integration tests for toride-apps — real host PATH, real network.
+//! Live integration tests for toride-apps: real host PATH, real network.
 //!
 //! Gated behind `TORIDE_APPS_INTEGRATION=1` (the toride-installer
 //! `TORIDE_INSTALLER_INTEGRATION` precedent) so the normal gate run stays
@@ -20,7 +20,7 @@
 //!   actually has, so nothing is assumed either way;
 //! - the real toride-registry fetch layers through this crate's public
 //!   surface: the Homebrew and Flathub adapters resolving live apps into
-//!   planner input (pure `plan_install` afterward — no execution), the
+//!   planner input (pure `plan_install` afterward: no execution), the
 //!   DEP-11 appstream fetch (a multi-megabyte catalog download into a
 //!   scratch cache dir; the slowest test here), and one read-only
 //!   end-to-end facade `status` composing a real adapter with real
@@ -47,15 +47,15 @@ use toride_registry::{
 };
 use toride_runner::discovery::find_binary;
 
-/// The env gate — matches the installer precedent (`Ok("1")` exactly, not
+/// The env gate: matches the installer precedent (`Ok("1")` exactly, not
 /// merely "set").
 fn integration_enabled() -> bool {
     matches!(std::env::var("TORIDE_APPS_INTEGRATION").as_deref(), Ok("1"))
 }
 
 /// A unique scratch path under the system temp dir (the facade test's
-/// manifest never actually gets written — every operation in this file is
-/// read-only — but the path must not collide with a real manifest).
+/// manifest never actually gets written: every operation in this file is
+/// read-only, but the path must not collide with a real manifest).
 fn scratch_path(label: &str) -> camino::Utf8PathBuf {
     let dir = std::env::temp_dir().join(format!("toride-apps-live-{}-{label}", std::process::id()));
     camino::Utf8PathBuf::from_path_buf(dir)
@@ -76,13 +76,13 @@ fn reference(source: SourceKind, id: &str) -> SourceRef {
 }
 
 // ---------------------------------------------------------------------------
-// detect() seams — the real host PATH and /etc/os-release
+// detect() seams: the real host PATH and /etc/os-release
 // ---------------------------------------------------------------------------
 
 /// brew/flatpak `detect()` is a real PATH check; on this Linux host both
 /// binaries are absent, so both must refuse with `BinaryNotFound` naming
-/// the binary. On a host that does carry them, the same call must succeed
-/// — the test asserts whichever reality holds, never a hard-coded one.
+/// the binary. On a host that does carry them, the same call must
+/// succeed: the test asserts whichever reality holds, never a hard-coded one.
 #[test]
 fn brew_and_flatpak_detect_track_the_real_host_path() {
     if !integration_enabled() {
@@ -129,8 +129,8 @@ fn brew_and_flatpak_detect_track_the_real_host_path() {
 /// `detect()` succeeds with family Debian and the dpkg-backed probes
 /// answer live queries: an absent package is `NotInstalled` (dpkg-query's
 /// documented exit-1 shape), a package every Debian host carries (`dpkg`
-/// itself) reports a version. Both apt families qualify — ubuntu-latest
-/// detects as Ubuntu, and Mint and kin reach Ubuntu through `ID_LIKE` —
+/// itself) reports a version. Both apt families qualify: ubuntu-latest
+/// detects as Ubuntu, and Mint and kin reach Ubuntu through `ID_LIKE`:
 /// so the dpkg probes run there too; hosts outside the apt family only
 /// get the detect smoke assert, honestly labeled.
 #[tokio::test]
@@ -225,7 +225,7 @@ async fn snap_detect_and_read_only_probes_track_the_real_host() {
 }
 
 // ---------------------------------------------------------------------------
-// Real registry adapters — the live fetch layers behind the facade's resolve
+// Real registry adapters: the live fetch layers behind the facade's resolve
 // ---------------------------------------------------------------------------
 
 /// The Flathub adapter resolves a well-known app id over the real v2 API
@@ -244,7 +244,7 @@ async fn flathub_adapter_resolves_a_live_app_into_a_plannable_operation() {
         .expect("org.mozilla.firefox exists on Flathub");
     assert!(matches!(app.install, InstallMethod::Flatpak { .. }));
 
-    // Pure planning against a Linux target — the host never needs flatpak.
+    // Pure planning against a Linux target: the host never needs flatpak.
     let plan = plan_install(
         &app,
         &Target::linux(Arch::X86_64, DistroFamily::Debian),
@@ -261,7 +261,7 @@ async fn flathub_adapter_resolves_a_live_app_into_a_plannable_operation() {
     );
 }
 
-/// The Homebrew adapter is pure HTTP — formulae.brew.sh's API — so it
+/// The Homebrew adapter is pure HTTP (formulae.brew.sh's API) so it
 /// resolves on a host without brew installed (this one); the live formula
 /// then plans to the exact Linuxbrew argv.
 #[tokio::test]
@@ -293,7 +293,7 @@ async fn homebrew_adapter_resolves_a_live_formula_without_brew_installed() {
     assert_eq!(argv, ["brew", "install", "ripgrep"]);
 }
 
-/// The appstream fetch layer — the heaviest live surface: Debian's DEP-11
+/// The appstream fetch layer: the heaviest live surface: Debian's DEP-11
 /// catalog for stable/main streams through the disk cache and parses into
 /// the adapter, which must normalize a well-known package into the distro
 /// install method and plan the apt argv.
@@ -314,7 +314,7 @@ async fn appstream_fetch_normalizes_the_live_debian_catalog() {
 
     // gitg, not a household name like firefox-esr: bookworm's dep11
     // catalog ships 0 firefox-esr components (132 for gitg), so probing
-    // firefox-esr here fails the lookup confusingly — do not "fix" this
+    // firefox-esr here fails the lookup confusingly: do not "fix" this
     // back to firefox-esr without checking the catalog first.
     let app = adapter
         .lookup(&reference(SourceKind::Distro, "gitg"))
@@ -343,7 +343,7 @@ async fn appstream_fetch_normalizes_the_live_debian_catalog() {
 }
 
 // ---------------------------------------------------------------------------
-// Facade end-to-end — one read-only status probe
+// Facade end-to-end: one read-only status probe
 // ---------------------------------------------------------------------------
 
 /// One guarded facade probe (the only one that is safe): a real Flathub
@@ -352,7 +352,7 @@ async fn appstream_fetch_normalizes_the_live_debian_catalog() {
 /// flatpak-less host the resolution succeeds but the flatpak backend slot
 /// is absent, so the answer is `NotInstalled`; on a host carrying flatpak
 /// the app may genuinely be present, and `Foreign`/`Installed` are then
-/// the honest answers too — only a flatpak-less host answering anything
+/// the honest answers too: only a flatpak-less host answering anything
 /// but `NotInstalled` is a bug.
 #[tokio::test]
 async fn facade_status_composes_a_real_adapter_with_real_backend_detection() {

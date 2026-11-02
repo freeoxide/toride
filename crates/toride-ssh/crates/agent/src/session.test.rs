@@ -27,10 +27,6 @@ fn extract_host_no_prefix() {
     assert_eq!(extract_host_from_socket_path(&path), "some-host");
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn extract_host_mux_prefix() {
     let path = PathBuf::from("/home/user/.ssh/mux-user@bastion:22");
@@ -60,10 +56,6 @@ fn extract_host_only_filename() {
     let path = PathBuf::from("cm-root@server:22");
     assert_eq!(extract_host_from_socket_path(&path), "root@server");
 }
-
-// ---------------------------------------------------------------------------
-// Weird edge-case tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn extract_host_with_very_long_hostname() {

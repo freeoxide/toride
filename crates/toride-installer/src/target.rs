@@ -2,7 +2,7 @@
 //!
 //! A [`Target`] captures the operating system and CPU architecture of the
 //! machine an artifact will run on. It is detected from
-//! [`std::env::consts`] and mapped — per tool — to the release-asset naming
+//! [`std::env::consts`] and mapped (per tool) to the release-asset naming
 //! that tool uses (e.g. `linux-x64`, `macos-arm64`, `windows-x64`).
 
 use crate::error::{Error, Result};

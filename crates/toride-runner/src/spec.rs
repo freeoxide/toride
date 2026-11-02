@@ -1,4 +1,4 @@
-//! [`CommandSpec`] — a declarative description of a command to run.
+//! [`CommandSpec`]: a declarative description of a command to run.
 //!
 //! Use the builder-style methods to construct a spec, then pass it to
 //! any [`Runner`](crate::Runner) implementation.
@@ -34,7 +34,7 @@ pub struct CommandSpec {
     ///
     /// Use this when the payload is not valid UTF-8 (binary or compressed
     /// data); use [`CommandSpec::stdin`] for textual data. When both are
-    /// set, `stdin_bytes` wins — it is the more explicit, lower-level
+    /// set, `stdin_bytes` wins: it is the more explicit, lower-level
     /// request. This is command construction (it changes what the child
     /// reads), so it is included in `FakeRunner` (feature `fake`) exact
     /// matching, the same way `stdin` and [`CommandSpec::stdin_null`] are.
@@ -42,12 +42,12 @@ pub struct CommandSpec {
     /// Whether the child's stdin should be wired to the platform null device.
     ///
     /// `false` (the default) leaves stdin inherited from the parent when
-    /// [`CommandSpec::stdin`] carries no data — the child reads whatever the
+    /// [`CommandSpec::stdin`] carries no data, so the child reads whatever the
     /// parent reads (for a foreground command, the terminal). `true` connects
     /// the child's stdin to the null device instead, so reads return EOF
     /// immediately: the child can neither block on nor consume the parent's
-    /// stdin. Use it for non-interactive captured commands — version probes,
-    /// catalogue sweeps — where an inherited stdin is at best meaningless and
+    /// stdin. Use it for non-interactive captured commands (version probes,
+    /// catalogue sweeps) where an inherited stdin is at best meaningless and
     /// at worst steals keystrokes from the parent UI. When [`CommandSpec::stdin`]
     /// carries data, that data is piped and this flag has no effect.
     pub stdin_null: bool,
@@ -81,13 +81,24 @@ pub struct CommandSpec {
     /// Whether to redact sensitive arguments in display/logging output.
     /// Does **not** affect the actual args passed to the child process.
     pub redact: bool,
+    /// Domain-specific flags whose values are redacted wherever
+    /// [`CommandSpec::redact`] applies, on top of the default
+    /// [`REDACT_FLAGS`](crate::redact::REDACT_FLAGS) list.
+    ///
+    /// A value following one of these flags (or joined to it with `=`) is
+    /// replaced with `"***"` in displays, error variants, and the secret-value
+    /// scrub of captured output, exactly like a default flag. Because this
+    /// changes redaction only (never the argv the child receives), it is
+    /// matched by `FakeRunner` (feature `fake`) exact matching together with
+    /// [`CommandSpec::redact`].
+    pub redact_flags: Vec<String>,
     /// Optional combined byte cap on captured stdout plus stderr.
     ///
     /// When set, runners enforce the cap *while* capturing (not after) by
     /// killing and reaping the child as soon as the limit is breached, and
     /// return [`Error::OutputLimitExceeded`](crate::error::Error::OutputLimitExceeded).
     /// `None` leaves capture unlimited unless [`CommandSpec::output_cap`]
-    /// enforces one. Accounted in bytes — UTF-8 decoding happens after the
+    /// enforces one. Accounted in bytes: UTF-8 decoding happens after the
     /// byte-limit decision.
     ///
     /// This is a runtime safety policy, not command construction: it is
@@ -125,6 +136,7 @@ impl CommandSpec {
             cwd: None,
             output_mode: OutputMode::Capture,
             redact: false,
+            redact_flags: Vec::new(),
             output_limit: None,
             env_precedence: EnvPrecedence::ExplicitWins,
             path_resolution: PathResolution::OsSearch,
@@ -160,7 +172,7 @@ impl CommandSpec {
 
     /// Wire the child's stdin to the platform null device (reads return EOF)
     /// instead of leaving it inherited from the parent. No-op when
-    /// [`CommandSpec::stdin`] or [`CommandSpec::stdin_bytes`] carries data —
+    /// [`CommandSpec::stdin`] or [`CommandSpec::stdin_bytes`] carries data:
     /// the piped data wins.
     #[must_use]
     pub fn stdin_null(mut self, null: bool) -> Self {
@@ -261,6 +273,28 @@ impl CommandSpec {
         self
     }
 
+    /// Add one domain-specific flag whose values are redacted wherever
+    /// [`CommandSpec::redact`] applies, on top of
+    /// [`REDACT_FLAGS`](crate::redact::REDACT_FLAGS); see
+    /// [`CommandSpec::redact_flags`].
+    #[must_use]
+    pub fn redact_flag(mut self, flag: impl Into<String>) -> Self {
+        self.redact_flags.push(flag.into());
+        self
+    }
+
+    /// Add multiple domain-specific flags whose values are redacted wherever
+    /// [`CommandSpec::redact`] applies; see [`CommandSpec::redact_flags`].
+    #[must_use]
+    pub fn redact_flags<I, S>(mut self, flags: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.redact_flags.extend(flags.into_iter().map(Into::into));
+        self
+    }
+
     /// Set a combined byte cap on captured stdout plus stderr.
     ///
     /// Runners enforce this cap *while* capturing and return
@@ -326,8 +360,8 @@ impl CommandSpec {
     /// The wall-clock timeout runners enforce on this command, given the
     /// runner's `default_timeout`. [`TimeoutPolicy`] resolves first;
     /// [`TimeoutPolicy::SpecOrRunnerDefault`] falls back to
-    /// [`CommandSpec::timeout`] and then the runner default — the historical
-    /// order — so default-configured specs behave exactly as before this
+    /// [`CommandSpec::timeout`] and then the runner default, the historical
+    /// order, so default-configured specs behave exactly as before this
     /// field existed.
     #[must_use]
     pub fn effective_timeout(&self, runner_default: Option<Duration>) -> Option<Duration> {
@@ -346,7 +380,7 @@ impl serde::Serialize for CommandSpec {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CommandSpec", 18)?;
+        let mut s = serializer.serialize_struct("CommandSpec", 19)?;
         s.serialize_field("program", &self.program)?;
         s.serialize_field("args", &self.args)?;
         s.serialize_field("stdin", &self.stdin)?;
@@ -368,6 +402,7 @@ impl serde::Serialize for CommandSpec {
         )?;
         s.serialize_field("output_mode", &self.output_mode)?;
         s.serialize_field("redact", &self.redact)?;
+        s.serialize_field("redact_flags", &self.redact_flags)?;
         s.serialize_field("output_limit", &self.output_limit)?;
         s.serialize_field("env_precedence", &self.env_precedence)?;
         s.serialize_field("path_resolution", &self.path_resolution)?;
@@ -411,6 +446,8 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             #[serde(default)]
             redact: bool,
             #[serde(default)]
+            redact_flags: Vec<String>,
+            #[serde(default)]
             output_limit: Option<usize>,
             #[serde(default)]
             env_precedence: EnvPrecedence,
@@ -445,6 +482,7 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             cwd: h.cwd.map(PathBuf::from),
             output_mode: h.output_mode,
             redact: h.redact,
+            redact_flags: h.redact_flags,
             output_limit: h.output_limit,
             env_precedence: h.env_precedence,
             path_resolution: h.path_resolution,
@@ -608,7 +646,7 @@ mod serde_tests {
         assert_eq!(roundtripped.output_mode, OutputMode::Capture);
         assert!(roundtripped.redact);
         assert_eq!(roundtripped.env, vec![("KEY".into(), "val".into())]);
-        assert!(roundtripped.env_remove.is_empty());
+        assert_eq!(roundtripped.env_remove, Vec::<String>::new());
         assert!(!roundtripped.clear_env);
     }
 
@@ -621,7 +659,7 @@ mod serde_tests {
         assert_eq!(spec.output_mode, OutputMode::Capture);
         assert!(!spec.redact);
         assert!(spec.timeout.is_none());
-        assert!(spec.env_remove.is_empty());
+        assert_eq!(spec.env_remove, Vec::<String>::new());
         assert!(!spec.clear_env);
         // Payloads serialized before `stdin_null` existed default to inherit.
         assert!(!spec.stdin_null);
@@ -712,7 +750,7 @@ mod serde_tests {
 
     #[test]
     fn stdin_bytes_round_trip() {
-        // Bytes that are not valid UTF-8 — the payload `stdin: Option<String>`
+        // Bytes that are not valid UTF-8, the payload `stdin: Option<String>`
         // cannot express.
         let spec = CommandSpec::new("cat").stdin_bytes([0xff, 0x00, 0xfe]);
 
@@ -755,7 +793,7 @@ mod serde_tests {
     #[test]
     fn timeout_policy_defaults_for_old_payloads() {
         // Old payloads default to the legacy resolution, and an old `timeout`
-        // value keeps deciding the effective timeout exactly as before — the
+        // value keeps deciding the effective timeout exactly as before; the
         // new field must not silently change defaults.
         let json =
             r#"{"program":"cmd","args":[],"stdin":null,"timeout_nanos":5000000000,"env":[]}"#;

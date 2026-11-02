@@ -46,7 +46,7 @@ pub struct TailscaleSpec {
 }
 
 impl TailscaleSpec {
-    /// Create a minimal spec with just a node name.
+    /// Create a minimal spec with only a node name.
     pub fn new(node_name: impl Into<String>) -> Self {
         Self {
             node_name: node_name.into(),

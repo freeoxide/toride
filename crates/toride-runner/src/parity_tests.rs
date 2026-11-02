@@ -28,7 +28,7 @@
 //! claims them by omission:
 //!
 //! - **Duct streaming**: there is no sync streaming Duct implementation by
-//!   design — both captured paths reject `OutputMode::Stream` (asserted by
+//!   design; both captured paths reject `OutputMode::Stream` (asserted by
 //!   `parity_stream_mode_rejected_by_both_captured_paths`), so the streaming
 //!   row compares Tokio streaming against Tokio captured output instead.
 //! - **`FakeRunner` process behavior**: `FakeRunner` spawns no process, so env
@@ -133,7 +133,7 @@ mod tests {
         // A payload far larger than the OS pipe buffer (~64 KiB) with a child
         // that exits without reading stdin forces a broken-pipe write in both
         // runners; both must classify it as StdinFailed (kill-and-reaping the
-        // child before returning) — the parity row tracker item 4 asks for.
+        // child before returning), the parity row tracker item 4 asks for.
         let spec = CommandSpec::new("bash")
             .args(["-c", "exit 0"])
             .stdin_bytes(vec![b'x'; 512 * 1024]);
@@ -197,7 +197,7 @@ mod tests {
         let sync_output = Runner::run(&DuctRunner, &spec).unwrap();
         let async_output = AsyncRunner::run(&TokioRunner, &spec).await.unwrap();
 
-        // On macOS /tmp is a symlink — both runners should resolve the same way.
+        // On macOS /tmp is a symlink; both runners should resolve the same way.
         assert_eq!(sync_output.stdout_trimmed(), async_output.stdout_trimmed());
     }
 
@@ -470,7 +470,7 @@ mod tests {
         use crate::fake::FakeRunner;
 
         // Record a real runner's output, then replay it: the fake must hand
-        // back exactly that output through both the sync and async traits —
+        // back exactly that output through both the sync and async traits,
         // the contract callers rely on when swapping a real runner for a fake.
         let spec = CommandSpec::new("bash").args(["-c", "echo out; echo err >&2"]);
         let real = Runner::run(&DuctRunner, &spec).unwrap();

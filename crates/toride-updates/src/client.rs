@@ -62,7 +62,7 @@ impl UpdatesClient {
         self.runner.as_ref()
     }
 
-    /// The detected package manager — resolved once at construction, never re-probed.
+    /// The detected package manager, resolved once at construction and never re-probed.
     #[must_use]
     pub fn package_manager(&self) -> PackageManager {
         self.pkg_mgr
@@ -75,8 +75,7 @@ impl UpdatesClient {
             PackageManager::Apt => {
                 #[cfg(feature = "apt")]
                 {
-                    return AptBackend::with_paths(self.runner_ref(), self.paths.clone())
-                        .check_updates();
+                    AptBackend::with_paths(self.runner_ref(), self.paths.clone()).check_updates()
                 }
                 #[cfg(not(feature = "apt"))]
                 {
@@ -86,8 +85,7 @@ impl UpdatesClient {
             PackageManager::Dnf => {
                 #[cfg(feature = "dnf")]
                 {
-                    return DnfBackend::with_paths(self.runner_ref(), self.paths.clone())
-                        .check_updates();
+                    DnfBackend::with_paths(self.runner_ref(), self.paths.clone()).check_updates()
                 }
                 #[cfg(not(feature = "dnf"))]
                 {
@@ -108,8 +106,7 @@ impl UpdatesClient {
             PackageManager::Apt => {
                 #[cfg(feature = "apt")]
                 {
-                    return AptBackend::with_paths(self.runner_ref(), self.paths.clone())
-                        .apply_updates();
+                    AptBackend::with_paths(self.runner_ref(), self.paths.clone()).apply_updates()
                 }
                 #[cfg(not(feature = "apt"))]
                 {
@@ -119,8 +116,7 @@ impl UpdatesClient {
             PackageManager::Dnf => {
                 #[cfg(feature = "dnf")]
                 {
-                    return DnfBackend::with_paths(self.runner_ref(), self.paths.clone())
-                        .apply_updates();
+                    DnfBackend::with_paths(self.runner_ref(), self.paths.clone()).apply_updates()
                 }
                 #[cfg(not(feature = "dnf"))]
                 {
@@ -202,7 +198,16 @@ impl UpdatesClient {
 
     #[cfg(not(feature = "apt"))]
     fn check_updates_apt_inline(&self) -> Result<(usize, usize)> {
-        let spec = toride_runner::CommandSpec::new("/usr/lib/update-notifier/apt-check");
+        if !self.paths.apt_check.exists() {
+            let spec = toride_runner::CommandSpec::new("apt-get").args(["-s", "upgrade"]);
+            let output = self
+                .runner
+                .run_checked(&spec)
+                .map_err(|e| Error::CommandFailed(format!("apt-get -s upgrade failed: {e}")))?;
+            return crate::parse::parse_apt_get_simulate(&output.stdout);
+        }
+        let spec =
+            toride_runner::CommandSpec::new(self.paths.apt_check.to_string_lossy().into_owned());
         let output = self
             .runner
             .run_checked(&spec)
@@ -238,7 +243,7 @@ impl UpdatesClient {
         let spec = toride_runner::CommandSpec::new("dnf").args(["check-update", "--security"]);
         let output = self.runner.run(&spec)?;
         match output.exit_code {
-            Some(0 | 100) => crate::parse::parse_dnf_check(&output.stdout),
+            Some(0 | 100) => crate::parse::parse_dnf_check_security(&output.stdout),
             None => Err(Error::CommandFailed(
                 "dnf check-update produced no exit code (terminated by signal?)".to_string(),
             )),
@@ -275,13 +280,15 @@ impl UpdatesClient {
     }
 
     fn is_service_active(&self) -> Result<bool> {
-        let service = match self.package_manager() {
-            PackageManager::Apt => "unattended-upgrades",
+        let unit = match self.package_manager() {
+            // The apt oneshot service is inactive between runs on a correctly
+            // configured host; the timer is the liveness signal (mirrors doctor).
+            PackageManager::Apt => "apt-daily-upgrade.timer",
             PackageManager::Dnf => "dnf-automatic.timer",
             PackageManager::Unknown => return Ok(false),
         };
         let spec =
-            toride_runner::CommandSpec::new("systemctl").args(["is-active", "--quiet", service]);
+            toride_runner::CommandSpec::new("systemctl").args(["is-active", "--quiet", unit]);
         let output = self.runner.run(&spec)?;
         Ok(output.success)
     }
@@ -381,9 +388,28 @@ mod tests {
             runner.assert_called_with(&CommandSpec::new("systemctl").args([
                 "is-active",
                 "--quiet",
-                "unattended-upgrades",
+                "apt-daily-upgrade.timer",
             ]));
         }
+    }
+
+    #[cfg(not(feature = "dnf"))]
+    #[test]
+    fn check_updates_dnf_inline_counts_security_rows_as_security() {
+        let runner =
+            SharedRunner::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
+                "Last metadata expiration check: 0:01:00 ago.\n\
+             kernel-core.x86_64                   6.8.9-300.fc40             updates\n\
+             openssl-libs.x86_64                  3.2.1-1.fc40               updates\n",
+            )));
+        let client = UpdatesClient::with_runner(runner.boxed());
+        let (security, total) = client.check_updates_dnf_inline().unwrap();
+        assert_eq!(total, 2, "two name.arch evr repo rows");
+        assert_eq!(
+            security, 2,
+            "the --security spec lists only security updates"
+        );
+        runner.assert_called_with(&CommandSpec::new("dnf").args(["check-update", "--security"]));
     }
 
     #[cfg(feature = "config")]
@@ -433,6 +459,7 @@ mod tests {
             runner.assert_called_with(&CommandSpec::new("systemctl").args([
                 "enable",
                 "--now",
+                "--",
                 "apt-daily-upgrade.timer",
             ]));
         }
@@ -454,6 +481,7 @@ mod tests {
             runner.assert_called_with(&CommandSpec::new("systemctl").args([
                 "enable",
                 "--now",
+                "--",
                 "dnf-automatic.timer",
             ]));
         }

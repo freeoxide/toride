@@ -89,14 +89,12 @@ fn init_system_copy() {
 fn platform_info_clone() {
     let info = PlatformInfo {
         os: "linux".to_string(),
-        version: "6.1.0".to_string(),
         arch: "x86_64".to_string(),
         firewall: Firewall::Iptables,
         init_system: InitSystem::Systemd,
     };
     let cloned = info.clone();
     assert_eq!(info.os, cloned.os);
-    assert_eq!(info.version, cloned.version);
     assert_eq!(info.arch, cloned.arch);
     assert_eq!(info.firewall, cloned.firewall);
     assert_eq!(info.init_system, cloned.init_system);
@@ -106,7 +104,6 @@ fn platform_info_clone() {
 fn platform_info_serialize_deserialize_roundtrip() {
     let info = PlatformInfo {
         os: "macos".to_string(),
-        version: "14.0".to_string(),
         arch: "aarch64".to_string(),
         firewall: Firewall::Pf,
         init_system: InitSystem::Launchd,
@@ -117,7 +114,6 @@ fn platform_info_serialize_deserialize_roundtrip() {
         serde_json::from_str(&json).expect("deserialization should succeed");
 
     assert_eq!(info.os, deserialized.os);
-    assert_eq!(info.version, deserialized.version);
     assert_eq!(info.arch, deserialized.arch);
     assert_eq!(info.firewall, deserialized.firewall);
     assert_eq!(info.init_system, deserialized.init_system);
@@ -127,7 +123,6 @@ fn platform_info_serialize_deserialize_roundtrip() {
 fn platform_info_serialize_contains_expected_fields() {
     let info = PlatformInfo {
         os: "linux".to_string(),
-        version: "unknown".to_string(),
         arch: "x86_64".to_string(),
         firewall: Firewall::Unknown,
         init_system: InitSystem::Unknown,
@@ -146,7 +141,6 @@ fn platform_info_serialize_contains_expected_fields() {
 fn platform_info_deserialize_from_json() {
     let json = r#"{
         "os": "freebsd",
-        "version": "13.2",
         "arch": "amd64",
         "firewall": "Pf",
         "init_system": "Rc"
@@ -154,7 +148,6 @@ fn platform_info_deserialize_from_json() {
 
     let info: PlatformInfo = serde_json::from_str(json).expect("deserialization should succeed");
     assert_eq!(info.os, "freebsd");
-    assert_eq!(info.version, "13.2");
     assert_eq!(info.arch, "amd64");
     assert_eq!(info.firewall, Firewall::Pf);
     assert_eq!(info.init_system, InitSystem::Rc);
@@ -614,15 +607,6 @@ fn detect_init_does_not_panic() {
 }
 
 #[test]
-fn platform_info_version_is_unknown_by_default() {
-    let info = detect_platform();
-    assert_eq!(
-        info.version, "unknown",
-        "detect_platform should set version to \"unknown\" since real version detection is not implemented"
-    );
-}
-
-#[test]
 fn firewall_all_variants_serialize_to_known_strings() {
     let known = [
         "Iptables",
@@ -700,5 +684,55 @@ fn default_ban_and_unban_commands_empty_for_unknown() {
     assert!(
         unban.freebsd.is_empty(),
         "Unknown unban freebsd should be empty"
+    );
+}
+
+#[test]
+fn iptables_ban_template_tags_rules_with_the_jail() {
+    let cmds = default_ban_commands(Firewall::Iptables);
+    assert!(
+        cmds.linux[0].contains("-m comment --comment toride-f2b-<jail>"),
+        "iptables ban rules must carry the toride tag: {}",
+        cmds.linux[0]
+    );
+}
+
+#[test]
+fn iptables_unban_template_deletes_every_tagged_copy() {
+    let cmds = default_unban_commands(Firewall::Iptables);
+    assert!(
+        cmds.linux[0].contains("while iptables -C"),
+        "unban must loop over duplicate rules: {}",
+        cmds.linux[0]
+    );
+    assert!(
+        cmds.linux[0].contains("toride-f2b-<jail>"),
+        "unban must match the ban tag: {}",
+        cmds.linux[0]
+    );
+}
+
+#[test]
+fn nft_ban_template_adds_self_expiring_elements() {
+    let cmds = default_ban_commands(Firewall::Nftables);
+    assert!(
+        cmds.linux[0].contains("flags timeout"),
+        "the ban set must be created with timeout support: {}",
+        cmds.linux[0]
+    );
+    assert!(
+        cmds.linux[0].contains("timeout <ban-time>s"),
+        "elements must expire with the ban time: {}",
+        cmds.linux[0]
+    );
+}
+
+#[test]
+fn nft_unban_template_tolerates_already_expired_elements() {
+    let cmds = default_unban_commands(Firewall::Nftables);
+    assert!(
+        cmds.linux[0].contains("|| true"),
+        "deleting a timed-out element must not fail the purge: {}",
+        cmds.linux[0]
     );
 }

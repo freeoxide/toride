@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use toride_ssh_core::Result;
+use toride_ssh_core::control_master::ControlName;
+use toride_ssh_core::control_master::collect_control_candidates;
+use toride_ssh_core::control_master::collect_control_candidates_with;
 
 /// A single active SSH `ControlMaster` session.
 #[derive(Debug, Clone)]
@@ -16,73 +19,99 @@ pub struct ControlSession {
     pub established: SystemTime,
 }
 
+/// A pinned, `Send` verification future as produced by [`VerifyFn`].
+// Boxing keeps one concrete `Send` future type for the fan-out
+// (rust-lang/rust#110338).
+pub type BoxedVerifyFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<bool>> + Send>>;
+
+/// Verifier injected into [`list_sessions_with`]: `Some(true)` means a live
+/// master, `Some(false)` a dead socket, `None` that `ssh` is unavailable.
+pub type VerifyFn<'a> = &'a (dyn Fn(PathBuf) -> BoxedVerifyFuture + Send + Sync);
+
 /// List active `ControlMaster` sessions by scanning for control sockets.
 ///
-/// Scans the SSH directory (and any `ControlPath` pattern locations) for Unix
-/// domain socket files that resemble OpenSSH `ControlMaster` sockets, then
-/// verifies each is still alive using `ssh -O check`.
+/// Scans `ssh_dir` and `/tmp` for Unix domain socket files that resemble
+/// OpenSSH `ControlMaster` sockets, then verifies each is still alive via
+/// `ssh -O check`. OpenSSH places control sockets at the `ControlPath`
+/// pattern from `~/.ssh/config`; common patterns include `~/.ssh/cm-%r@%h:%p`,
+/// `~/.ssh/ctrl-%C`, and `/tmp/ssh-%r@%h:%p-*`.
 ///
-/// # Common socket patterns
+/// # Errors
 ///
-/// OpenSSH places control sockets at the path specified by `ControlPath` in
-/// `~/.ssh/config`. The default location varies by distro but common patterns
-/// include:
-///
-/// - `~/.ssh/cm-%r@%h:%p`
-/// - `~/.ssh/ctrl-%C`
-/// - `/tmp/ssh-%r@%h:%p-*`
-///
-/// This function scans `ssh_dir` and `/tmp` for files that look like control
-/// sockets.
+/// Returns [`toride_ssh_core::Error::Io`] if `ssh_dir` cannot be read.
 pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
-    let mut sessions = Vec::new();
-    let mut candidates = Vec::new();
+    list_sessions_with(ssh_dir, &|socket_path| {
+        Box::pin(verify_control_session(socket_path))
+    })
+    .await
+}
 
-    if ssh_dir.exists() {
-        let mut entries = tokio::fs::read_dir(ssh_dir).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if is_control_socket_candidate(&path).await {
-                candidates.push(path);
-            }
-        }
-    }
-
+/// [`list_sessions`](fn@list_sessions) with an injected verifier.
+///
+/// The verifier replaces the `ssh -O check` spawn so tests and benches can
+/// measure the bounded fan-out without a real `ssh` binary.
+///
+/// # Errors
+///
+/// Returns [`toride_ssh_core::Error::Io`] if `ssh_dir` cannot be read.
+pub async fn list_sessions_with(
+    ssh_dir: &Path,
+    verify: VerifyFn<'_>,
+) -> Result<Vec<ControlSession>> {
+    let ssh_dir = ssh_dir.to_path_buf();
     let tmp_dir = std::env::temp_dir();
-    if let Ok(mut entries) = tokio::fs::read_dir(&tmp_dir).await {
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
-            if name.starts_with("ssh-") && is_control_socket_candidate(&path).await {
-                candidates.push(path);
-            }
-        }
-    }
 
-    for socket_path in candidates {
-        let host = extract_host_from_socket_path(&socket_path);
+    let candidates = tokio::task::spawn_blocking(move || {
+        let ssh_dir_candidates = collect_control_candidates_with(
+            &ssh_dir,
+            |name| SSH_DIR_NAME_PREFIXES.iter().any(|p| name.starts_with(p)) || name.contains('@'),
+            false,
+        )?;
+        let tmp_candidates =
+            collect_control_candidates(&tmp_dir, &["ssh-"], false).unwrap_or_default();
+        Ok::<_, std::io::Error>(
+            ssh_dir_candidates
+                .into_iter()
+                .chain(tmp_candidates)
+                .map(|candidate| candidate.path)
+                .collect::<Vec<PathBuf>>(),
+        )
+    })
+    .await
+    .map_err(|e| toride_ssh_core::Error::TaskFailed(e.to_string()))??;
 
-        match verify_control_session(&socket_path).await {
+    let checks: Vec<BoxedVerifyFuture> = candidates
+        .iter()
+        .map(|socket_path| {
+            let socket_path = socket_path.clone();
+            let fut: BoxedVerifyFuture = verify(socket_path);
+            fut
+        })
+        .collect();
+    let alive_flags =
+        toride_ssh_core::fanout::join_all_bounded(MAX_CONCURRENT_CHECKS, checks).await;
+
+    let mut sessions = Vec::new();
+    for (socket_path, alive) in candidates.into_iter().zip(alive_flags) {
+        match alive {
             Some(true) => {
-                // The socket may have disappeared between the check above and now
-                // (race with another process cleaning it up). Treat a missing file
-                // as "session gone" rather than a fatal error.
+                // The socket may vanish between the check and this read (a
+                // concurrent cleanup); a missing file means the session is
+                // gone, not an error.
                 let Ok(metadata) = tokio::fs::metadata(&socket_path).await else {
                     continue;
                 };
                 let established = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
                 sessions.push(ControlSession {
+                    host: extract_host_from_socket_path(&socket_path),
                     control_path: socket_path,
-                    host,
                     established,
                 });
             }
             Some(false) => {
-                // Dead socket — clean it up.
+                // Dead socket, clean it up.
                 if let Err(e) = tokio::fs::remove_file(&socket_path).await {
                     tracing::debug!(
                         "failed to remove dead socket {}: {e}",
@@ -91,7 +120,7 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
                 }
             }
             None => {
-                // ssh binary not found — cannot determine status, skip cleanup
+                // ssh binary not found, cannot determine status, skip cleanup
                 // to avoid destroying active sessions.
                 tracing::debug!(
                     "skipping socket {}: ssh binary not available",
@@ -106,83 +135,23 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     Ok(sessions)
 }
 
-/// Check if a file looks like an SSH control socket.
-///
-/// On Unix, control sockets are Unix domain sockets. We check the file type
-/// heuristically by looking at the name pattern first, then verifying it's
-/// a socket.
-// The non-Unix arm has no await points but the signature must stay `async`
-// for call-site parity with the Unix arm.
-#[cfg_attr(not(unix), allow(clippy::unused_async))]
-async fn is_control_socket_candidate(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or_default();
+const MAX_CONCURRENT_CHECKS: usize = 8;
 
-    let is_match = name.starts_with("cm-")
-        || name.starts_with("ctrl-")
-        || name.starts_with("mux-")
-        || name.starts_with("ssh-")
-        || name.contains('@');
+const SSH_DIR_NAME_PREFIXES: &[&str] = &["cm-", "ctrl-", "mux-", "ssh-"];
 
-    if !is_match {
-        return false;
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileTypeExt;
-        let Ok(metadata) = tokio::fs::metadata(path).await else {
-            return false;
-        };
-        metadata.file_type().is_socket()
-    }
-
-    #[cfg(not(unix))]
-    {
-        path.exists()
-    }
-}
-
-/// Try to extract a host identifier from the socket path.
-///
-/// Socket paths often contain the host, e.g.:
-/// - `cm-root@server.example.com:22` -> `root@server.example.com`
-/// - `ctrl-1234abcd` -> `1234abcd`
-/// - `ssh-user@host:22-abc` -> `user@host`
+/// Render the `user@host` identifier of a control socket from its path,
+/// e.g. `cm-root@server.example.com:22` -> `root@server.example.com`.
 pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    let stripped = name
-        .strip_prefix("cm-")
-        .or_else(|| name.strip_prefix("control-"))
-        .or_else(|| name.strip_prefix("ctrl-"))
-        .or_else(|| name.strip_prefix("mux-"))
-        .or_else(|| name.strip_prefix("ssh-"))
-        .unwrap_or(name);
-
-    // Strip trailing port and random suffix, e.g. "root@host:22-abc" -> "root@host".
-    if let Some(at_pos) = stripped.find('@') {
-        let after_at = &stripped[at_pos..];
-        if let Some(colon) = after_at.find(':') {
-            return stripped[..at_pos + colon].to_string();
-        }
-        if let Some(dash) = after_at.find('-') {
-            return stripped[..at_pos + dash].to_string();
-        }
-        return stripped.to_string();
+    let parts = ControlName::parse(name);
+    match parts.user {
+        Some(user) => format!("{user}@{}", parts.host),
+        None => parts.host,
     }
-
-    // If there's no `@`, try to strip `:port` from any position.
-    if let Some(colon) = stripped.find(':') {
-        return stripped[..colon].to_string();
-    }
-
-    stripped.to_string()
 }
 
 /// Verify a control socket is still active using `ssh -O check`.
@@ -190,15 +159,14 @@ pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
 /// Returns `true` if `ssh -O check` exits with code 0 (master running).
 /// Returns `None` if the `ssh` binary itself cannot be executed (not in PATH),
 /// which is different from "master not running".
-async fn verify_control_session(socket_path: &Path) -> Option<bool> {
+async fn verify_control_session(socket_path: std::path::PathBuf) -> Option<bool> {
     let path_str = match socket_path.to_str() {
         Some(s) => s.to_owned(),
         None => return Some(false),
     };
 
-    // We need a dummy host argument for ssh -O check.  The host can be
-    // anything since the -S option specifies the control socket path.
-    // Using "localhost" as a placeholder.
+    // The destination operand is syntactically required but ignored by the
+    // mux protocol; -S selects the socket.
     let result = tokio::task::spawn_blocking(move || {
         duct::cmd("ssh", ["-S", &path_str, "-O", "check", "localhost"])
             .stdout_null()
@@ -208,18 +176,15 @@ async fn verify_control_session(socket_path: &Path) -> Option<bool> {
     .await;
 
     match result {
-        Ok(Ok(_)) => Some(true), // exit code 0 = master running
+        Ok(Ok(_)) => Some(true),
         Ok(Err(e)) => {
-            // Distinguish between "ssh not found" and "master not running".
-            // duct returns io::Error; when the binary is not found, kind is NotFound.
             if e.kind() == std::io::ErrorKind::NotFound {
-                // ssh binary not in PATH — cannot determine status
                 tracing::warn!("ssh binary not found, cannot check control socket");
                 return None;
             }
-            Some(false) // non-zero exit = master not running
+            Some(false)
         }
-        Err(_) => Some(false), // task panic = treat as dead
+        Err(_) => Some(false),
     }
 }
 

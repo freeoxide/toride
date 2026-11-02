@@ -3,12 +3,12 @@
 //! Renders inside the dashboard's content region when
 //! [`Section::Firewall`](crate::data::Section) is the active sidebar section.
 //! This integration mirrors the fail2ban template (`Fail2banContent`) WITHOUT
-//! any write path — every line is read-only.
+//! any write path: every line is read-only.
 //!
 //! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Status panel — active badge, default policies, logging level, version.
-//! 2. Rules table — parsed UFW rules (number, action, direction, raw text).
-//! 3. Doctor findings — grouped by severity (Critical > Important > Warning > Info > Ok).
+//! 1. Status panel: active badge, default policies, logging level, version.
+//! 2. Rules table: parsed UFW rules (number, action, direction, raw text).
+//! 3. Doctor findings: grouped by severity (Critical > Important > Warning > Info > Ok).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -77,7 +77,7 @@ pub struct FirewallContent {
     /// Default outgoing policy label (e.g. "allow").
     default_outgoing: Option<String>,
     /// Default routed policy label (e.g. "deny" / "reject"). `None` when routed
-    /// is off — UFW verbose prints "disabled" but the parser maps it to `None`,
+    /// is off: UFW verbose prints "disabled" but the parser maps it to `None`,
     /// so the panel surfaces "(unset)" rather than a string.
     default_routed: Option<String>,
     /// Current logging level label (e.g. "low").
@@ -209,7 +209,7 @@ impl FirewallContent {
         }
     }
 
-    /// Handle a mouse event (scroll wheel only — no click targets).
+    /// Handle a mouse event (scroll wheel only: no click targets).
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
             MouseEventKind::ScrollDown => {
@@ -233,7 +233,7 @@ impl FirewallContent {
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
+    /// Generic clamp after a data setter (defensive: the real clamp happens
     /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
@@ -653,7 +653,7 @@ mod tests {
     /// Lock the degraded-path centering arithmetic
     /// (`inner.height.saturating_sub(3) / 2`) against degenerate terminal
     /// heights. The arithmetic is saturating and will not panic, but it was
-    /// previously only exercised at 100x24 — this mirrors
+    /// previously only exercised at 100x24: this mirrors
     /// `tiny_terminal_does_not_panic` for the `available = false` branch,
     /// guarding the unavailable panel at heights 0/1/2 where the centering
     /// math underflows. Also confirms an `unavailable_reason` is surfaced.
@@ -661,10 +661,10 @@ mod tests {
     fn render_unavailable_at_degenerate_height_does_not_panic() {
         let mut c = FirewallContent::new();
         c.set_unavailable_reason(Some("spawn_blocking panicked".into()));
-        // 20x5 — below the saturating_sub(3) threshold for heights 0/1/2 once
+        // 20x5: below the saturating_sub(3) threshold for heights 0/1/2 once
         // the titled panel's border/insets are accounted for. The render path
         // wraps the reason within the panel (`Wrap { trim: false }`), so on a
-        // 20-col terminal a long reason wraps across rows — assert the leading
+        // 20-col terminal a long reason wraps across rows: assert the leading
         // token appears rather than the full (possibly-wrapped) string.
         let out = render_to_string(&mut c, 20, 5);
         assert!(
@@ -674,7 +674,7 @@ mod tests {
     }
 
     /// Pin the no-overflow property of `render_unavailable` at area heights
-    /// 1 and 2 — where `render_titled_panel`'s border + insets collapse
+    /// 1 and 2: where `render_titled_panel`'s border + insets collapse
     /// `inner.height` to 0 or 1. Before the `inner.height < 2` guard was
     /// added, the centering math (`inner.y + saturating_sub(3)/2`) would
     /// compute y-offsets that landed on or below the bottom border row,
@@ -715,7 +715,7 @@ mod tests {
     fn render_status_panel() {
         // Realistic values only: the convert layer's `policy_to_string`
         // yields "allow"/"deny"/"reject" (never "disabled"). Routed-off maps
-        // to `None`, surfaced as "(unset)" — see that case below.
+        // to `None`, surfaced as "(unset)": see that case below.
         let mut c = FirewallContent::new();
         c.set_available(true);
         c.set_status(
@@ -827,7 +827,7 @@ mod tests {
         c.set_available(true);
         c.set_rules(sample_rules());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
+        // 20x5: well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 

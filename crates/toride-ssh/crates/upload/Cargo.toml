@@ -1,0 +1,32 @@
+[package]
+name = "toride-ssh-upload"
+version.workspace = true
+edition.workspace = true
+description = "One-shot file upload to remote hosts via sftp batch mode with a validated remote path type"
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["ssh", "sftp", "upload", "file-transfer", "security"]
+categories = ["network-programming"]
+
+# criterion owns `cargo bench` for this crate; the lib's libtest-harnessed
+# unit tests reject criterion's forwarded flags (--baseline and friends).
+[lib]
+bench = false
+
+[dependencies]
+toride-ssh-core = { path = "../core", version = "0.2.0" }
+toride-runner = { path = "../../../toride-runner", version = "0.2.0" }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+toride-runner = { path = "../../../toride-runner", version = "0.2.0", features = ["fake"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "upload_stage_overhead"
+harness = false
+
+[lints]
+workspace = true

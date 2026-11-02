@@ -10,10 +10,15 @@ readme = "README.md"
 keywords = ["installer", "downloader", "checksum", "tarball", "artifact"]
 categories = ["development-tools"]
 
+# The benches are all criterion targets (`harness = false`); the implicit
+# lib bench target rejects criterion flags like `-- --baseline pre`.
+[lib]
+bench = false
+
 [features]
 default = []
 # The HTTP/archive install engine (reqwest download, digest verify, gzip/xz
-# extraction, tools/mise wiring); off the default set per plan 3.1 — the
+# extraction, tools/mise wiring); off the default set per plan 3.1: the
 # default build is the offline detector only: no reqwest, no xz2, no C builds.
 http = ["dep:reqwest", "dep:sha2", "dep:tar", "dep:flate2", "dep:xz2", "dep:serde"]
 
@@ -27,7 +32,7 @@ semver = { workspace = true }
 tokio = { workspace = true }
 # External commands (version probes) go through the workspace's shared
 # `Runner` trait. The dep/dev-dep split keeps the test-only `fake` feature
-# out of the normal build — stricter than the single-entry shape other
+# out of the normal build, stricter than the single-entry shape other
 # consumers use.
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["duct-runner"] }
 sha2 = { version = "0.10", optional = true }
@@ -45,10 +50,15 @@ toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["duc
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 # version_parse: the ToolVersion::parse kernel over a committed 300-row TSV
-# of real --version output shapes. Hermetic — no binary execution, no PATH
+# of real --version output shapes. Hermetic: no binary execution, no PATH
 # probing.
 [[bench]]
 name = "version_parse"
+harness = false
+test = false
+
+[[bench]]
+name = "detect_sweep"
 harness = false
 test = false
 

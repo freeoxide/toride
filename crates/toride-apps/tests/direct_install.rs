@@ -1,4 +1,4 @@
-//! Integration tests for the `direct` feature — direct downloads over
+//! Integration tests for the `direct` feature: direct downloads over
 //! toride-installer's pipeline, end to end through both facades: a
 //! one-shot loopback HTTP server serves the artifact (no external
 //! network), a fixture adapter plays the registry, manifests live under

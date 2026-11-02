@@ -164,7 +164,6 @@ impl KeygenParserState {
             {
                 self.in_critical = false;
             } else if !trimmed.starts_with('(') {
-                // Parse "name value" or just "name"
                 if let Some((k, v)) = trimmed.split_once(' ') {
                     self.info
                         .critical_options
@@ -201,19 +200,25 @@ impl KeygenParserState {
                 .trim_matches('"')
                 .clone_into(&mut self.info.key_id);
         } else if let Some(rest) = trimmed.strip_prefix("Valid:") {
-            // Parse "from YYYY-MM-DDTHH:MM:SS to YYYY-MM-DDTHH:MM:SS"
-            // Also handle: "forever" for unbounded validity.
+            // ssh-keygen prints one of four forms: "forever", "after X",
+            // "before X", or "from X to Y". An unbounded start maps to 0 and
+            // an unbounded end to u64::MAX.
             let rest = rest.trim();
-            if let Some((after_str, before_str)) = rest
+            if rest.eq_ignore_ascii_case("forever") {
+                self.info.valid_after = 0;
+                self.info.valid_before = u64::MAX;
+            } else if let Some(after) = rest.strip_prefix("after ") {
+                self.info.valid_after = validity_bound(after.trim(), 0)?;
+                self.info.valid_before = u64::MAX;
+            } else if let Some(before) = rest.strip_prefix("before ") {
+                self.info.valid_after = 0;
+                self.info.valid_before = validity_bound(before.trim(), u64::MAX)?;
+            } else if let Some((after_str, before_str)) = rest
                 .strip_prefix("from ")
                 .and_then(|s| s.split_once(" to "))
             {
-                self.info.valid_after = datetime_str_to_unix(after_str.trim())?;
-                self.info.valid_before = if before_str.trim().eq_ignore_ascii_case("forever") {
-                    u64::MAX
-                } else {
-                    datetime_str_to_unix(before_str.trim())?
-                };
+                self.info.valid_after = validity_bound(after_str.trim(), 0)?;
+                self.info.valid_before = validity_bound(before_str.trim(), u64::MAX)?;
             }
         } else if let Some(rest) = trimmed.strip_prefix("Signing CA:") {
             // Look for SHA256:... fingerprint
@@ -277,16 +282,16 @@ fn parse_keygen_output(output: &str, path: &Path) -> Result<CertificateInfo> {
     Ok(state.into_info())
 }
 
-/// Convert a datetime string like "2024-01-01T00:00:00" to a Unix timestamp.
-/// Handles the keyword "forever" by returning `u64::MAX`.
+/// Convert a validity bound to a Unix timestamp, mapping "forever" to
+/// `unbounded` (0 for the from-side, `u64::MAX` for the to-side).
 ///
 /// # Errors
 ///
 /// Returns [`toride_ssh_core::Error::CertificateParseFailed`] if the datetime string
 /// cannot be parsed with any known SSH date format.
-fn datetime_str_to_unix(s: &str) -> Result<u64> {
+fn validity_bound(s: &str, unbounded: u64) -> Result<u64> {
     if s.eq_ignore_ascii_case("forever") {
-        return Ok(u64::MAX);
+        return Ok(unbounded);
     }
 
     super::parse_ssh_datetime(s)
@@ -392,21 +397,20 @@ mod tests {
     }
 
     #[test]
-    fn datetime_str_to_unix_forever() {
-        assert_eq!(datetime_str_to_unix("forever").unwrap(), u64::MAX);
-        assert_eq!(datetime_str_to_unix("FOREVER").unwrap(), u64::MAX);
+    fn validity_bound_forever_maps_per_side() {
+        assert_eq!(validity_bound("forever", 0).unwrap(), 0);
+        assert_eq!(validity_bound("FOREVER", u64::MAX).unwrap(), u64::MAX);
     }
 
     #[test]
-    fn datetime_str_to_unix_invalid() {
-        assert!(datetime_str_to_unix("not-a-date").is_err());
-        assert!(datetime_str_to_unix("").is_err());
+    fn validity_bound_invalid() {
+        assert!(validity_bound("not-a-date", 0).is_err());
+        assert!(validity_bound("", u64::MAX).is_err());
     }
 
     #[test]
-    fn datetime_str_to_unix_valid() {
-        // Should parse a valid ISO timestamp
-        let result = datetime_str_to_unix("2024-01-01T00:00:00");
+    fn validity_bound_valid() {
+        let result = validity_bound("2024-01-01T00:00:00", 0);
         assert!(result.is_ok());
         assert!(result.unwrap() > 0);
     }
@@ -431,10 +435,6 @@ mod tests {
             [] as [(std::string::String, std::string::String); 0]
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Certificate TrustedUserCAKeys — reading and validation
-    // -----------------------------------------------------------------------
 
     #[test]
     fn parse_keygen_output_with_ca_fingerprint() {
@@ -555,8 +555,80 @@ mod tests {
         Extensions: (none)
 "#;
         let info = parse_keygen_output(output, std::path::Path::new("/p")).unwrap();
-        assert_eq!(info.valid_after, u64::MAX);
+        assert_eq!(info.valid_after, 0);
         assert_eq!(info.valid_before, u64::MAX);
+    }
+
+    fn local_unix(y: i32, mo: u32, d: u32) -> u64 {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(y, mo, d, 0, 0, 0)
+            .earliest()
+            .map_or(0, |dt| u64::try_from(dt.timestamp()).unwrap_or(0))
+    }
+
+    #[test]
+    fn certificate_validity_forever_whole_line() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Key ID: "eternal"
+        Serial: 0
+        Valid: forever
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/p")).unwrap();
+        assert_eq!(info.valid_after, 0);
+        assert_eq!(info.valid_before, u64::MAX);
+    }
+
+    #[test]
+    fn certificate_validity_after_only() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Key ID: "after-only"
+        Serial: 0
+        Valid: after 2024-06-01T00:00:00
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/p")).unwrap();
+        assert_eq!(info.valid_after, local_unix(2024, 6, 1));
+        assert_eq!(info.valid_before, u64::MAX);
+    }
+
+    #[test]
+    fn certificate_validity_before_only() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Key ID: "before-only"
+        Serial: 0
+        Valid: before 2025-01-01T00:00:00
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/p")).unwrap();
+        assert_eq!(info.valid_after, 0);
+        assert_eq!(info.valid_before, local_unix(2025, 1, 1));
+    }
+
+    #[test]
+    fn certificate_validity_after_forever_to_date() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Key ID: "from-forever"
+        Serial: 0
+        Valid: from forever to 2025-01-01T00:00:00
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/p")).unwrap();
+        assert_eq!(info.valid_after, 0);
+        assert_eq!(info.valid_before, local_unix(2025, 1, 1));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Multi-source detection: every hit for one name across `$PATH`, mise
-//! shims, and the attached backends' own listing probes — merged by
+//! shims, and the attached backends' own listing probes: merged by
 //! canonical path, never silently picked among.
 
 use std::path::PathBuf;
@@ -8,7 +8,7 @@ use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 use toride_registry::{Arch, DistroFamily};
 
-use crate::backend::{Backend, ListQuery};
+use crate::backend::{Backend, InstalledApp, ListQuery};
 #[cfg(feature = "mise")]
 use crate::backends::MiseBackend;
 use crate::backends::{
@@ -103,8 +103,8 @@ pub struct Detection {
     pub confidence: DetectionConfidence,
     /// Zero-based `$PATH` rank when the path sits on `$PATH`; `None` otherwise.
     pub path_rank: Option<usize>,
-    /// An earlier `$PATH` rank — or an earlier PATHEXT candidate within one
-    /// rank — resolved to a **different** artifact, so this copy cannot run;
+    /// An earlier `$PATH` rank, or an earlier PATHEXT candidate within one
+    /// rank: resolved to a **different** artifact, so this copy cannot run;
     /// the same file sighted again never shadows.
     pub shadowed: bool,
     /// The artifact exists but its source reports it unusable (broken shim).
@@ -134,21 +134,21 @@ impl Detection {
         }
     }
 
-    /// Ground the hit at a filesystem path — consume-and-return.
+    /// Ground the hit at a filesystem path: consume-and-return.
     #[must_use]
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
         self
     }
 
-    /// Record the reported version — consume-and-return.
+    /// Record the reported version: consume-and-return.
     #[must_use]
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
         self
     }
 
-    /// Record the `$PATH` rank the path occupies — consume-and-return.
+    /// Record the `$PATH` rank the path occupies: consume-and-return.
     #[must_use]
     pub const fn with_path_rank(mut self, rank: usize) -> Self {
         self.path_rank = Some(rank);
@@ -211,17 +211,19 @@ fn absorb(existing: &mut Detection, incoming: Detection) {
 
 /// Merge hits that ground at one canonical path into single entries;
 /// path-less hits dedup by `(source, name)`; distinct paths never collapse.
+/// Merge keys are computed once per detection (a path-grounded key costs
+/// one `fs::canonicalize`), never recomputed per comparison.
 #[must_use]
 pub fn merge_by_canonical_path(detections: Vec<Detection>) -> Vec<Detection> {
     let mut merged: Vec<Detection> = Vec::new();
+    let mut keys: Vec<MergeKey> = Vec::new();
     for detection in detections {
         let key = merge_key(&detection);
-        match merged
-            .iter_mut()
-            .find(|existing| merge_key(existing) == key)
-        {
-            Some(existing) => absorb(existing, detection),
-            None => merged.push(detection),
+        if let Some(index) = keys.iter().position(|existing| *existing == key) {
+            absorb(&mut merged[index], detection);
+        } else {
+            keys.push(key);
+            merged.push(detection);
         }
     }
     merged
@@ -247,7 +249,7 @@ pub struct MultiSourceDetector {
 }
 
 impl MultiSourceDetector {
-    /// Start building a detector — see [`MultiSourceDetectorBuilder`].
+    /// Start building a detector: see [`MultiSourceDetectorBuilder`].
     #[must_use]
     pub fn builder() -> MultiSourceDetectorBuilder {
         MultiSourceDetectorBuilder::new()
@@ -284,10 +286,10 @@ impl MultiSourceDetector {
         )
     }
 
-    fn path_hits(&self, name: &str) -> Vec<Detection> {
+    fn path_candidates(&self, name: &str) -> Vec<(usize, Utf8PathBuf)> {
         let candidates = executable_candidates(name, &resolve_pathext());
         let mut seen: Vec<PathBuf> = Vec::new();
-        let mut hits: Vec<Detection> = Vec::new();
+        let mut hits: Vec<(usize, Utf8PathBuf)> = Vec::new();
         for (rank, dir) in self.resolve_path_dirs().iter().enumerate() {
             for file_name in &candidates {
                 let candidate = dir.join(file_name.as_str());
@@ -299,16 +301,81 @@ impl MultiSourceDetector {
                     continue;
                 }
                 seen.push(artifact);
-                let mut hit =
-                    Detection::new(name, DetectionSource::Path, DetectionConfidence::Medium)
-                        .with_path(on_disk_casing(&candidate))
-                        .with_path_rank(rank);
-                hit.shadowed = !hits.is_empty();
-                hit.arch_mismatch = self.probe_arch_mismatch(candidate.as_str());
-                hits.push(hit);
+                hits.push((rank, candidate));
             }
         }
         hits
+    }
+
+    fn path_hits(&self, name: &str) -> Vec<Detection> {
+        let candidates = self.path_candidates(name);
+        let probe_keys: Vec<String> = candidates
+            .iter()
+            .map(|(_, candidate)| candidate.to_string())
+            .collect();
+        let arch = self.batched_arch_mismatches(&probe_keys);
+        Self::detections_from_candidates(name, &candidates, &arch)
+    }
+
+    fn detections_from_candidates(
+        name: &str,
+        candidates: &[(usize, Utf8PathBuf)],
+        arch: &std::collections::HashMap<String, bool>,
+    ) -> Vec<Detection> {
+        let mut hits: Vec<Detection> = Vec::new();
+        for (rank, candidate) in candidates {
+            let mut hit = Detection::new(name, DetectionSource::Path, DetectionConfidence::Medium)
+                .with_path(on_disk_casing(candidate))
+                .with_path_rank(*rank);
+            hit.shadowed = !hits.is_empty();
+            hit.arch_mismatch = arch.get(candidate.as_str()).copied().unwrap_or_default();
+            hits.push(hit);
+        }
+        hits
+    }
+
+    /// Probe the arch of every `paths` entry with one `file -b` invocation
+    /// over all operands (one description line per operand, in operand
+    /// order). A probe that fails, or output whose line count disagrees
+    /// with the operand count, falls back to per-path probes; a path the
+    /// probe cannot classify never mismatches.
+    fn batched_arch_mismatches(&self, paths: &[String]) -> std::collections::HashMap<String, bool> {
+        let mut answers: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+        let mut pending: Vec<&String> = Vec::new();
+        for path in paths {
+            if !answers.contains_key(path.as_str()) && !pending.contains(&path) {
+                pending.push(path);
+            }
+        }
+        if pending.is_empty() {
+            return answers;
+        }
+        let args: Vec<&str> = std::iter::once("-b")
+            .chain(pending.iter().map(|path| path.as_str()))
+            .collect();
+        if let Ok(output) = self.runner.run_sync(command("file", args))
+            && output.success
+        {
+            let lines: Vec<&str> = output
+                .stdout
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .collect();
+            if lines.len() == pending.len() {
+                for (line, path) in lines.into_iter().zip(&pending) {
+                    let arches = arches_from_file_output(line);
+                    answers.insert(
+                        path.as_str().to_owned(),
+                        !arches.is_empty() && !arches.contains(&self.target.arch),
+                    );
+                }
+                return answers;
+            }
+        }
+        for path in pending {
+            answers.insert(path.as_str().to_owned(), self.probe_arch_mismatch(path));
+        }
+        answers
     }
 
     fn probe_arch_mismatch(&self, path: &str) -> bool {
@@ -359,13 +426,116 @@ impl MultiSourceDetector {
     #[cfg(not(feature = "mise"))]
     #[expect(clippy::unused_self)]
     fn refine_mise_shim(&self, _hit: &mut Detection) {}
+
+    /// Detect every name in `names` in one pass: exactly one listing per
+    /// attached backend shared across the whole batch (filtered in memory
+    /// per name), one batched `file` arch probe over every `$PATH`
+    /// candidate, and one merge pass per name. Each returned
+    /// [`Detection`] carries the name it answers; per name the hits and
+    /// their order match [`Detector::detect`] on that name, and hits
+    /// never merge across names: two names sharing one canonical binary
+    /// (a symlink alias like `vi` -> `vim`) each keep their own hit. A
+    /// backend whose listing fails contributes no hits for any name,
+    /// same as the single-name probe.
+    #[must_use]
+    pub fn detect_many(&self, names: &[&str]) -> Vec<Detection> {
+        if names.is_empty() {
+            return Vec::new();
+        }
+        let mut candidates_per_name: Vec<Vec<(usize, Utf8PathBuf)>> = Vec::new();
+        let mut shims_per_name: Vec<Vec<Detection>> = Vec::new();
+        let mut probe_keys: Vec<String> = Vec::new();
+        for name in names {
+            let candidates = self.path_candidates(name);
+            probe_keys.extend(
+                candidates
+                    .iter()
+                    .map(|(_, candidate)| candidate.to_string()),
+            );
+            candidates_per_name.push(candidates);
+            shims_per_name.push(self.mise_shim_hits(name));
+        }
+        let arch = self.batched_arch_mismatches(&probe_keys);
+        let listings = self.backend_listings(names);
+        let mut merged: Vec<Detection> = Vec::new();
+        for ((name, candidates), shims) in names.iter().zip(candidates_per_name).zip(shims_per_name)
+        {
+            let mut per_name = Self::detections_from_candidates(name, &candidates, &arch);
+            per_name.extend(shims);
+            for (source, apps) in &listings {
+                per_name.extend(hits_from_rows(
+                    source,
+                    apps.iter().filter(|app| app.id == *name).cloned(),
+                ));
+            }
+            merged.extend(merge_by_canonical_path(per_name));
+        }
+        merged
+    }
+
+    /// One listing per attached backend, restricted to `names`, in the
+    /// same backend order [`Detector::detect`] probes them.
+    fn backend_listings(&self, names: &[&str]) -> Vec<(DetectionSource, Vec<InstalledApp>)> {
+        let query = ListQuery {
+            ids: names.iter().map(|name| (*name).to_owned()).collect(),
+        };
+        let mut listings: Vec<(DetectionSource, Vec<InstalledApp>)> = Vec::new();
+        let collect =
+            |backend: &dyn Backend,
+             source: DetectionSource,
+             listings: &mut Vec<(DetectionSource, Vec<InstalledApp>)>| {
+                let apps = backend
+                    .list_installed_sync(query.clone())
+                    .unwrap_or_default();
+                listings.push((source, apps));
+            };
+        if let Some(backend) = &self.homebrew {
+            collect(backend, DetectionSource::Homebrew, &mut listings);
+        }
+        if let Some(backend) = &self.flatpak {
+            collect(backend, DetectionSource::Flatpak, &mut listings);
+        }
+        if let Some(backend) = &self.snap {
+            collect(backend, DetectionSource::Snap, &mut listings);
+        }
+        if let Some(backend) = &self.distro {
+            let source = DetectionSource::Distro(backend.family());
+            collect(backend, source, &mut listings);
+        }
+        if let Some(backend) = &self.npm {
+            collect(backend, DetectionSource::Npm, &mut listings);
+        }
+        if let Some(backend) = &self.cargo {
+            collect(backend, DetectionSource::Cargo, &mut listings);
+        }
+        if let Some(backend) = &self.pipx {
+            collect(backend, DetectionSource::Pipx, &mut listings);
+        }
+        if let Some(backend) = &self.uv {
+            collect(backend, DetectionSource::Uv, &mut listings);
+        }
+        #[cfg(feature = "mise")]
+        if let Some(backend) = &self.mise {
+            collect(backend, DetectionSource::Mise, &mut listings);
+        }
+        listings
+    }
 }
 
 fn backend_hits(backend: &dyn Backend, source: &DetectionSource, name: &str) -> Vec<Detection> {
-    backend
-        .list_installed_sync(ListQuery::id(name))
-        .unwrap_or_default()
-        .into_iter()
+    hits_from_rows(
+        source,
+        backend
+            .list_installed_sync(ListQuery::id(name))
+            .unwrap_or_default(),
+    )
+}
+
+fn hits_from_rows(
+    source: &DetectionSource,
+    apps: impl IntoIterator<Item = InstalledApp>,
+) -> Vec<Detection> {
+    apps.into_iter()
         .map(|app| Detection {
             confidence: if app.version.is_some() {
                 DetectionConfidence::High
@@ -596,7 +766,7 @@ impl MultiSourceDetectorBuilder {
         Self::default()
     }
 
-    /// Set the host target architecture comparisons run against —
+    /// Set the host target architecture comparisons run against:
     /// consume-and-return.
     #[must_use]
     pub fn target(mut self, target: Target) -> Self {
@@ -604,7 +774,7 @@ impl MultiSourceDetectorBuilder {
         self
     }
 
-    /// Set the seam the `file` arch probe executes through —
+    /// Set the seam the `file` arch probe executes through:
     /// consume-and-return.
     #[must_use]
     pub fn runner(mut self, runner: CommandRunner) -> Self {
@@ -613,14 +783,14 @@ impl MultiSourceDetectorBuilder {
     }
 
     /// Override the `$PATH` directories probed in rank order (tests and
-    /// deterministic callers) — consume-and-return.
+    /// deterministic callers), consume-and-return.
     #[must_use]
     pub fn path_dirs(mut self, dirs: Vec<Utf8PathBuf>) -> Self {
         self.path_dirs = Some(dirs);
         self
     }
 
-    /// Override mise's shim directory (tests and deterministic callers) —
+    /// Override mise's shim directory (tests and deterministic callers),
     /// consume-and-return.
     #[must_use]
     pub fn mise_shim_dir(mut self, dir: impl Into<Utf8PathBuf>) -> Self {
@@ -628,63 +798,63 @@ impl MultiSourceDetectorBuilder {
         self
     }
 
-    /// Attach the homebrew backend — consume-and-return.
+    /// Attach the homebrew backend: consume-and-return.
     #[must_use]
     pub fn homebrew(mut self, backend: HomebrewBackend) -> Self {
         self.homebrew = Some(backend);
         self
     }
 
-    /// Attach the flatpak backend — consume-and-return.
+    /// Attach the flatpak backend: consume-and-return.
     #[must_use]
     pub fn flatpak(mut self, backend: FlatpakBackend) -> Self {
         self.flatpak = Some(backend);
         self
     }
 
-    /// Attach the snap backend — consume-and-return.
+    /// Attach the snap backend: consume-and-return.
     #[must_use]
     pub fn snap(mut self, backend: SnapBackend) -> Self {
         self.snap = Some(backend);
         self
     }
 
-    /// Attach the distro backend — consume-and-return.
+    /// Attach the distro backend: consume-and-return.
     #[must_use]
     pub fn distro(mut self, backend: DistroBackend) -> Self {
         self.distro = Some(backend);
         self
     }
 
-    /// Attach the npm backend — consume-and-return.
+    /// Attach the npm backend: consume-and-return.
     #[must_use]
     pub fn npm(mut self, backend: NpmBackend) -> Self {
         self.npm = Some(backend);
         self
     }
 
-    /// Attach the cargo backend — consume-and-return.
+    /// Attach the cargo backend: consume-and-return.
     #[must_use]
     pub fn cargo(mut self, backend: CargoBackend) -> Self {
         self.cargo = Some(backend);
         self
     }
 
-    /// Attach the pipx backend — consume-and-return.
+    /// Attach the pipx backend: consume-and-return.
     #[must_use]
     pub fn pipx(mut self, backend: PipxBackend) -> Self {
         self.pipx = Some(backend);
         self
     }
 
-    /// Attach the uv backend — consume-and-return.
+    /// Attach the uv backend: consume-and-return.
     #[must_use]
     pub fn uv(mut self, backend: UvBackend) -> Self {
         self.uv = Some(backend);
         self
     }
 
-    /// Attach the mise backend (the `mise` feature) — consume-and-return.
+    /// Attach the mise backend (the `mise` feature), consume-and-return.
     #[cfg(feature = "mise")]
     #[must_use]
     pub fn mise(mut self, backend: MiseBackend) -> Self {
@@ -694,7 +864,7 @@ impl MultiSourceDetectorBuilder {
 
     /// Attach every backend whose binary resolves on this host (the
     /// manager binaries via `$PATH`, distro via os-release(5) family
-    /// detection, mise via its offline discovery cascade — file checks
+    /// detection, mise via its offline discovery cascade: file checks
     /// only). No command executes; an absent binary or unknown family is
     /// a skip, never an error.
     ///
@@ -789,6 +959,16 @@ mod tests {
     #[cfg(unix)]
     fn file_spec(path: &str) -> toride_runner::CommandSpec {
         command("file", ["-b", path])
+    }
+
+    /// The batched arch probe: one `file -b` invocation over every
+    /// operand, one description line per operand in operand order.
+    #[cfg(unix)]
+    fn batched_file_spec(paths: &[String]) -> toride_runner::CommandSpec {
+        let args: Vec<&str> = std::iter::once("-b")
+            .chain(paths.iter().map(String::as_str))
+            .collect();
+        command("file", args)
     }
 
     #[cfg(unix)]
@@ -886,18 +1066,14 @@ mod tests {
         let second_dir = temp_dir("rank-b");
         let first_bin = write_executable(&first_dir, "tool");
         let second_bin = write_executable(&second_dir, "tool");
-        let fake = FakeRunner::new()
-            .strict()
-            .respond(
-                file_spec(first_bin.as_str()),
-                CommandOutput::from_stdout(
-                    "ELF 64-bit LSB pie executable, x86-64, dynamically linked",
-                ),
-            )
-            .respond(
-                file_spec(second_bin.as_str()),
-                CommandOutput::from_stdout("a /usr/bin/python3 script text executable"),
-            );
+        let batched = batched_file_spec(&[first_bin.to_string(), second_bin.to_string()]);
+        let fake = FakeRunner::new().strict().respond(
+            batched.clone(),
+            CommandOutput::from_stdout(concat!(
+                "ELF 64-bit LSB pie executable, x86-64, dynamically linked\n",
+                "a /usr/bin/python3 script text executable\n",
+            )),
+        );
         let detector = MultiSourceDetector::builder()
             .runner(seam(&fake))
             .target(aarch64_target())
@@ -915,8 +1091,128 @@ mod tests {
             !hits[1].arch_mismatch,
             "an arch-less script never mismatches"
         );
-        fake.assert_called_with(&file_spec(first_bin.as_str()));
-        fake.assert_called_with(&file_spec(second_bin.as_str()));
+        fake.assert_called_with(&batched);
+        assert_eq!(
+            fake.calls().len(),
+            1,
+            "one file invocation probes every candidate: {:?}",
+            fake.calls()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_many_shares_one_listing_per_backend_across_all_names() {
+        let dir = temp_dir("detect-many");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                command("brew", ["info", "--json=v2", "--installed"]),
+                CommandOutput::from_stdout(
+                    r#"{"formulae":[{"name":"tool-a","installed":[{"version":"1.0.0"}]}],"casks":[]}"#,
+                ),
+            )
+            .respond(
+                command(
+                    "flatpak",
+                    [
+                        "list",
+                        "--app",
+                        "--columns=application,version,origin,installation",
+                    ],
+                ),
+                CommandOutput::from_stdout("org.test.ToolB\t2.0.0\tflathub\tuser\n"),
+            )
+            .respond(
+                command("npm", ["list", "--global", "--depth=0", "--json"]),
+                CommandOutput::from_stdout(
+                    r#"{"dependencies":{"tool-c":{"version":"3.0.0"},"other":{"version":"9.9.9"}}}"#,
+                ),
+            );
+        let runner = CommandRunner::new(Arc::new(fake.clone()));
+        let detector = MultiSourceDetector::builder()
+            .target(Target::new(Os::Linux, Arch::X86_64))
+            .runner(runner.clone())
+            .path_dirs(vec![dir])
+            .homebrew(HomebrewBackend::new(runner.clone()))
+            .flatpak(FlatpakBackend::new(runner.clone()))
+            .npm(NpmBackend::new(runner))
+            .build();
+
+        let hits = detector.detect_many(&["tool-a", "org.test.ToolB", "tool-c", "unknown"]);
+
+        let by_name: std::collections::HashMap<&str, usize> =
+            hits.iter()
+                .fold(std::collections::HashMap::new(), |mut acc, hit| {
+                    *acc.entry(hit.name.as_str()).or_default() += 1;
+                    acc
+                });
+        assert_eq!(by_name.get("tool-a"), Some(&1), "{hits:?}");
+        assert_eq!(by_name.get("org.test.ToolB"), Some(&1), "{hits:?}");
+        assert_eq!(by_name.get("tool-c"), Some(&1), "{hits:?}");
+        assert!(!by_name.contains_key("unknown"), "{hits:?}");
+        assert!(hits.iter().all(|hit| hit.version.is_some()), "{hits:?}");
+        assert_eq!(
+            fake.calls().len(),
+            3,
+            "exactly one listing per backend, none per name: {:?}",
+            fake.calls()
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn detect_many_over_no_names_dispatches_nothing() {
+        let fake = FakeRunner::new().strict();
+        let runner = CommandRunner::new(Arc::new(fake.clone()));
+        let detector = MultiSourceDetector::builder()
+            .runner(runner)
+            .homebrew(HomebrewBackend::new(CommandRunner::new(Arc::new(
+                fake.clone(),
+            ))))
+            .build();
+        assert_eq!(detector.detect_many(&[]), Vec::<Detection>::new());
+        assert_eq!(fake.calls().len(), 0, "no names, no listings");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_many_keeps_one_hit_per_name_for_names_sharing_a_canonical_binary() {
+        let dir = temp_dir("detect-many-alias");
+        let vim = write_executable(&dir, "vim");
+        let vi = dir.join("vi");
+        std::os::unix::fs::symlink(vim.as_std_path(), vi.as_std_path())
+            .expect("alias symlink is creatable");
+        let elf = "ELF 64-bit LSB pie executable, x86-64, dynamically linked\n";
+        let batched = batched_file_spec(&[vim.to_string(), vi.to_string()]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(batched.clone(), CommandOutput::from_stdout(elf.repeat(2)))
+            .respond(
+                file_spec(vi.as_str()),
+                CommandOutput::from_stdout(elf.to_owned()),
+            );
+        let detector = MultiSourceDetector::builder()
+            .runner(seam(&fake))
+            .target(aarch64_target())
+            .path_dirs(vec![dir])
+            .build();
+
+        let many = detector.detect_many(&["vim", "vi"]);
+
+        assert_eq!(
+            many.len(),
+            2,
+            "one hit per name, never merged across names: {many:?}"
+        );
+        assert_eq!(many[0].name, "vim", "{many:?}");
+        assert_eq!(many[1].name, "vi", "{many:?}");
+        let single = detector.detect("vi");
+        assert_eq!(
+            many[1], single[0],
+            "the batch's hit for a name equals the single-name probe's"
+        );
+        fake.assert_called_with(&batched);
     }
 
     #[cfg(unix)]

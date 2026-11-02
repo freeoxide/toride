@@ -1,5 +1,4 @@
 [package]
-exclude = ["benches/fixtures/**"]
 name = "toride-monitor"
 version.workspace = true
 edition.workspace = true
@@ -13,6 +12,7 @@ categories = ["network-programming", "os"]
 [lib]
 name = "toride_monitor"
 path = "src/lib.rs"
+bench = false
 
 [[bin]]
 name = "toride-monitor"
@@ -21,8 +21,6 @@ required-features = ["cli"]
 
 [features]
 default = ["client", "doctor"]
-
-# === Capability features ===
 
 ## iptables/ss/conntrack wrappers via the shared command runner.
 client = ["toride-runner/duct-runner"]
@@ -48,7 +46,6 @@ cli = ["dep:clap", "client", "doctor", "service", "config", "serde"]
 webhook = ["client", "dep:reqwest", "serde"]
 
 [dependencies]
-# --- Always required ---
 toride-runner = { path = "../toride-runner", version = "0.2.0" }
 toride-fs = { path = "../toride-fs", version = "0.2.0" }
 toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.2.0" }
@@ -60,8 +57,7 @@ dirs = { workspace = true }
 netstat2 = "0.11"
 libc = "0.2"
 
-# --- Optional (feature-gated) ---
-serde = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, features = ["derive", "rc"], optional = true }
 serde_json = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
@@ -73,11 +69,27 @@ tempfile = "3"
 assert_fs = "1"
 proptest = "1"
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
-# --- Criterion benches (round-2 F11: ss parse kernel) ---
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
 name = "ss_parse"
+harness = false
+
+[[bench]]
+name = "conntrack_parse"
+harness = false
+
+[[bench]]
+name = "port_query"
+harness = false
+
+[[bench]]
+name = "webhook_dispatch"
+harness = false
+required-features = ["webhook"]
+
+[[bench]]
+name = "detect_full_report"
 harness = false
 
 [lints]

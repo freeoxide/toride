@@ -29,11 +29,29 @@ serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "macros"], optional = true }
 async-trait = { workspace = true, optional = true }
 
+[lib]
+bench = false
+
 [dev-dependencies]
-insta = "1"
 tempfile = "3"
-proptest = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "redact"
+harness = false
+test = false
+
+[[bench]]
+name = "capture"
+harness = false
+test = false
+
+[[bench]]
+name = "streaming"
+harness = false
+test = false
+required-features = ["stream"]
 
 [lints]
 workspace = true

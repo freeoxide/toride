@@ -21,10 +21,6 @@
 use crate::builder::MiseBuilder;
 use crate::client::{LoadPolicy, MiseMode};
 
-// ---------------------------------------------------------------------------
-// SecurityPolicy
-// ---------------------------------------------------------------------------
-
 /// Security policy applied to every mise invocation.
 ///
 /// Fields translate directly to CLI flags and trust mode settings on the
@@ -110,10 +106,6 @@ impl SecurityPolicy {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mise client extension
-// ---------------------------------------------------------------------------
-
 use crate::client::Mise;
 
 impl Mise {
@@ -157,10 +149,6 @@ impl Mise {
         builder
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

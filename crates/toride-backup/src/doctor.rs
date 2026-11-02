@@ -24,7 +24,7 @@
 //!   informational finding pointing at [`Doctor::run_spec`] when no
 //!   [`BackupSpec`] is available.
 //! - [`Doctor::run_spec`] takes a full [`BackupSpec`]
-//!   and runs *real* probes — constructing typed
+//!   and runs *real* probes: constructing typed
 //!   [`CommandSpec`]s for `restic`/`borg` and
 //!   executing them through the injected [`Runner`].
 //!
@@ -33,7 +33,7 @@
 //! Every command that touches the repository is built with
 //! [`CommandSpec::redact`](toride_runner::CommandSpec::redact)`(true)`, and
 //! the passphrase is delivered via the `RESTIC_PASSWORD` / `BORG_PASSPHRASE`
-//! environment variable — never as a positional argument. The repo URL is
+//! environment variable: never as a positional argument. The repo URL is
 //! likewise treated as potentially secret (it can embed credentials for
 //! `sftp:`/`b2:` backends).
 //!
@@ -59,9 +59,9 @@ use toride_runner::{CommandSpec, DuctRunner, Runner};
 use crate::spec::{Backend, BackupSpec};
 use crate::{Error, Result};
 
-// ---------------------------------------------------------------------------
-// Severity
-// ---------------------------------------------------------------------------
+/// Result of one repository-touching command, captured once and shared
+/// between probes within a [`SpecScope::All`] run.
+type Captured = std::result::Result<toride_runner::CommandOutput, toride_runner::Error>;
 
 /// Diagnostic severity level for doctor findings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -89,10 +89,6 @@ impl std::fmt::Display for Severity {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Finding
-// ---------------------------------------------------------------------------
 
 /// A single structured finding produced by the doctor.
 #[derive(Debug, Clone)]
@@ -136,10 +132,6 @@ impl Finding {
     }
 }
 
-// ---------------------------------------------------------------------------
-// DoctorScope
-// ---------------------------------------------------------------------------
-
 /// Selects which diagnostic category (or categories) to run.
 #[derive(Debug, Clone)]
 pub enum DoctorScope {
@@ -166,7 +158,7 @@ pub enum DoctorScope {
 impl DoctorScope {
     /// Return all individual scope categories (excluding `All`).
     pub fn all_categories() -> Vec<DoctorScope> {
-        // Stable placeholder names — these are the per-job categories that
+        // Stable placeholder names: these are the per-job categories that
         // require a BackupSpec to probe meaningfully. `run` will surface an
         // informational note pointing the caller at `run_spec` for these.
         vec![
@@ -181,10 +173,6 @@ impl DoctorScope {
         ]
     }
 }
-
-// ---------------------------------------------------------------------------
-// SpecScope -- which real-probe category to run against a BackupSpec
-// ---------------------------------------------------------------------------
 
 /// Selects which real-probe category to run against a [`BackupSpec`] via
 /// [`Doctor::run_spec`]. Unlike [`DoctorScope`] (which carries only a job
@@ -212,10 +200,6 @@ pub enum SpecScope {
     /// Probe repository free space (`restic stats` / `borg info`).
     Space,
 }
-
-// ---------------------------------------------------------------------------
-// DoctorReport
-// ---------------------------------------------------------------------------
 
 /// Aggregated doctor report containing all findings from a diagnostic run.
 #[derive(Debug, Clone)]
@@ -265,11 +249,9 @@ impl DoctorReport {
     }
 }
 
-// ===========================================================================
 // file-local serde helpers (only compiled under the `client` feature, which
 // implies serde + serde_json). These mirror the JSON shapes documented by
 // restic and borg so the official docs remain the authoritative reference.
-// ===========================================================================
 
 #[cfg(feature = "client")]
 mod json_shapes {
@@ -387,10 +369,6 @@ mod json_shapes {
     }
 }
 
-// ===========================================================================
-// Free helpers
-// ===========================================================================
-
 /// Render a runner error into a compact, redaction-safe string.
 ///
 /// `Runner::run_checked` already scrubs secret values from args/stderr when
@@ -431,7 +409,7 @@ fn iso_to_days(ts: &str) -> Option<i64> {
     Some(days_from_civil(y, m, d))
 }
 
-/// Howard Hinnant's days-from-civil algorithm — converts a Gregorian
+/// Howard Hinnant's days-from-civil algorithm: converts a Gregorian
 /// (year, month, day) to a count of days since 1970-01-01. No external dep.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
@@ -456,10 +434,6 @@ fn now_days() -> i64 {
 fn days_since(ts: &str) -> Option<i64> {
     iso_to_days(ts).map(|d| now_days() - d)
 }
-
-// ---------------------------------------------------------------------------
-// Doctor
-// ---------------------------------------------------------------------------
 
 /// Diagnostic engine that runs structured checks against backup
 /// configurations and repositories.
@@ -568,6 +542,12 @@ impl Doctor {
     /// passphrase is delivered via the `RESTIC_PASSWORD` / `BORG_PASSPHRASE`
     /// environment variable.
     ///
+    /// In the [`SpecScope::All`] scope the snapshot listing (restic
+    /// `snapshots --json` / borg `list --json`) and the borg `info --json`
+    /// document are each executed exactly once and threaded into every probe
+    /// that needs them, so a full run opens each repository once per command
+    /// instead of twice.
+    ///
     /// # Errors
     ///
     /// Returns an error only for fundamental failures (e.g. the required
@@ -578,31 +558,39 @@ impl Doctor {
         match scope {
             SpecScope::All => {
                 report.findings.extend(Self::check_binaries());
-                report.findings.extend(self.probe_repository(spec)?);
+                let listing = self.run_listing(spec)?;
+                let info = self.run_borg_info(spec)?;
+                report
+                    .findings
+                    .extend(self.probe_repository(spec, Some(&listing))?);
                 report.findings.extend(self.probe_integrity(spec)?);
-                report.findings.extend(self.probe_encryption(spec)?);
-                report.findings.extend(self.probe_staleness(spec)?);
+                report
+                    .findings
+                    .extend(self.probe_encryption(spec, info.as_ref())?);
+                report
+                    .findings
+                    .extend(self.probe_staleness(spec, Some(&listing))?);
                 report.findings.extend(Self::probe_schedule(spec));
                 report.findings.extend(self.probe_retention(spec)?);
                 report.findings.extend(self.probe_restore(spec)?);
-                report.findings.extend(self.probe_space(spec)?);
+                report
+                    .findings
+                    .extend(self.probe_space(spec, info.as_ref())?);
             }
-            SpecScope::Repository => report.findings.extend(self.probe_repository(spec)?),
+            SpecScope::Repository => report.findings.extend(self.probe_repository(spec, None)?),
             SpecScope::Integrity => report.findings.extend(self.probe_integrity(spec)?),
-            SpecScope::Encryption => report.findings.extend(self.probe_encryption(spec)?),
-            SpecScope::Staleness => report.findings.extend(self.probe_staleness(spec)?),
+            SpecScope::Encryption => {
+                report.findings.extend(self.probe_encryption(spec, None)?);
+            }
+            SpecScope::Staleness => report.findings.extend(self.probe_staleness(spec, None)?),
             SpecScope::Schedule => report.findings.extend(Self::probe_schedule(spec)),
             SpecScope::Retention => report.findings.extend(self.probe_retention(spec)?),
             SpecScope::Restore => report.findings.extend(self.probe_restore(spec)?),
-            SpecScope::Space => report.findings.extend(self.probe_space(spec)?),
+            SpecScope::Space => report.findings.extend(self.probe_space(spec, None)?),
         }
 
         Ok(report)
     }
-
-    // =======================================================================
-    // Binary checks
-    // =======================================================================
 
     /// Check that at least one backup binary (restic or borg) is available.
     fn check_binaries() -> Vec<Finding> {
@@ -671,10 +659,8 @@ impl Doctor {
         findings
     }
 
-    // =======================================================================
     // String-named stubs (kept for signature stability with DoctorScope).
     // They honestly tell the caller to supply a BackupSpec via run_spec.
-    // =======================================================================
 
     fn check_repository(name: &str) -> Vec<Finding> {
         vec![spec_hint_for("repository", name)]
@@ -703,10 +689,6 @@ impl Doctor {
     fn check_space(name: &str) -> Vec<Finding> {
         vec![spec_hint_for("space", name)]
     }
-
-    // =======================================================================
-    // Real probes (BackupSpec-backed)
-    // =======================================================================
 
     /// Resolve the backup binary for `spec.backend`, failing if it is absent.
     // `self` is only read under `cfg(test)` (for the binary_override hermetic
@@ -737,9 +719,46 @@ impl Doctor {
             .map_err(|_| Error::BinaryNotFound(name.into()))
     }
 
-    // -----------------------------------------------------------------------
-    // Repository accessibility
-    // -----------------------------------------------------------------------
+    /// Build the snapshot/archive listing command for `spec` (restic
+    /// `snapshots --json` / borg `list --json <repo>`).
+    fn listing_command(spec: &BackupSpec, binary: &str) -> Result<CommandSpec> {
+        match spec.backend {
+            Backend::Restic => Ok(Self::restic_repo_spec(binary, spec)?
+                .arg("snapshots")
+                .arg("--json")
+                .redact(true)),
+            Backend::Borg => Ok(Self::borg_repo_spec(binary, spec)
+                .arg("list")
+                .arg("--json")
+                .arg(path_string(&spec.repository)?)
+                .redact(true)),
+        }
+    }
+
+    /// Run the snapshot/archive listing once so the `All` scope can share the
+    /// captured result between the repository and staleness probes.
+    fn run_listing(&self, spec: &BackupSpec) -> Result<Captured> {
+        let binary = self.resolve_binary(spec)?;
+        let list_spec = Self::listing_command(spec, &binary)?;
+        Ok(self.runner.run_checked(&list_spec))
+    }
+
+    /// Run `borg info --json` once so the `All` scope can share the captured
+    /// result between the encryption and space probes. Restic has no shared
+    /// equivalent (its probes run `cat config` and `stats`), so this returns
+    /// `None` for restic.
+    fn run_borg_info(&self, spec: &BackupSpec) -> Result<Option<Captured>> {
+        if spec.backend != Backend::Borg {
+            return Ok(None);
+        }
+        let binary = self.resolve_binary(spec)?;
+        let info_spec = Self::borg_repo_spec(&binary, spec)
+            .arg("info")
+            .arg("--json")
+            .arg(path_string(&spec.repository)?)
+            .redact(true);
+        Ok(Some(self.runner.run_checked(&info_spec)))
+    }
 
     /// Probe repository accessibility by listing snapshots/archives.
     ///
@@ -749,27 +768,25 @@ impl Doctor {
     ///   (Docs: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>)
     ///
     /// Both commands succeed only when the repository exists, is readable,
-    /// and (if encrypted) the passphrase is correct.
-    fn probe_repository(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
-        let binary = self.resolve_binary(spec)?;
+    /// and (if encrypted) the passphrase is correct. `captured` lets the
+    /// [`SpecScope::All`] run reuse a listing another probe already executed.
+    fn probe_repository(
+        &self,
+        spec: &BackupSpec,
+        captured: Option<&Captured>,
+    ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        let spec_cmd = match spec.backend {
-            Backend::Restic => Self::restic_repo_spec(&binary, spec)?,
-            Backend::Borg => Self::borg_repo_spec(&binary, spec),
-        };
+        let mut fresh: Option<Captured> = None;
+        if captured.is_none() {
+            let binary = self.resolve_binary(spec)?;
+            let list_spec = Self::listing_command(spec, &binary)?;
+            fresh = Some(self.runner.run_checked(&list_spec));
+        }
+        let result: &Captured =
+            captured.unwrap_or_else(|| fresh.as_ref().expect("fresh listing capture"));
 
-        let list_spec = match spec.backend {
-            Backend::Restic => spec_cmd.arg("snapshots").arg("--json").redact(true),
-            // borg takes the repo as a positional argument after the verb.
-            Backend::Borg => spec_cmd
-                .arg("list")
-                .arg("--json")
-                .arg(path_string(&spec.repository)?)
-                .redact(true),
-        };
-
-        match self.runner.run_checked(&list_spec) {
+        match result {
             Ok(output) => {
                 let count = match spec.backend {
                     Backend::Restic => parse_restic_snapshot_count(output.stdout_trimmed()),
@@ -795,7 +812,7 @@ impl Doctor {
                         Severity::Error,
                         format!("{} repository is not accessible", spec.backend),
                     )
-                    .detail(format!("Listing snapshots failed:\n{}", runner_err(&e)))
+                    .detail(format!("Listing snapshots failed:\n{}", runner_err(e)))
                     .fix(format!(
                         "Verify the repository path {} is correct and the \
                          passphrase is right.",
@@ -807,10 +824,6 @@ impl Doctor {
 
         Ok(findings)
     }
-
-    // -----------------------------------------------------------------------
-    // Integrity
-    // -----------------------------------------------------------------------
 
     /// Probe repository integrity.
     ///
@@ -895,10 +908,6 @@ impl Doctor {
         Ok(findings)
     }
 
-    // -----------------------------------------------------------------------
-    // Encryption
-    // -----------------------------------------------------------------------
-
     /// Probe encryption is configured.
     ///
     /// - restic: encryption is *always* on (restic has no unencrypted mode);
@@ -908,7 +917,14 @@ impl Doctor {
     /// - borg: `borg info --json <repo>` exposes `encryption.mode`
     ///   (`repokey` / `keyfile` / `none` / ...).
     ///   Docs: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>
-    fn probe_encryption(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
+    ///
+    /// `captured` carries an already-executed `borg info --json` result for
+    /// the [`SpecScope::All`] run (restic ignores it).
+    fn probe_encryption(
+        &self,
+        spec: &BackupSpec,
+        captured: Option<&Captured>,
+    ) -> Result<Vec<Finding>> {
         let binary = self.resolve_binary(spec)?;
         let mut findings = Vec::new();
 
@@ -934,10 +950,16 @@ impl Doctor {
                 }
             }
             Backend::Borg => {
-                let mut s = CommandSpec::new(&binary).arg("info").arg("--json");
-                s = Self::apply_borg_secrets(s, spec);
-                let info_spec = s.arg(path_string(&spec.repository)?).redact(true);
-                match self.runner.run_checked(&info_spec) {
+                let mut fresh: Option<Captured> = None;
+                if captured.is_none() {
+                    let mut s = CommandSpec::new(&binary).arg("info").arg("--json");
+                    s = Self::apply_borg_secrets(s, spec);
+                    let info_spec = s.arg(path_string(&spec.repository)?).redact(true);
+                    fresh = Some(self.runner.run_checked(&info_spec));
+                }
+                let result: &Captured =
+                    captured.unwrap_or_else(|| fresh.as_ref().expect("fresh info capture"));
+                match result {
                     Ok(output) => {
                         #[cfg(feature = "client")]
                         {
@@ -965,7 +987,7 @@ impl Doctor {
                                         Severity::Warning,
                                         "could not parse borg encryption mode",
                                     )
-                                    .detail(output.stdout),
+                                    .detail(output.stdout.clone()),
                                 ),
                             }
                         }
@@ -985,7 +1007,7 @@ impl Doctor {
                             Severity::Error,
                             "could not read borg repository info",
                         )
-                        .detail(runner_err(&e)),
+                        .detail(runner_err(e)),
                     ),
                 }
             }
@@ -993,10 +1015,6 @@ impl Doctor {
 
         Ok(findings)
     }
-
-    // -----------------------------------------------------------------------
-    // Staleness (last run vs schedule)
-    // -----------------------------------------------------------------------
 
     /// Probe the most recent snapshot is not stale relative to the schedule.
     ///
@@ -1007,23 +1025,26 @@ impl Doctor {
     ///
     /// - restic: newest entry of `restic snapshots --json` (field `time`).
     /// - borg:   newest entry of `borg list --json` (field `start`).
-    fn probe_staleness(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
-        let binary = self.resolve_binary(spec)?;
+    ///
+    /// `captured` lets the [`SpecScope::All`] run reuse the listing the
+    /// repository probe already executed.
+    fn probe_staleness(
+        &self,
+        spec: &BackupSpec,
+        captured: Option<&Captured>,
+    ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        let list_spec = match spec.backend {
-            Backend::Restic => {
-                let s = Self::restic_repo_spec(&binary, spec)?;
-                s.arg("snapshots").arg("--json").redact(true)
-            }
-            Backend::Borg => {
-                let mut s = CommandSpec::new(&binary).arg("list").arg("--json");
-                s = Self::apply_borg_secrets(s, spec);
-                s.arg(path_string(&spec.repository)?).redact(true)
-            }
-        };
+        let mut fresh: Option<Captured> = None;
+        if captured.is_none() {
+            let binary = self.resolve_binary(spec)?;
+            let list_spec = Self::listing_command(spec, &binary)?;
+            fresh = Some(self.runner.run_checked(&list_spec));
+        }
+        let result: &Captured =
+            captured.unwrap_or_else(|| fresh.as_ref().expect("fresh listing capture"));
 
-        let output = match self.runner.run_checked(&list_spec) {
+        let output = match result {
             Ok(o) => o,
             Err(e) => {
                 findings.push(
@@ -1032,7 +1053,7 @@ impl Doctor {
                         Severity::Warning,
                         "could not list snapshots to assess staleness",
                     )
-                    .detail(runner_err(&e)),
+                    .detail(runner_err(e)),
                 );
                 return Ok(findings);
             }
@@ -1080,10 +1101,6 @@ impl Doctor {
         Ok(findings)
     }
 
-    // -----------------------------------------------------------------------
-    // Schedule
-    // -----------------------------------------------------------------------
-
     /// Probe the schedule is installed (systemd timer or cron entry).
     ///
     /// Delegates to [`crate::schedule::ScheduleManager::is_installed`] so the
@@ -1130,29 +1147,26 @@ impl Doctor {
         findings
     }
 
-    // -----------------------------------------------------------------------
-    // Retention
-    // -----------------------------------------------------------------------
-
     /// Probe the retention policy is applied by running a dry-run forget/prune.
     ///
-    /// - restic: `restic --repo <repo> forget --json --keep-daily N ...`
+    /// - restic: `restic --repo <repo> forget --dry-run --json --keep-* N ...`
     ///   (Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget>)
-    /// - borg:   `borg prune --dry-run --list <repo> --keep-daily N ...`
+    /// - borg:   `borg prune --dry-run --list <repo> --keep-* N ...`
     ///   (Docs: <https://borgbackup.readthedocs.io/en/stable/usage/prune.html>)
     ///
-    /// A successful dry-run proves the policy is well-formed and the repo can
-    /// be scanned for retention; it does NOT remove any data.
+    /// Both arms pass the backend's dry-run flag, so the probe never removes
+    /// data: it proves the policy is well-formed and the repo can be scanned
+    /// for retention.
     fn probe_retention(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
         let binary = self.resolve_binary(spec)?;
         let mut findings = Vec::new();
 
-        let keep_args = retention_args(&spec.retention);
+        let keep_args = spec.retention.keep_args();
 
         let dry_spec = match spec.backend {
             Backend::Restic => {
                 let mut s = Self::restic_repo_spec(&binary, spec)?;
-                s = s.arg("forget").arg("--json");
+                s = s.arg("forget").arg("--dry-run").arg("--json");
                 for a in &keep_args {
                     s = s.arg(a);
                 }
@@ -1217,10 +1231,6 @@ impl Doctor {
         Ok(findings)
     }
 
-    // -----------------------------------------------------------------------
-    // Restore (test restore sanity)
-    // -----------------------------------------------------------------------
-
     /// Probe a restore path is viable without writing to a real target.
     ///
     /// We do NOT run a full file-level restore (expensive, needs disk).
@@ -1231,7 +1241,7 @@ impl Doctor {
     ///   decryptable and restorable.
     ///   Docs: <https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency>
     /// - borg:   `borg check --verify-data <repo>` reads and authenticates
-    ///   every chunk — the strongest pre-restore confidence check.
+    ///   every chunk: the strongest pre-restore confidence check.
     ///   Docs: <https://borgbackup.readthedocs.io/en/stable/usage/check.html>
     fn probe_restore(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
         let binary = self.resolve_binary(spec)?;
@@ -1254,7 +1264,7 @@ impl Doctor {
                 "restore.viable",
                 Severity::Ok,
                 format!(
-                    "{} data verification passed — restore path is viable",
+                    "{} data verification passed: restore path is viable",
                     spec.backend
                 ),
             )),
@@ -1262,7 +1272,7 @@ impl Doctor {
                 Finding::new(
                     "restore.risky",
                     Severity::Error,
-                    "data verification failed — restores may not succeed",
+                    "data verification failed: restores may not succeed",
                 )
                 .detail(runner_err(&e))
                 .fix(format!(
@@ -1275,10 +1285,6 @@ impl Doctor {
         Ok(findings)
     }
 
-    // -----------------------------------------------------------------------
-    // Space
-    // -----------------------------------------------------------------------
-
     /// Probe the repository size / free space is sane.
     ///
     /// - restic: `restic --repo <repo> stats --json` → `total_size`.
@@ -1287,26 +1293,35 @@ impl Doctor {
     ///   (compressed+encrypted on-disk repo size).
     ///   Docs: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>
     ///
+    /// `captured` carries an already-executed `borg info --json` result for
+    /// the [`SpecScope::All`] run (restic ignores it and runs `stats`).
+    ///
     /// This reports the repo's own size as an informational finding; a true
     /// free-disk check would need statvfs(2) on the repo's mountpoint, which
     /// is out of scope for the cross-platform runner.
-    fn probe_space(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
+    fn probe_space(&self, spec: &BackupSpec, captured: Option<&Captured>) -> Result<Vec<Finding>> {
         let binary = self.resolve_binary(spec)?;
         let mut findings = Vec::new();
 
-        let size_spec = match spec.backend {
-            Backend::Restic => {
+        let ran;
+        let result: &Captured = match (spec.backend, captured) {
+            (Backend::Borg, Some(shared)) => shared,
+            (Backend::Restic, _) => {
                 let s = Self::restic_repo_spec(&binary, spec)?;
-                s.arg("stats").arg("--json").redact(true)
+                let size_spec = s.arg("stats").arg("--json").redact(true);
+                ran = self.runner.run_checked(&size_spec);
+                &ran
             }
-            Backend::Borg => {
+            (Backend::Borg, None) => {
                 let mut s = CommandSpec::new(&binary).arg("info").arg("--json");
                 s = Self::apply_borg_secrets(s, spec);
-                s.arg(path_string(&spec.repository)?).redact(true)
+                let size_spec = s.arg(path_string(&spec.repository)?).redact(true);
+                ran = self.runner.run_checked(&size_spec);
+                &ran
             }
         };
 
-        match self.runner.run_checked(&size_spec) {
+        match result {
             Ok(output) => {
                 #[cfg(feature = "client")]
                 {
@@ -1352,16 +1367,12 @@ impl Doctor {
                     Severity::Warning,
                     "could not read repository statistics",
                 )
-                .detail(runner_err(&e)),
+                .detail(runner_err(e)),
             ),
         }
 
         Ok(findings)
     }
-
-    // =======================================================================
-    // Command builders
-    // =======================================================================
 
     /// Build the base of a restic repo-touching subcommand:
     /// `restic --repo <repo> [--password-command <cmd>] <subcommand>...`
@@ -1393,7 +1404,7 @@ impl Doctor {
     /// Borg repo URLs are positional, so unlike restic the repo argument is
     /// added at each call site (after the subcommand verb).
     fn borg_repo_spec(binary: &str, spec: &BackupSpec) -> CommandSpec {
-        // `borg list --json <repo>` — repo is positional. We build the verb
+        // `borg list --json <repo>`: repo is positional. We build the verb
         // base here and let the caller append the repo, OR we append it.
         // For consistency with the list probe, append the repo here.
         let s = CommandSpec::new(binary);
@@ -1419,10 +1430,6 @@ impl Default for Doctor {
         Self::new()
     }
 }
-
-// ===========================================================================
-// Free helpers (parsing + scope hints)
-// ===========================================================================
 
 /// Informational finding pointing callers at `Doctor::run_spec` for a category
 /// that needs a full `BackupSpec`.
@@ -1473,25 +1480,6 @@ fn cap_first(s: &str) -> String {
     }
 }
 
-/// Turn a [`crate::spec::RetentionPolicy`] into backend keep-* flag pairs
-/// (`["--keep-daily", "7", "--keep-weekly", "4", ...]`). Shared by restic
-/// `forget` and borg `prune` (both use the same flag spellings).
-fn retention_args(policy: &crate::spec::RetentionPolicy) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut push = |flag: &str, n: Option<u32>| {
-        if let Some(n) = n {
-            out.push(flag.into());
-            out.push(n.to_string());
-        }
-    };
-    push("--keep-hourly", policy.keep_hourly);
-    push("--keep-daily", policy.keep_daily);
-    push("--keep-weekly", policy.keep_weekly);
-    push("--keep-monthly", policy.keep_monthly);
-    push("--keep-yearly", policy.keep_yearly);
-    out
-}
-
 /// Rough "max tolerable age in days" derived from a 5-field cron expression.
 ///
 /// Fields: min hour day-of-month month day-of-week.
@@ -1513,10 +1501,8 @@ fn max_age_days_from_cron(cron: &str) -> i64 {
     }
 }
 
-// ---------------------------------------------------------------------------
 // JSON parsers (only compiled under `client`, which implies serde_json).
 // Each accepts the exact shape documented by the official backend docs.
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "client")]
 fn parse_restic_snapshot_count(stdout: &str) -> Option<u64> {
@@ -1574,20 +1560,12 @@ fn parse_borg_total_csize(stdout: &str) -> Option<u64> {
     info.cache.and_then(|c| c.stats).map(|s| s.total_csize)
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(all(test, feature = "client"))]
 mod tests {
     use super::*;
     use crate::spec::{Backend, Encryption, RetentionPolicy, Schedule};
     use toride_runner::CommandOutput;
     use toride_runner::fake::FakeRunner;
-
-    // -----------------------------------------------------------------------
-    // Test fixtures
-    // -----------------------------------------------------------------------
 
     /// Build a restic `BackupSpec` pointing at a local repo.
     fn restic_spec(repo: &str) -> BackupSpec {
@@ -1634,10 +1612,6 @@ mod tests {
         (doc, rc)
     }
 
-    // -------------------------------------------------------------------------
-    // String scope still works (signature stability) + binary check is real
-    // -------------------------------------------------------------------------
-
     #[test]
     fn run_binary_scope_is_real() {
         // Whether or not restic/borg is installed, run must not error and
@@ -1671,9 +1645,6 @@ mod tests {
         assert!(report.findings.iter().any(|f| f.id == "doctor.needs-spec"));
     }
 
-    // -------------------------------------------------------------------------
-    // Repository probe — restic
-    // -------------------------------------------------------------------------
     // Source: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#snapshots
     // The `restic snapshots --json` output is a JSON array; each element has
     // at minimum {time, id, short_id, tree, ...}.
@@ -1778,9 +1749,6 @@ mod tests {
         assert!(report.has_errors());
     }
 
-    // -------------------------------------------------------------------------
-    // Repository probe — borg
-    // -------------------------------------------------------------------------
     // Source: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
     // `borg list --json` root object: {archives:[{id,name,start}], encryption, repository}
 
@@ -1851,9 +1819,6 @@ mod tests {
         rc.assert_called_with(&expected);
     }
 
-    // -------------------------------------------------------------------------
-    // Integrity probe — restic
-    // -------------------------------------------------------------------------
     // Source: https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency
     // `restic check` prints "no errors were found" on success (no --json).
 
@@ -1896,11 +1861,8 @@ mod tests {
         assert!(report.findings.iter().any(|f| f.id == "integrity.failed"));
     }
 
-    // -------------------------------------------------------------------------
-    // Integrity probe — borg
-    // -------------------------------------------------------------------------
     // Source: https://borgbackup.readthedocs.io/en/stable/usage/check.html
-    // `borg check --repository-only <repo>` — cheap structural check.
+    // `borg check --repository-only <repo>`: cheap structural check.
 
     #[test]
     fn borg_integrity_probe_builds_check_command() {
@@ -1919,9 +1881,6 @@ mod tests {
         rc.assert_called_with(&expected);
     }
 
-    // -------------------------------------------------------------------------
-    // Encryption probe — borg (reads encryption.mode from `borg info --json`)
-    // -------------------------------------------------------------------------
     // Source: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
     // "The encryption key, if present, contains mode".
 
@@ -1973,10 +1932,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Encryption probe — restic (cat config exit 0 => key unlocks repo)
-    // -------------------------------------------------------------------------
-
     #[test]
     fn restic_encryption_probe_builds_cat_config_command() {
         let runner = FakeRunner::new()
@@ -2000,10 +1955,6 @@ mod tests {
             .redact(true);
         rc.assert_called_with(&expected);
     }
-
-    // -------------------------------------------------------------------------
-    // Staleness probe — restic (newest snapshot time vs cron)
-    // -------------------------------------------------------------------------
 
     #[test]
     fn restic_staleness_probe_fresh_snapshot_is_ok() {
@@ -2045,7 +1996,7 @@ mod tests {
 
     #[test]
     fn restic_staleness_probe_old_snapshot_is_stale() {
-        // 1990 — unmistakably stale for a daily schedule.
+        // 1990: unmistakably stale for a daily schedule.
         let sample = r#"[{"time":"1990-01-01T02:00:00.000000000Z","id":"abc","short_id":"abc","tree":"t","paths":["/etc"],"hostname":"h","username":"u"}]"#;
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(sample));
         let (doc, _rc) = doctor_with_fake(runner, "restic");
@@ -2075,9 +2026,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Retention probe — restic forget --json --keep-* (dry-run-style preview)
-    // -------------------------------------------------------------------------
     // Source: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget
 
     #[test]
@@ -2090,7 +2038,9 @@ mod tests {
             .expect("probe ok");
         assert!(report.findings.iter().any(|f| f.id == "retention.ok"));
 
-        // Default policy: keep_daily=7, keep_weekly=4, keep_monthly=6.
+        // Default policy: keep_daily=7, keep_weekly=4, keep_monthly=6. The
+        // --dry-run flag mirrors the borg arm: the doctor probe must never
+        // remove snapshots.
         let expected = CommandSpec::new("restic")
             .args([
                 "--repo",
@@ -2098,6 +2048,7 @@ mod tests {
                 "--password-command",
                 "cat /etc/restic/pw",
                 "forget",
+                "--dry-run",
                 "--json",
                 "--keep-daily",
                 "7",
@@ -2131,9 +2082,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Retention probe — borg prune --dry-run --list --keep-*
-    // -------------------------------------------------------------------------
     // Source: https://borgbackup.readthedocs.io/en/stable/usage/prune.html
 
     #[test]
@@ -2164,9 +2112,6 @@ mod tests {
         rc.assert_called_with(&expected);
     }
 
-    // -------------------------------------------------------------------------
-    // Restore probe — restic check --read-data-subset=5%
-    // -------------------------------------------------------------------------
     // Source: https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency
 
     #[test]
@@ -2193,9 +2138,6 @@ mod tests {
         rc.assert_called_with(&expected);
     }
 
-    // -------------------------------------------------------------------------
-    // Restore probe — borg check --verify-data
-    // -------------------------------------------------------------------------
     // Source: https://borgbackup.readthedocs.io/en/stable/usage/check.html
 
     #[test]
@@ -2215,9 +2157,6 @@ mod tests {
         rc.assert_called_with(&expected);
     }
 
-    // -------------------------------------------------------------------------
-    // Space probe — restic stats --json (total_size)
-    // -------------------------------------------------------------------------
     // Source: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#stats
 
     #[test]
@@ -2254,9 +2193,6 @@ mod tests {
         rc.assert_called_with(&expected);
     }
 
-    // -------------------------------------------------------------------------
-    // Space probe — borg info --json (cache.stats.total_csize)
-    // -------------------------------------------------------------------------
     // Source: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
     // "The cache key, if present, contains ... stats: total_csize"
 
@@ -2291,24 +2227,21 @@ mod tests {
         rc.assert_called_with(&expected);
     }
 
-    // -------------------------------------------------------------------------
-    // run_spec(All) runs every probe end-to-end
-    // -------------------------------------------------------------------------
-
     #[test]
     fn run_spec_all_runs_every_probe() {
-        // 5 commands issued in All order:
-        //   repository(snapshots) integrity(check) encryption(cat config)
-        //   staleness(snapshots) restore(check --read-data-subset) space(stats)
+        // 6 commands issued in All order (the staleness probe reuses the
+        // repository listing, so `snapshots` runs once):
+        //   listing(snapshots) integrity(check) encryption(cat config)
+        //   retention(forget --dry-run) restore(check --read-data-subset)
+        //   space(stats)
         // (schedule delegates to ScheduleManager which probes the filesystem,
-        //  not the runner; retention issues forget --json.)
-        // Provide enough FIFO responses for the runner-driven probes.
+        //  not the runner.)
+        // Provide exactly one FIFO response per issued command.
         let runner = FakeRunner::new()
-            .push_response(CommandOutput::from_stdout("[]")) // repository snapshots
+            .push_response(CommandOutput::from_stdout("[]")) // listing: snapshots
             .push_response(CommandOutput::from_stdout("no errors were found\n")) // integrity check
             .push_response(CommandOutput::from_stdout("{\"version\":2}")) // encryption cat config
-            .push_response(CommandOutput::from_stdout("[]")) // staleness snapshots
-            .push_response(CommandOutput::from_stdout("[]")) // retention forget
+            .push_response(CommandOutput::from_stdout("[]")) // retention forget --dry-run
             .push_response(CommandOutput::from_stdout("no errors were found\n")) // restore subset
             .push_response(CommandOutput::from_stdout( // space stats
                 r#"{"total_size":0.0,"total_file_count":0,"total_blob_count":0,"snapshots_count":0}"#,
@@ -2353,30 +2286,78 @@ mod tests {
         assert!(report.findings.iter().any(|f| f.id.starts_with("space.")));
     }
 
-    // -------------------------------------------------------------------------
-    // Pure helpers
-    // -------------------------------------------------------------------------
-
+    /// safety-state-25 gate: the All scope must open the repository exactly
+    /// once per command. For a restic spec the `snapshots` listing is shared
+    /// between the repository and staleness probes, so exactly one spawn may
+    /// carry the `snapshots` verb.
     #[test]
-    fn retention_args_shape() {
-        let policy = RetentionPolicy {
-            keep_hourly: Some(24),
-            keep_daily: Some(7),
-            keep_weekly: None,
-            keep_monthly: Some(6),
-            keep_yearly: None,
-        };
-        let args = retention_args(&policy);
+    fn run_spec_all_restdic_issues_exactly_one_snapshots_spawn() {
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("[]")) // listing
+            .push_response(CommandOutput::from_stdout("no errors were found\n")) // integrity
+            .push_response(CommandOutput::from_stdout("{\"version\":2}")) // encryption
+            .push_response(CommandOutput::from_stdout("[]")) // retention
+            .push_response(CommandOutput::from_stdout("no errors were found\n")) // restore
+            .push_response(CommandOutput::from_stdout(
+                r#"{"total_size":0.0,"total_file_count":0,"total_blob_count":0,"snapshots_count":0}"#,
+            ));
+        let (doc, rc) = doctor_with_fake(runner, "restic");
+        doc.run_spec(&restic_spec("/srv/backup"), SpecScope::All)
+            .expect("probe ok");
+
+        let snapshots_spawns = rc
+            .calls()
+            .iter()
+            .filter(|c| c.args.iter().any(|a| a == "snapshots"))
+            .count();
         assert_eq!(
-            args,
-            vec![
-                "--keep-hourly".to_string(),
-                "24".into(),
-                "--keep-daily".into(),
-                "7".into(),
-                "--keep-monthly".into(),
-                "6".into(),
-            ]
+            snapshots_spawns,
+            1,
+            "All scope must list snapshots exactly once: {:?}",
+            rc.calls()
+        );
+    }
+
+    /// safety-state-25 gate (borg): `list --json` and `info --json` each run
+    /// exactly once in the All scope; the encryption and space probes share
+    /// one `info` spawn.
+    #[test]
+    fn run_spec_all_borg_issues_one_list_and_one_info_spawn() {
+        let list_json = r#"{"archives":[],"encryption":{"mode":"repokey"},"repository":{"id":"x","last_modified":"2024-01-01T00:00:00","location":"/srv/backup"}}"#;
+        let info_json = r#"{"cache":{"stats":{"total_csize":1024}},"encryption":{"mode":"repokey"},"repository":{"id":"x","last_modified":"2024-01-01T00:00:00","location":"/srv/backup"},"archives":[]}"#;
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout(list_json)) // listing: list --json
+            .push_response(CommandOutput::from_stdout("")) // integrity check
+            .push_response(CommandOutput::from_stdout(info_json)) // info --json (shared)
+            .push_response(CommandOutput::from_stdout("")) // retention prune --dry-run
+            .push_response(CommandOutput::from_stdout("")) // restore check --verify-data
+        ;
+        let (doc, rc) = doctor_with_fake(runner, "borg");
+        let report = doc
+            .run_spec(&borg_spec("/srv/backup"), SpecScope::All)
+            .expect("probe ok");
+        assert!(
+            report.findings.iter().any(|f| f.id.starts_with("space.")),
+            "space probe must consume the shared info output: {:?}",
+            report.findings
+        );
+
+        let calls = rc.calls();
+        let list_spawns = calls
+            .iter()
+            .filter(|c| c.args.iter().any(|a| a == "list"))
+            .count();
+        let info_spawns = calls
+            .iter()
+            .filter(|c| c.args.iter().any(|a| a == "info"))
+            .count();
+        assert_eq!(
+            list_spawns, 1,
+            "All scope must run `borg list` exactly once: {calls:?}"
+        );
+        assert_eq!(
+            info_spawns, 1,
+            "All scope must run `borg info` exactly once: {calls:?}"
         );
     }
 

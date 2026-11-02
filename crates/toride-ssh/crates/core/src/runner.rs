@@ -1,9 +1,7 @@
-//! Thin helpers for running external SSH tools via `duct`.
+//! Thin helpers for running external SSH tools.
 //!
 //! These wrap the few operations that require shelling out:
 //! FIDO key generation, `ssh-keyscan`, `ssh-copy-id`, passphrase changes, etc.
-//! All calls go through `tokio::task::spawn_blocking` to avoid blocking the
-//! async runtime.
 //!
 //! The [`CliRunner`] trait abstracts over command execution for testability.
 //! Production code uses [`DefaultCliRunner`] which delegates to
@@ -20,20 +18,27 @@ use toride_runner::tokio_runner::TokioRunner;
 
 use crate::{Error, Result};
 
-// ---------------------------------------------------------------------------
-// Duct-based helpers
-// ---------------------------------------------------------------------------
-
-/// Run an external command via `tokio::task::spawn_blocking`.
+/// Run an external command through [`TokioRunner`] with redaction on.
+///
+/// Duct's error `Display` embeds the full argv, so these helpers route
+/// through a [`CommandSpec`] with `.redact(true)` exactly like
+/// [`DefaultCliRunner`] does; a future passphrase-carrying caller cannot leak
+/// its argv through the failure message.
 async fn run_tool(cmd: &str, args: Vec<String>) -> Result<String> {
-    let cmd = cmd.to_owned();
-    tokio::task::spawn_blocking(move || {
-        duct::cmd(&*cmd, &args)
-            .read()
-            .map_err(|e| Error::CommandFailed(e.to_string()))
-    })
-    .await
-    .map_err(|e| Error::TaskFailed(e.to_string()))?
+    let spec = CommandSpec::new(cmd).args(args).redact(true);
+    let runner = TokioRunner;
+    let output = runner
+        .run(&spec)
+        .await
+        .map_err(|e| Error::CommandFailed(e.to_string()))?;
+    if !output.success {
+        return Err(Error::CommandFailed(format!(
+            "command `{cmd}` failed with exit {:?}: {}",
+            output.exit_code,
+            output.stderr.trim()
+        )));
+    }
+    Ok(output.stdout)
 }
 
 /// Run `ssh-keygen` with the given arguments and return stdout.
@@ -108,10 +113,6 @@ pub fn tool_exists(name: &str) -> bool {
     which::which(name).is_ok()
 }
 
-// ---------------------------------------------------------------------------
-// CliRunner trait
-// ---------------------------------------------------------------------------
-
 /// Abstraction over external command execution.
 ///
 /// Production code uses [`DefaultCliRunner`]; tests swap in [`MockCliRunner`].
@@ -146,10 +147,6 @@ pub trait CliRunner: Send + Sync {
     fn tool_exists(&self, name: &str) -> bool;
 }
 
-// ---------------------------------------------------------------------------
-// DefaultCliRunner  (production – delegates to `toride_runner::TokioRunner`)
-// ---------------------------------------------------------------------------
-
 /// Production [`CliRunner`] that delegates to [`TokioRunner`] from
 /// `toride-runner`, which uses `tokio::process` internally.
 #[derive(Debug, Clone, Copy, Default)]
@@ -159,11 +156,8 @@ pub struct DefaultCliRunner;
 impl CliRunner for DefaultCliRunner {
     async fn run(&self, cmd: &str, args: Vec<String>) -> Result<String> {
         // Redact by default: SSH tooling routinely carries passphrases
-        // (`ssh-keygen -N`/`-P`), tokens, or keys. The runner only scrubs
-        // recognized secret flags/env (`-N`, `-P`, `--password`, …), so this
-        // is a no-op for commands that carry no secret and ensures a
-        // passphrase piped through `-N` is scrubbed from captured stderr
-        // before it is interpolated into the failure message below.
+        // (`ssh-keygen -N`/`-P`); the runner scrubs recognized secret
+        // flags/env from captured stderr before it reaches the error below.
         let spec = CommandSpec::new(cmd).args(args).redact(true);
         let runner = TokioRunner;
         let output = runner
@@ -206,10 +200,6 @@ impl CliRunner for DefaultCliRunner {
         which::which(name).is_ok()
     }
 }
-
-// ---------------------------------------------------------------------------
-// MockCliRunner  (test double)
-// ---------------------------------------------------------------------------
 
 /// A canned-response [`CliRunner`] for unit tests.
 ///
@@ -294,7 +284,7 @@ impl CliRunner for MockCliRunner {
         _args: Vec<String>,
         _env: Vec<(String, String)>,
     ) -> Result<String> {
-        // Mock ignores env vars — only the command name matters for
+        // Mock ignores env vars: only the command name matters for
         // dispatching canned responses.
         let mut map = self.run_responses.lock().expect("mock lock poisoned");
         let queue = map.get_mut(cmd);
@@ -315,10 +305,6 @@ impl CliRunner for MockCliRunner {
             .unwrap_or(&false)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

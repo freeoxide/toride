@@ -32,8 +32,9 @@ env:
     toride-proxy toride-registry toride-runner toride-service toride-ssh
     toride-ssh-agent
     toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
-    toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
-    toride-ssh-known-hosts toride-status toride-updates toride-users
+    toride-ssh-core toride-ssh-doctor toride-ssh-exec toride-ssh-forward
+    toride-ssh-key toride-ssh-known-hosts toride-ssh-upload
+    toride-status toride-updates toride-users
     toride-wireguard ufw-kit ufw-kit-test-support
   PORTABLE_CRATES_WINDOWS: >-
     toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
@@ -55,11 +56,12 @@ env:
   PUBLISH_ORDER: >-
     toride-diagnostic-types toride-fs toride-runner toride-installer
     toride-registry toride-mise toride-apps toride-service toride-ssh-core
-    toride-status toride-audit toride-backup toride-cloud toride-fail2ban
-    toride-harden toride-monitor toride-proxy toride-ssh-agent
-    toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
-    toride-ssh-forward toride-ssh-known-hosts toride-tailscale toride-updates
-    toride-users toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
+    toride-ssh-exec toride-ssh-upload toride-status toride-audit
+    toride-backup toride-cloud toride-fail2ban toride-harden toride-monitor
+    toride-proxy toride-ssh-agent toride-ssh-authorized-keys
+    toride-ssh-certificate toride-ssh-config toride-ssh-forward
+    toride-ssh-known-hosts toride-tailscale toride-updates toride-users
+    toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
     ufw-kit-test-support toride-ssh toride
 
 jobs:
@@ -161,6 +163,37 @@ jobs:
       - name: Check the tokio-free default build
         run: cargo check -p toride-apps --no-default-features
 
+  toride-ssh-features:
+    name: toride-ssh feature gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: toride-ssh-features
+      - name: Lint and test the exec-only and upload-only feature sets
+        run: |
+          cargo clippy -p toride-ssh --all-targets --features exec -- -D warnings
+          cargo test -p toride-ssh --all-targets --features exec
+          cargo clippy -p toride-ssh --all-targets --features upload -- -D warnings
+          cargo test -p toride-ssh --all-targets --features upload
+      - name: Lint and test full minus each new subsystem
+        run: |
+          cargo clippy -p toride-ssh --all-targets --no-default-features --features agent,known-hosts,authorized-keys,doctor,forward,certificate,upload -- -D warnings
+          cargo test -p toride-ssh --all-targets --no-default-features --features agent,known-hosts,authorized-keys,doctor,forward,certificate,upload
+          cargo clippy -p toride-ssh --all-targets --no-default-features --features agent,known-hosts,authorized-keys,doctor,forward,certificate,exec -- -D warnings
+          cargo test -p toride-ssh --all-targets --no-default-features --features agent,known-hosts,authorized-keys,doctor,forward,certificate,exec
+      - name: Lint and test the full feature set
+        run: |
+          cargo clippy -p toride-ssh --all-targets --features full -- -D warnings
+          cargo test -p toride-ssh --all-targets --features full
+      - name: Check the no-default-feature build
+        run: cargo check -p toride-ssh --no-default-features
+
   publish-set-features:
     name: Publish-set feature gates
     runs-on: ubuntu-latest
@@ -177,6 +210,31 @@ jobs:
         run: |
           cargo clippy -p toride-registry -p toride-installer --all-targets --features http -- -D warnings
           cargo test -p toride-registry -p toride-installer --all-targets --features http
+      - name: Lint and test the non-default config feature
+        run: |
+          cargo clippy -p toride-updates --all-targets --features config -- -D warnings
+          cargo test -p toride-updates --all-targets --features config
+
+  ufw-kit-features:
+    name: ufw-kit feature gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ufw-kit-features
+      - name: Lint and test the non-default ssh feature
+        run: |
+          cargo clippy -p ufw-kit --all-targets --features ssh -- -D warnings
+          cargo test -p ufw-kit --all-targets --features ssh
+      - name: Lint and test the full feature set
+        run: |
+          cargo clippy -p ufw-kit --all-targets --all-features -- -D warnings
+          cargo test -p ufw-kit --all-targets --all-features
 
   check:
     name: Check (${{ matrix.os }})

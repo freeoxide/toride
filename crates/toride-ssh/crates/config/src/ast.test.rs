@@ -343,14 +343,71 @@ fn parse_directive_with_equals_no_spaces() {
 }
 
 #[test]
+fn parse_directive_with_equals_after_whitespace() {
+    let (keyword, separator, rest) = parse_directive_parts("Port = 22");
+    assert_eq!(keyword, "Port");
+    assert_eq!(separator, Separator::Equals);
+    assert_eq!(rest, "22");
+}
+
+#[test]
+fn parse_host_with_equals_after_whitespace() {
+    let input = "Host = example\n    User alice\n";
+    let ast = parse(input);
+    match &ast.nodes[0] {
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.header, "Host = example");
+            assert_eq!(b.patterns, vec!["example".to_owned()]);
+        }
+        _ => panic!("expected HostBlock"),
+    }
+}
+
+#[test]
+fn parse_directive_equals_abutting_value_is_not_separator() {
+    let (keyword, separator, rest) = parse_directive_parts("SetEnv FOO=bar");
+    assert_eq!(keyword, "SetEnv");
+    assert_eq!(separator, Separator::Space);
+    assert_eq!(rest, "FOO=bar");
+}
+
+#[test]
+fn parse_host_patterns_split_on_commas() {
+    let input = "Host foo,bar baz\n    User alice\n";
+    let ast = parse(input);
+    match &ast.nodes[0] {
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(
+                b.patterns,
+                vec!["foo".to_owned(), "bar".to_owned(), "baz".to_owned()]
+            );
+        }
+        _ => panic!("expected HostBlock"),
+    }
+}
+
+#[test]
+fn parse_host_patterns_keep_negation_across_commas() {
+    let input = "Host foo,!bar\n    User alice\n";
+    let ast = parse(input);
+    match &ast.nodes[0] {
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.patterns, vec!["foo".to_owned(), "!bar".to_owned()]);
+        }
+        _ => panic!("expected HostBlock"),
+    }
+}
+
+#[test]
 fn round_trip_normalizes_crlf() {
-    // CRLF is normalized to LF by the parser (lines() splits on \n, \r stays in content)
+    // str::lines() strips \r\n and render always emits LF, so any managed
+    // edit rewrites every line ending of a CRLF file (documented in the
+    // module docs). The \r never survives into the output.
     let input = "Host example\r\n    User alice\r\n";
     let ast = parse(input);
     let output = ast.to_string_lossless();
-    // The parser preserves \r as part of the line content
-    // This is a known behavior — CRLF files will have \r in their content
-    let _ = output;
+    assert_eq!(output, "Host example\n    User alice\n");
+    assert!(!output.contains('\r'));
 }
 
 #[test]
@@ -374,7 +431,7 @@ fn parse_multiple_consecutive_blank_lines() {
     // A blank line (no whitespace) breaks out of the block, so:
     // "Host example\n" starts the block
     // "\n" is a blank line (breaks out of block)
-    // "\n\n    User alice\n" — the remaining blank lines and indented User
+    // "\n\n    User alice\n": the remaining blank lines and indented User
     // form a separate block or standalone directives
     // The exact structure depends on the parser's blank-line handling
     assert!(!ast.nodes.is_empty());
@@ -420,7 +477,7 @@ fn parse_config_with_only_newline() {
 
 #[test]
 fn parse_config_with_bom() {
-    // UTF-8 BOM is \u{FEFF} — Windows editors sometimes add this
+    // UTF-8 BOM is \u{FEFF}: Windows editors sometimes add this
     let input = "\u{FEFF}Host example\n    User alice\n";
     let ast = parse(input);
     // The BOM should be handled gracefully (either preserved or stripped)
@@ -704,7 +761,7 @@ fn indent_str() -> impl Strategy<Value = String> {
 /// One top-level config line that the parser is contracted to preserve.
 fn top_level_line() -> impl Strategy<Value = String> {
     prop_oneof![
-        // Blank line (exactly empty — whitespace-only would collapse).
+        // Blank line (exactly empty: whitespace-only would collapse).
         Just("\n".to_owned()),
         // Comment line: `#` + safe text, no trailing whitespace.
         safe_token().prop_map(|t| format!("#{t}\n")),

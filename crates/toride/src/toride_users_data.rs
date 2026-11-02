@@ -9,7 +9,7 @@
 //! Doctor findings are produced by synchronous file reads (`read_passwd` /
 //! `read_to_string` `/etc/shadow` / `read_sudoers`, plus a
 //! `.google_authenticator` existence check) and change slowly, so they are
-//! cached for 60s — exactly like the fail2ban diagnostics cache. The per-user
+//! cached for 60s: exactly like the fail2ban diagnostics cache. The per-user
 //! enrichment loop reads each `/etc` file ONCE up front (passwd is already
 //! parsed; shadow and the main sudoers file are pre-read into lookup maps), so
 //! enrichment is O(1) per user rather than O(N) full-file re-reads.
@@ -21,7 +21,7 @@
 //! real account database (Directory Service is), and `/etc/shadow`,
 //! `/etc/sudoers`, `/etc/sudoers.d`, `/etc/pam.d` mostly DO NOT exist. Each
 //! per-file read failure is caught with a `tracing::warn!`, degrades that one
-//! field to empty, and KEEPS GOING — so `available == true` (partial reads, not
+//! field to empty, and KEEPS GOING: so `available == true` (partial reads, not
 //! absent) and the operator sees whatever data is present plus a completeness
 //! caveat in the overview panel. Only a `spawn_blocking` panic (`JoinError`)
 //! forces `available == false`.
@@ -48,7 +48,7 @@ use crate::ui::screens::toride_users::{GroupEntry, SudoersEntry, UserEntry, User
 pub struct UsersDataBundle {
     /// Whether the users backend produced any data at all. `false` only when a
     /// collection task panicked (`JoinError`). Per-file read failures keep this
-    /// `true` — the reads are partial, not absent.
+    /// `true`: the reads are partial, not absent.
     pub available: bool,
     /// Whether `/etc/passwd` was read successfully. `false` on macOS-style
     /// hosts where the file is absent (or on a parse error).
@@ -58,7 +58,7 @@ pub struct UsersDataBundle {
     /// Whether `/etc/sudoers` (or any drop-in) was read successfully.
     pub sudoers_read: bool,
     /// Whether the PAM config for the probed service exists (a presence check
-    /// — the file is never opened or parsed further here). Mirrors
+    ///: the file is never opened or parsed further here). Mirrors
     /// `shadow_read` and `sudoers_read`, which are likewise presence checks.
     pub pam_read: bool,
     /// Parsed user rows (enriched with sudo/locked/totp probes).
@@ -71,7 +71,7 @@ pub struct UsersDataBundle {
     pub findings: Vec<UserFindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
     /// `available == false` because a collection task panicked (`JoinError`).
-    /// `None` otherwise — notably also `None` for a freshly-constructed empty
+    /// `None` otherwise: notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run.
     pub unavailable_reason: Option<String>,
 }
@@ -88,11 +88,13 @@ pub struct UsersCollector {
     /// poll. The freshness timestamp must only be advanced when the doctor was
     /// actually re-run (`took_cache == false`); otherwise every cache-hit poll
     /// would reset the TTL clock with the SAME (already-cached) findings.
-    rx: Option<oneshot::Receiver<(UsersDataBundle, bool)>>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<UsersDataBundle>, bool)>>,
     /// Cached doctor findings from the last collection.
     cached_findings: Option<Vec<UserFindingEntry>>,
     /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
+    cached_bundle: Option<std::sync::Arc<UsersDataBundle>>,
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
@@ -106,6 +108,8 @@ impl UsersCollector {
             rx: None,
             cached_findings: None,
             findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -124,6 +128,16 @@ impl UsersCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
+        if let (Some(bundle), Some(at)) = (&self.cached_bundle, self.bundle_fresh_at)
+            && at.elapsed() < FINDINGS_TTL
+        {
+            self.rx = Some(rx);
+            let bundle = std::sync::Arc::clone(bundle);
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
@@ -132,7 +146,7 @@ impl UsersCollector {
         self.rx = Some(rx);
         tokio::spawn(async move {
             let (bundle, took_cache) = collect_real_users(use_cache, cached_findings).await;
-            let _ = tx.send((bundle, took_cache));
+            let _ = tx.send((std::sync::Arc::new(bundle), took_cache));
         });
     }
 
@@ -143,15 +157,17 @@ impl UsersCollector {
     /// updated to the freshly-returned findings, but the freshness timestamp is
     /// only advanced when the doctor was actually re-run (not on a cache-hit
     /// poll).
-    pub async fn poll(&mut self) -> Option<UsersDataBundle> {
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<UsersDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, took_cache)) = result {
+                if let Some((ref bundle, took_cache)) = result
+                    && !took_cache
+                {
                     self.cached_findings = Some(bundle.findings.clone());
-                    if !took_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.findings_fresh_at = Some(std::time::Instant::now());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)
@@ -161,10 +177,11 @@ impl UsersCollector {
     }
 
     /// Invalidate the findings cache so the next collection re-runs the doctor.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_findings = None;
         self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -183,7 +200,7 @@ impl Default for UsersCollector {
 /// `read_to_string` `/etc/shadow` / `read_sudoers` plus a
 /// `.google_authenticator` existence check). Doctor findings may be reused
 /// from the cache. On ANY per-file error the offending field is degraded to
-/// empty and collection continues — only a `spawn_blocking` panic (`JoinError`)
+/// empty and collection continues: only a `spawn_blocking` panic (`JoinError`)
 /// returns an `empty_bundle` with `available = false`.
 ///
 /// Returns `(bundle, took_cache)` where `took_cache` records whether the
@@ -256,7 +273,7 @@ async fn collect_real_users(
         }
         if paths.sudoers_d.is_dir() {
             // A drop-in directory existing counts as a sudoers source being
-            // present even if every drop-in parse fails — the operator should
+            // present even if every drop-in parse fails: the operator should
             // see the "read" badge so they know the directory is consulted.
             sudoers_read = true;
             if let Ok(read_dir) = std::fs::read_dir(&paths.sudoers_d) {
@@ -298,7 +315,7 @@ async fn collect_real_users(
         // `sudo_ops.has_sudo` (re-reads full /etc/sudoers), `password_ops.is_locked`
         // (re-reads /etc/shadow), and `totp_ops.is_configured` (re-reads /etc/passwd
         // to resolve a home dir that was ALREADY parsed into `passwd_entries` above)
-        // PER user — O(N) full-file re-reads of three files on a host with N
+        // PER user: O(N) full-file re-reads of three files on a host with N
         // interactive users. The only thing that genuinely must stay per-user is
         // the `.google_authenticator` existence stat (cheap) and the per-user
         // sudoers drop-in existence check (cheap stat). Each probe is a
@@ -369,13 +386,13 @@ async fn collect_real_users(
 
         // passwd username -> home dir. The home is ALREADY carried on each
         // `UserEntry` (converted from the passwd entries parsed at the top of
-        // this closure), so the TOTP probe reads it straight off the row — no
+        // this closure), so the TOTP probe reads it straight off the row: no
         // second /etc/passwd read and no intermediate map. This matches the old
         // `is_totp_configured` home resolution (which re-read /etc/passwd to
         // find the same home value).
 
         for user in &mut users {
-            // Skip pure-system users (nologin / false shells) — they can't log
+            // Skip pure-system users (nologin / false shells): they can't log
             // in, so sudo/lock/totp status is not actionable.
             let interactive = !user.shell.contains("nologin") && !user.shell.contains("false");
             if !interactive {
@@ -424,7 +441,7 @@ async fn collect_real_users(
         };
 
         // ── Availability heuristic ────────────────────────────────────────
-        // The section is "available" if ANY data was gathered — passwd rows,
+        // The section is "available" if ANY data was gathered: passwd rows,
         // groups, sudoers, findings, OR even just one of the /etc files
         // existing (so the operator sees the read-status overview rather than
         // a blank panel). Per-file failures degrade fields but keep available
@@ -487,7 +504,7 @@ fn empty_bundle() -> UsersDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`): the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> UsersDataBundle {
     let mut b = empty_bundle();
@@ -610,7 +627,7 @@ mod tests {
     fn passwd_read_is_true_for_valid_but_empty_passwd() {
         let dir = tempfile::tempdir().expect("tempdir");
         let passwd = dir.path().join("passwd");
-        // Comment + blank line only — parse_passwd returns Ok(vec![]).
+        // Comment + blank line only: parse_passwd returns Ok(vec![]).
         std::fs::write(&passwd, "# comment\n\n").expect("write");
 
         let (entries, passwd_read): (Vec<toride_users::parse::PasswdEntry>, bool) =
@@ -643,7 +660,7 @@ mod tests {
     }
 
     /// `pam_read` is a PRESENCE check on the probed service's PAM file
-    /// (`sshd_pam.exists()`), NOT a parse-success signal — the file is never
+    /// (`sshd_pam.exists()`), NOT a parse-success signal: the file is never
     /// opened or parsed further here. This guards the corrected struct doc
     /// against a future drift back to a "read successfully" wording, and keeps
     /// `pam_read` symmetric with the other three read flags. Mirrors the
@@ -652,7 +669,7 @@ mod tests {
     #[test]
     fn pam_read_is_true_when_pam_service_file_present() {
         let dir = tempfile::tempdir().expect("tempdir");
-        // An empty file still "exists" — presence is the only signal, contents
+        // An empty file still "exists": presence is the only signal, contents
         // are irrelevant (the file is never parsed here).
         let sshd_pam = dir.path().join("sshd");
         std::fs::write(&sshd_pam, "").expect("write");

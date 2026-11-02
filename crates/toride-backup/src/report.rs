@@ -6,10 +6,6 @@
 
 use std::time::SystemTime;
 
-// ---------------------------------------------------------------------------
-// BackupStatus
-// ---------------------------------------------------------------------------
-
 /// Status of a backup snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackupStatus {
@@ -23,10 +19,6 @@ pub enum BackupStatus {
     NeverRun,
 }
 
-// ---------------------------------------------------------------------------
-// IntegrityStatus
-// ---------------------------------------------------------------------------
-
 /// Result of a repository integrity check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegrityStatus {
@@ -37,10 +29,6 @@ pub enum IntegrityStatus {
     /// Integrity check has not been run.
     NotChecked,
 }
-
-// ---------------------------------------------------------------------------
-// BackupReport
-// ---------------------------------------------------------------------------
 
 /// Report summarising the state of a backup job.
 ///
@@ -92,10 +80,6 @@ impl BackupReport {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RestoreReport
-// ---------------------------------------------------------------------------
-
 /// Report returned after a restore operation.
 #[derive(Debug, Clone)]
 pub struct RestoreReport {
@@ -127,10 +111,6 @@ impl RestoreReport {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// PruneReport
-// ---------------------------------------------------------------------------
 
 /// Report returned after a prune (retention) operation.
 #[derive(Debug, Clone)]

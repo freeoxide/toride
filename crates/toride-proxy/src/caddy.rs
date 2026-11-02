@@ -4,7 +4,6 @@
 
 use crate::error::{Error, Result};
 use crate::paths::ProxyPaths;
-use crate::render::render_caddyfile;
 use crate::spec::ProxySpec;
 use toride_runner::{CommandSpec, Runner};
 
@@ -84,26 +83,44 @@ impl<'a> CaddyManager<'a> {
 
     /// Write a Caddyfile from a [`ProxySpec`].
     ///
-    /// Renders the spec to Caddyfile format and writes it to disk. A
-    /// pre-mutation backup of the existing Caddyfile (and nginx config) is
-    /// created first via [`crate::backup::create_backup`] so the change can be
-    /// rolled back. A backup failure is logged but non-fatal.
+    /// Renders the spec to Caddyfile format and writes it to disk at mode
+    /// 0644, matching how [`crate::config::ConfigManager`] writes the same
+    /// path: the caddy daemon, which does not run as root, must be able to
+    /// read its config. A pre-mutation backup of the existing Caddyfile is
+    /// created first via [`crate::backup::create_backup`]; a backup failure
+    /// is logged but non-fatal.
     ///
     /// # Errors
     ///
     /// Returns an error if validation or the write fails.
     pub fn write_caddyfile(&self, spec: &ProxySpec) -> Result<()> {
+        self.write_caddyfile_with_headers(spec, None)
+    }
+
+    /// Write a Caddyfile from a [`ProxySpec`] with [`SecurityHeaders`]
+    /// injected into every site block, the Caddy counterpart of nginx's
+    /// `write_site_with_headers`.
+    ///
+    /// Same backup and 0644-mode behavior as [`CaddyManager::write_caddyfile`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation or the write fails.
+    pub fn write_caddyfile_with_headers(
+        &self,
+        spec: &ProxySpec,
+        headers: Option<&crate::nginx_headers::SecurityHeaders>,
+    ) -> Result<()> {
         spec.validate()?;
 
-        let content = render_caddyfile(spec);
+        let content = crate::render::render_caddyfile_with_headers(spec, headers);
 
         if let Some(parent) = self.paths.caddyfile.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Pre-mutation backup (best-effort, same policy as NginxManager): build
-        // an in-memory snapshot then persist it to backup_dir.
-        match crate::backup::create_backup(self.paths) {
+        // Best-effort pre-mutation backup of the Caddyfile itself.
+        match crate::backup::create_backup(&self.paths.caddyfile) {
             Ok(snapshot) => {
                 if let Err(e) = crate::backup::save_backup_to_disk(self.paths, &snapshot) {
                     tracing::warn!("caddy: persisting pre-write backup failed (continuing): {e}");
@@ -114,7 +131,7 @@ impl<'a> CaddyManager<'a> {
             }
         }
 
-        toride_fs::atomic_write(&self.paths.caddyfile, &content)?;
+        toride_fs::atomic_write_with_perms(&self.paths.caddyfile, &content, 0o644)?;
 
         tracing::info!(
             "caddy: wrote Caddyfile to {}",
@@ -142,6 +159,7 @@ impl<'a> CaddyManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nginx_headers::SecurityHeaders;
     use crate::spec::ServerBlock;
 
     #[test]
@@ -160,6 +178,68 @@ mod tests {
 
         let content = mgr.read_caddyfile().unwrap();
         assert!(content.contains("example.com"));
+        assert!(content.contains("reverse_proxy 127.0.0.1:3000"));
+    }
+
+    /// The Caddyfile is a daemon-readable config: 0644 like `ConfigManager`'s
+    /// writes of the same path, not the 0600 `atomic_write` default.
+    #[cfg(unix)]
+    #[test]
+    fn write_caddyfile_is_daemon_readable_mode_0644() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let fake = toride_runner::fake::FakeRunner::new();
+        let mgr = CaddyManager::new(&fake, &paths);
+
+        mgr.write_caddyfile(
+            &ProxySpec::builder()
+                .block(ServerBlock::new("example.com", 443, "127.0.0.1:3000"))
+                .build(),
+        )
+        .unwrap();
+
+        let mode = fs_metadata_mode(&paths.caddyfile);
+        assert_eq!(
+            mode, 0o644,
+            "the caddy daemon must be able to read its config"
+        );
+    }
+
+    fn fs_metadata_mode(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).expect("caddyfile exists").mode() & 0o777
+    }
+
+    /// Plaintext blocks must carry an explicit `http://` address so Caddy's
+    /// auto-HTTPS cannot silently redirect them, and the header entry point
+    /// must ship the same policy the nginx path ships.
+    #[test]
+    fn write_caddyfile_with_headers_addresses_and_headers() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let fake = toride_runner::fake::FakeRunner::new();
+        let mgr = CaddyManager::new(&fake, &paths);
+
+        let spec = ProxySpec::builder()
+            .block(ServerBlock::new(
+                "plain.example.com",
+                8080,
+                "127.0.0.1:3000",
+            ))
+            .build();
+
+        mgr.write_caddyfile_with_headers(&spec, Some(&SecurityHeaders::strict()))
+            .unwrap();
+
+        let content = mgr.read_caddyfile().unwrap();
+        assert!(
+            content.contains("http://plain.example.com:8080 {"),
+            "explicit plaintext address, got:\n{content}"
+        );
+        assert!(
+            content.contains("header Strict-Transport-Security"),
+            "security headers must reach the Caddyfile, got:\n{content}"
+        );
         assert!(content.contains("reverse_proxy 127.0.0.1:3000"));
     }
 }

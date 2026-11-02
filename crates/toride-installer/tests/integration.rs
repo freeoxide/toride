@@ -76,8 +76,9 @@ async fn install_mise_latest_into_temp_dir() {
         "installed path {dest} should be inside the override dir"
     );
     assert!(
-        dest.file_name() == Some("mise"),
-        "installed binary should be named `mise`, got {dest}"
+        dest.file_name() == Some(mise::MISE_BIN_NAME),
+        "installed binary should be named `{}`, got {dest}",
+        mise::MISE_BIN_NAME
     );
     assert!(dest.exists(), "installed binary should exist at {dest}");
 
@@ -177,8 +178,9 @@ async fn ensure_mise_installs_latest_then_keeps_it_without_redownload() {
             );
             assert_eq!(
                 path.file_name(),
-                Some("mise"),
-                "installed binary should be named `mise`, got {path}"
+                Some(mise::MISE_BIN_NAME),
+                "installed binary should be named `{}`, got {path}",
+                mise::MISE_BIN_NAME
             );
             assert!(path.exists(), "installed binary should exist at {path}");
             let version =
@@ -192,7 +194,7 @@ async fn ensure_mise_installs_latest_then_keeps_it_without_redownload() {
         }
         EnsureOutcome::AlreadyPresent(status) => panic!(
             "a fresh tempdir must miss, but a copy was already found at {:?}; the host likely \
-             provides mise on $PATH — rerun the gate with a scrubbed PATH, e.g. \
+             provides mise on $PATH: rerun the gate with a scrubbed PATH, e.g. \
              PATH=\"$HOME/.cargo/bin:/usr/bin:/bin\"",
             status.path(),
         ),
@@ -244,7 +246,7 @@ async fn ensure_mise_installs_latest_then_keeps_it_without_redownload() {
         );
     }
 
-    // A pin equal to the installed version is satisfied in place too —
+    // A pin equal to the installed version is satisfied in place too:
     // again with no download. Only meaningful when OUR copy is the one
     // detect classifies (a host PATH mise may shadow with another version;
     // on this branch it answered the second call).

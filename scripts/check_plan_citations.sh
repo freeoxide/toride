@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_plan_citations.sh — mechanical gate for docs/setup-bundles-plan.md.
+# check_plan_citations.sh: mechanical gate for docs/setup-bundles-plan.md.
 #
 # READ-ONLY: never writes a file. Deps: bash + grep + awk + sed + wc only.
 # Path-independent: resolves the repo root from this script's location.
@@ -13,7 +13,7 @@
 #   (d) a required section header is missing
 #       (Goal, Survey, Decision, API, Phases/Milestones, Test plan, Risks);
 #   (e) docs/setup-bundles-plan.md is missing/empty, or this script was
-#       truncated (see the EXIT trap below — the one form bash cannot catch
+#       truncated (see the EXIT trap below, the one form bash cannot catch
 #       is a file cut down to the shebang or emptied entirely, which exits 0
 #       as a no-op; callers should treat the summary line as the success
 #       signature).
@@ -23,7 +23,7 @@
 set -u
 
 # Truncation guard for check (e): every legitimate exit path either fails
-# explicitly (non-zero rc — the trap keeps it) or reaches the final summary
+# explicitly (non-zero rc; the trap keeps it) or reaches the final summary
 # (which sets done=1). A script cut anywhere below this line therefore exits
 # non-zero instead of silently succeeding.
 done=0

@@ -39,8 +39,8 @@ pub struct Fail2banDataBundle {
 ///
 /// A 60s TTL cache covers the whole bundle (doctor + probes).
 pub struct Fail2banCollector {
-    rx: Option<oneshot::Receiver<(Fail2banDataBundle, bool)>>,
-    cached_bundle: Option<Fail2banDataBundle>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<Fail2banDataBundle>, bool)>>,
+    cached_bundle: Option<std::sync::Arc<Fail2banDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -88,17 +88,26 @@ impl Fail2banCollector {
             self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
         let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
+        // TTL hit: re-ship the cached Arc by refcount, no collection task.
+        if use_cache && let Some(bundle) = cached_bundle {
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         tokio::spawn(async move {
-            let (bundle, reused_cache) = collect_real_fail2ban(use_cache, cached_bundle).await;
-            let _ = tx.send((bundle, reused_cache));
+            let (bundle, reused_cache) = collect_real_fail2ban(false, None).await;
+            let _ = tx.send((std::sync::Arc::new(bundle), reused_cache));
         });
     }
 
     /// Poll for a completed collection result.
     ///
     /// Returns `Some(bundle)` on completion, `None` while pending or failed.
-    /// A degraded (panic) bundle is never cached.
-    pub async fn poll(&mut self) -> Option<Fail2banDataBundle> {
+    /// A degraded (panic) bundle is never cached. A cache-hit poll re-ships
+    /// the cached `Arc` by refcount, so an unchanged bundle is delivered with
+    /// the same pointer it had last tick.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<Fail2banDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
@@ -106,7 +115,7 @@ impl Fail2banCollector {
                     && bundle.available
                     && !used_cache
                 {
-                    self.cached_bundle = Some(bundle.clone());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
                     self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
@@ -117,7 +126,6 @@ impl Fail2banCollector {
     }
 
     /// Invalidate the bundle cache so the next collection re-runs the probes.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_bundle = None;
         self.bundle_fresh_at = None;
@@ -356,7 +364,7 @@ mod tests {
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = Fail2banCollector::new();
-        collector.cached_bundle = Some(empty_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(empty_bundle()));
         collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
         assert!(collector.cached_bundle.is_none());
@@ -432,7 +440,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn cache_hit_returns_cached_bundle_without_reprobing() {
         let mut collector = Fail2banCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 
@@ -467,9 +475,27 @@ mod cadence_oracle {
     }
 
     #[tokio::test]
+    async fn cache_hit_poll_re_ships_the_cached_arc_by_refcount() {
+        let mut collector = Fail2banCollector::new();
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
+        collector.bundle_fresh_at = Some(std::time::Instant::now());
+
+        collector.start();
+        let first = collector.poll().await.expect("first cache-hit delivery");
+        collector.start();
+        let second = collector.poll().await.expect("second cache-hit delivery");
+
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "a cache-hit poll must re-ship the cached bundle by refcount so the \
+             dashboard can skip unchanged deliveries by pointer"
+        );
+    }
+
+    #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = Fail2banCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 

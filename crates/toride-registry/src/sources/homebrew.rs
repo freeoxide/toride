@@ -2,8 +2,8 @@
 //!
 //! Normalizes formulae.brew.sh casks (GUI apps) and formulae (CLI tools)
 //! into [`App`]s. Grounded in
-//! `docs/survey/homebrew.md` (§1–§2 endpoints, §3–§5 cask fields,
-//! §7 formula fields) and DESIGN.md §4.1–§4.2 (field mappings).
+//! `docs/survey/homebrew.md` (§1-§2 endpoints, §3-§5 cask fields,
+//! §7 formula fields) and DESIGN.md §4.1-§4.2 (field mappings).
 //!
 //! The module keeps the house parse/fetch split (DESIGN.md §3.1) strictly
 //! separated:
@@ -11,14 +11,14 @@
 //! - **Parse half (pure, always compiled, offline-fixture-tested):**
 //!   [`parse_cask_json`] and [`parse_formula_json`] take the raw JSON body
 //!   text and return a normalized [`App`]. The wire
-//!   structs below are `#[serde(default)]` end to end — formulae.brew.sh
+//!   structs below are `#[serde(default)]` end to end: formulae.brew.sh
 //!   promises no stability guarantees (homebrew.md §1), so any key going
 //!   missing or `null` upstream must degrade to `None`, never error.
 //! - **Fetch half (thin client, gated behind the crate's `http` feature so
 //!   the parsers build fully offline, DESIGN.md §9):**
 //!   `HomebrewClient` GETs the two per-item endpoints and returns raw
 //!   body text; `HomebrewAdapter` implements
-//!   [`Adapter`](crate::adapter::Adapter) over them — `lookup` per-item,
+//!   [`Adapter`](crate::adapter::Adapter) over them: `lookup` per-item,
 //!   search over the two full catalog indexes cached for one
 //!   `INDEX_CACHE_TTL` window and parsed through the same
 //!   normalization ([`search_index`]).
@@ -28,8 +28,8 @@
 //! The top-level `url`/`sha256` describe the API's default platform (the
 //! payload never names which). Each `variations` key is a platform tag
 //! (e.g. `sonoma`, `arm64_big_sur`, `x86_64_linux`) whose object
-//! shallow-merges over the top-level triple. This parser is **pure** — it
-//! takes no host parameter — and collapses every available platform into
+//! shallow-merges over the top-level triple. This parser is **pure**: it
+//! takes no host parameter, and collapses every available platform into
 //! one [`Artifact`] per **distinct
 //! (os, arch, url, sha256) tuple**:
 //!
@@ -42,11 +42,11 @@
 //! - identical tuples dedupe (brave's 5 Intel-release keys → one
 //!   (`MacOs`, `X86_64`) artifact), while distinct tuples are kept even when a
 //!   newer top-level version exists (vscode's `big_sur`/`arm64_big_sur`
-//!   carry 1.106.3 payloads against a 1.139.1 top level — the per-release
+//!   carry 1.106.3 payloads against a 1.139.1 top level: the per-release
 //!   version is dropped because `Artifact` has no version field and wave 1
 //!   has no version ordering, DESIGN.md §4.1 caveat 1);
 //! - `platforms` claims come from `supported_platforms` tags ∪ available
-//!   variation keys, deduped to distinct (os, arch) — artifact tuples and
+//!   variation keys, deduped to distinct (os, arch): artifact tuples and
 //!   platform claims dedupe **separately** (vscode ends with 2 platforms /
 //!   4 artifacts).
 //!
@@ -85,7 +85,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 // ---------------------------------------------------------------------------
-// Wire structs — cask (parse half)
+// Wire structs: cask (parse half)
 // ---------------------------------------------------------------------------
 
 /// The subset of the formulae.brew.sh cask object this parser consumes
@@ -94,7 +94,7 @@ use std::time::{Duration, SystemTime};
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct CaskPayload {
-    /// Cask token — `brew install --cask <token>`, the source id and the
+    /// Cask token: `brew install --cask <token>`, the source id and the
     /// slugify input.
     token: String,
     /// Display names; `name[0]` is the display name, `name[1..]` aliases.
@@ -112,7 +112,7 @@ struct CaskPayload {
     /// sha256 of the `url` artifact (default platform).
     sha256: Option<String>,
     /// Ordered install/uninstall steps; only `binary` stanzas are read
-    /// (→ `App::binaries`), the rest are wave-1-dropped install steps —
+    /// (→ `App::binaries`), the rest are wave-1-dropped install steps:
     /// installing is delegated to `brew` (DESIGN.md §4.1).
     artifacts: Vec<CaskArtifactEntry>,
     /// Dependency declarations; only `macos.{">=":[…]}` is read
@@ -133,7 +133,7 @@ struct CaskPayload {
     variations: BTreeMap<String, Map<String, Value>>,
 }
 
-/// One entry of the cask `artifacts` list — an ordered single-key step
+/// One entry of the cask `artifacts` list: an ordered single-key step
 /// object (`{"binary": […]}` / `{"app": […]}` / `{"zap": {…}}`, homebrew.md
 /// §5). Only `binary` payloads are read; every other step (and its
 /// `target` sibling key) is ignored, which is also why the struct has no
@@ -152,13 +152,13 @@ struct CaskArtifactEntry {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct CaskDependsOn {
-    /// Either `{}` or a comparison map such as `{">=": ["13"]}` — kept raw
+    /// Either `{}` or a comparison map such as `{">=": ["13"]}`: kept raw
     /// because the API has shipped both shapes.
     macos: Option<Value>,
 }
 
 // ---------------------------------------------------------------------------
-// Wire structs — formula (parse half)
+// Wire structs: formula (parse half)
 // ---------------------------------------------------------------------------
 
 /// The subset of the formulae.brew.sh formula object this parser consumes
@@ -167,7 +167,7 @@ struct CaskDependsOn {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct FormulaPayload {
-    /// Formula name — `brew install <name>`, the source id and slugify
+    /// Formula name: `brew install <name>`, the source id and slugify
     /// input.
     name: String,
     /// Fully-qualified name; fallback when `name` is missing.
@@ -213,7 +213,7 @@ struct FormulaUrls {
     stable: Option<FormulaUrl>,
 }
 
-/// One formula URL entry — the stable source tarball plus its checksum.
+/// One formula URL entry: the stable source tarball plus its checksum.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct FormulaUrl {
@@ -224,10 +224,10 @@ struct FormulaUrl {
 }
 
 /// The formula `bottle` field. Upstream serializes it either as the
-/// stable-bottle object (`{"stable": {"files": {…}}}` — fixture ripgrep)
+/// stable-bottle object (`{"stable": {"files": {…}}}`: fixture ripgrep)
 /// or as a bare `false` when the formula ships no bottles at all; both
 /// shapes occur in `brew info --json` output, so both are tolerated (the
-/// boolean shape simply yields no bottles).
+/// boolean shape yields no bottles).
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 #[allow(dead_code)] // `Bool`'s payload is a JSON-shape discriminator only
@@ -235,7 +235,7 @@ enum FormulaBottle {
     /// The object shape: `{"stable": {"files": {…}}}`.
     Stable(FormulaBottleStable),
     /// The boolean shape (`false`, source-only formula; `true` is treated
-    /// the same — no file map to read).
+    /// the same: no file map to read).
     Bool(bool),
 }
 
@@ -256,7 +256,7 @@ struct BottleStable {
     files: Option<BTreeMap<String, BottleFile>>,
 }
 
-/// One bottle file — a prebuilt binary blob for one platform tag.
+/// One bottle file: a prebuilt binary blob for one platform tag.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct BottleFile {
@@ -273,7 +273,7 @@ struct BottleFile {
 /// How one variation key treats one top-level field (§4.1 caveat 3):
 /// `Absent` inherits the top-level value, `Null` marks the platform
 /// unavailable, `Set` overrides it. Reading this off the raw JSON map (not
-/// `Option<Option<T>>`) is what keeps absent and `null` distinct — serde's
+/// `Option<Option<T>>`) is what keeps absent and `null` distinct: serde's
 /// own `Option` impl collapses both to `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Override {
@@ -320,16 +320,16 @@ fn effective_url_sha(
 }
 
 /// Dedup key of the §4.1 artifact collapse: the (os, arch, url, sha256)
-/// tuple — one `Artifact` per distinct key, keep-first.
+/// tuple: one `Artifact` per distinct key, keep-first.
 type ArtifactKey = (Option<Os>, Option<Arch>, String, Option<String>);
 
-/// Decodes a Homebrew platform tag to its (os, arch) pair — shared by cask
+/// Decodes a Homebrew platform tag to its (os, arch) pair: shared by cask
 /// `variations`/`supported_platforms` keys and formula bottle-file tags.
 ///
 /// `…_linux` → [`Os::Linux`] with the arch decoded from the prefix
 /// (`arm64_linux`, `x86_64_linux`, `x86_linux`); everything else is a
 /// macOS release tag → [`Os::MacOs`] where `arm64_…` is Apple silicon and
-/// the bare release name is Intel. `None` = un-decodable tag (skipped —
+/// the bare release name is Intel. `None` = un-decodable tag (skipped:
 /// homebrew.md documents exactly this vocabulary, so anything else is
 /// upstream drift, not data).
 fn decode_platform_tag(tag: &str) -> Option<(Os, Arch)> {
@@ -353,7 +353,7 @@ fn decode_platform_tag(tag: &str) -> Option<(Os, Arch)> {
 /// Deterministic platform order: `MacOs` < `Linux` < `Windows`, then
 /// arch-undeclared < `X86_64` < `Aarch64` < `X86`. `App::platforms` is a plain
 /// `Vec`, so the parser fixes one stable order instead of leaking the
-/// iteration order of a JSON map (`serde_json` maps are `BTreeMap`s — sorted,
+/// iteration order of a JSON map (`serde_json` maps are `BTreeMap`s: sorted,
 /// but the sort key would be the *tag string*, which is not a meaningful
 /// platform order).
 fn platform_rank(os: Os, arch: Option<Arch>) -> (u8, u8) {
@@ -372,7 +372,7 @@ fn platform_rank(os: Os, arch: Option<Arch>) -> (u8, u8) {
 }
 
 /// Dedupes collected (os, arch) claims into sorted `Platform` values.
-/// `min_release` is attached to macOS claims only — it comes from the cask
+/// `min_release` is attached to macOS claims only: it comes from the cask
 /// `depends_on.macos` map and says nothing about Linux.
 fn dedupe_platforms(
     claims: &mut Vec<(Os, Arch)>,
@@ -395,7 +395,7 @@ fn dedupe_platforms(
 }
 
 /// Extracts the minimum macOS release from `depends_on.macos`. The API
-/// ships either a comparison map (`{">=": ["13"]}` — brave fixture) or an
+/// ships either a comparison map (`{">=": ["13"]}`: brave fixture) or an
 /// empty object / bare release string; anything unparseable degrades to
 /// `None`.
 fn macos_min_release(depends_on: Option<&CaskDependsOn>) -> Option<String> {
@@ -412,7 +412,7 @@ fn macos_min_release(depends_on: Option<&CaskDependsOn>) -> Option<String> {
     }
 }
 
-/// Basename of a cask payload path — the text after the final `/`, or the
+/// Basename of a cask payload path: the text after the final `/`, or the
 /// whole string when it has none (DESIGN.md §4.1 pins `binaries` to this
 /// rule).
 fn path_basename(path: &str) -> &str {
@@ -423,8 +423,8 @@ fn path_basename(path: &str) -> &str {
 }
 
 /// The `binaries` extraction pinned by DESIGN.md §4.1: for every `binary`
-/// stanza, the basename of each payload string — or of a `{"target": …}`
-/// payload's target, same rule — deduplicated, in payload order.
+/// stanza, the basename of each payload string: or of a `{"target": …}`
+/// payload's target, same rule: deduplicated, in payload order.
 fn binaries_from_cask_artifacts(entries: &[CaskArtifactEntry]) -> Vec<String> {
     let mut binaries: Vec<String> = Vec::new();
     for entry in entries {
@@ -477,7 +477,7 @@ fn parse_wire<T: serde::de::DeserializeOwned>(payload: &str, id_keys: &[&str]) -
 ///
 /// Implements the §4.1 variations contract: the top-level
 /// `url`/`sha256` become the default-platform `ArtifactKind::Package`
-/// (`arch: None` — the payload never names the default platform), and each
+/// (`arch: None`: the payload never names the default platform), and each
 /// `variations` entry shallow-merges over that triple, collapsing into one
 /// artifact per distinct (os, arch, url, sha256) tuple. An explicit
 /// `null` override means the platform is unavailable: no artifact and no
@@ -587,7 +587,7 @@ fn app_from_cask(cask: CaskPayload) -> App {
     }
 }
 
-/// Normalizes a full cask catalog (`/api/cask.json`) — one [`App`] per
+/// Normalizes a full cask catalog (`/api/cask.json`): one [`App`] per
 /// cask in payload order, entries with no readable token skipped.
 /// Errors: [`Error::Parse`] on a non-array or non-cask payload.
 pub fn parse_cask_index(payload: &str) -> Result<Vec<App>> {
@@ -610,10 +610,10 @@ pub fn parse_cask_index(payload: &str) -> Result<Vec<App>> {
 ///
 /// `bottle.stable.files` platform tags decode to one
 /// [`ArtifactKind::Bottle`] artifact each (ghcr.io blob + published
-/// sha256) and, deduped, to the `platforms` claims — `arm64_golden_gate` →
+/// sha256) and, deduped, to the `platforms` claims: `arm64_golden_gate` →
 /// (`MacOs`, Aarch64), `sonoma` → (`MacOs`, `X86_64`), `arm64_linux` →
 /// (Linux, Aarch64). A source-only formula (`bottle: false`) gets
-/// `platforms = []` (unknown, per the model's contract — not universal).
+/// `platforms = []` (unknown, per the model's contract: not universal).
 /// `urls.stable` becomes one [`ArtifactKind::Source`] artifact and
 /// `executables` becomes `App::binaries`.
 ///
@@ -738,7 +738,7 @@ fn app_from_formula(formula: FormulaPayload) -> App {
     }
 }
 
-/// Normalizes a full formula catalog (`/api/formula.json`) — one [`App`]
+/// Normalizes a full formula catalog (`/api/formula.json`): one [`App`]
 /// per formula in payload order, nameless entries skipped. Errors:
 /// [`Error::Parse`] on a non-array or non-formula payload.
 pub fn parse_formula_index(payload: &str) -> Result<Vec<App>> {
@@ -759,72 +759,122 @@ fn index_parse_error(id: &str, error: &serde_json::Error) -> Error {
     }
 }
 
-/// The hit cap [`search_index`] serves one query with.
+/// The hit cap [`SearchIndex::search`] serves one query with.
 pub const MAX_SEARCH_HITS: usize = 50;
 
-/// Case-insensitive free-text search by token, name, aliases, and
-/// summary — every whitespace-separated word must match, a hit ranks by
-/// its worst word (exact < prefix < substring), capped, empty → none.
-#[must_use]
-pub fn search_index(apps: &[App], query: &str) -> Vec<App> {
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    if words.is_empty() {
-        return Vec::new();
-    }
-    let mut hits: Vec<(u8, &App)> = apps
-        .iter()
-        .filter_map(|app| {
-            let rank = words.iter().try_fold(0u8, |worst, word| {
-                match_tier(app, word).map(|tier| worst.max(tier))
-            })?;
-            Some((rank, app))
-        })
-        .collect();
-    hits.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| left.1.id.as_str().cmp(right.1.id.as_str()))
-    });
-    hits.into_iter()
-        .take(MAX_SEARCH_HITS)
-        .map(|(_, app)| app.clone())
-        .collect()
+/// One app row's lowercase search keys, computed once at index build so a
+/// query stops re-lowercasing token, name, aliases, and summary per word
+/// per row.
+struct AppSearchKeys {
+    token: String,
+    name: String,
+    aliases: Vec<String>,
+    summary: Option<String>,
 }
 
-fn match_tier(app: &App, needle: &str) -> Option<u8> {
-    let token = match &app.install {
-        InstallMethod::Homebrew { token, .. } => token.to_lowercase(),
-        _ => app.id.as_str().to_lowercase(),
-    };
-    let name = app.name.to_lowercase();
-    if token == needle || name == needle {
-        return Some(0);
-    }
-    if token.starts_with(needle) || name.starts_with(needle) {
-        return Some(1);
-    }
-    let matched = token.contains(needle)
-        || name.contains(needle)
-        || app
+fn app_search_keys(app: &App) -> AppSearchKeys {
+    AppSearchKeys {
+        token: match &app.install {
+            InstallMethod::Homebrew { token, .. } => token.to_lowercase(),
+            _ => app.id.as_str().to_lowercase(),
+        },
+        name: app.name.to_lowercase(),
+        aliases: app
             .aliases
             .iter()
-            .any(|alias| alias.to_lowercase().contains(needle))
-        || app
+            .map(|alias| alias.to_lowercase())
+            .collect(),
+        summary: app.summary.as_deref().map(str::to_lowercase),
+    }
+}
+
+/// The cached cask+formula catalog paired with precomputed lowercase
+/// search keys: build once, serve every query.
+pub struct SearchIndex {
+    rows: Vec<App>,
+    keys: Vec<AppSearchKeys>,
+}
+
+impl SearchIndex {
+    /// Build the searchable index over `apps`, consuming it.
+    #[must_use]
+    pub fn new(apps: Vec<App>) -> Self {
+        let keys = apps.iter().map(app_search_keys).collect();
+        Self { rows: apps, keys }
+    }
+
+    /// The underlying rows, in index order.
+    #[must_use]
+    pub fn apps(&self) -> &[App] {
+        &self.rows
+    }
+
+    /// Case-insensitive free-text search by token, name, aliases, and
+    /// summary: every whitespace-separated word must match, a hit ranks by
+    /// its worst word (exact < prefix < substring), capped, empty → none.
+    #[must_use]
+    pub fn search(&self, query: &str) -> Vec<App> {
+        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if words.is_empty() {
+            return Vec::new();
+        }
+        let mut hits: Vec<(u8, &App)> = self
+            .rows
+            .iter()
+            .zip(&self.keys)
+            .filter_map(|(app, keys)| {
+                let rank = words.iter().try_fold(0u8, |worst, word| {
+                    keys_tier(keys, word).map(|tier| worst.max(tier))
+                })?;
+                Some((rank, app))
+            })
+            .collect();
+        hits.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.id.as_str().cmp(right.1.id.as_str()))
+        });
+        hits.into_iter()
+            .take(MAX_SEARCH_HITS)
+            .map(|(_, app)| app.clone())
+            .collect()
+    }
+}
+
+/// Case-insensitive free-text search over `apps` without a cached
+/// [`SearchIndex`]; repeated queries should build the index once and call
+/// [`SearchIndex::search`] instead.
+#[must_use]
+pub fn search_index(apps: &[App], query: &str) -> Vec<App> {
+    SearchIndex::new(apps.to_vec()).search(query)
+}
+
+fn keys_tier(keys: &AppSearchKeys, needle: &str) -> Option<u8> {
+    if keys.token == needle || keys.name == needle {
+        return Some(0);
+    }
+    if keys.token.starts_with(needle) || keys.name.starts_with(needle) {
+        return Some(1);
+    }
+    let matched = keys.token.contains(needle)
+        || keys.name.contains(needle)
+        || keys.aliases.iter().any(|alias| alias.contains(needle))
+        || keys
             .summary
             .as_deref()
-            .is_some_and(|summary| summary.to_lowercase().contains(needle));
+            .is_some_and(|summary| summary.contains(needle));
     matched.then_some(2)
 }
 
 // ---------------------------------------------------------------------------
-// Fetch half (feature `http`) — thin client + adapter
+// Fetch half (feature `http`): thin client + adapter
 // ---------------------------------------------------------------------------
 
 /// Descriptive User-Agent (DESIGN.md §3.2: `toride-registry/<source>/<version>`).
 #[cfg(feature = "http")]
 const USER_AGENT: &str = concat!("toride-registry/homebrew/", env!("CARGO_PKG_VERSION"));
 
-/// formulae.brew.sh origin — every wave-1 endpoint hangs off
+/// formulae.brew.sh origin: every wave-1 endpoint hangs off
 /// `{API_BASE}/api/{cask,formula}/{token}.json` (homebrew.md §1).
 #[cfg(feature = "http")]
 const API_BASE: &str = "https://formulae.brew.sh";
@@ -884,14 +934,14 @@ impl HomebrewClient {
         }
     }
 
-    /// `GET /api/cask.json` — the full cask catalog, served from a fresh
+    /// `GET /api/cask.json`: the full cask catalog, served from a fresh
     /// cache entry when one exists. Errors: [`Error::Http`].
     pub async fn fetch_cask_index(&self) -> Result<String> {
         self.fetch_index_cached(&format!("{}/api/cask.json", self.api_base), "cask.json")
             .await
     }
 
-    /// `GET /api/formula.json` — the full formula catalog, served from a
+    /// `GET /api/formula.json`: the full formula catalog, served from a
     /// fresh cache entry when one exists. Errors: [`Error::Http`].
     pub async fn fetch_formula_index(&self) -> Result<String> {
         self.fetch_index_cached(
@@ -1003,7 +1053,7 @@ impl HomebrewClient {
     ///
     /// # Errors
     ///
-    /// [`Error::Http`] on transport failures and non-success statuses —
+    /// [`Error::Http`] on transport failures and non-success statuses:
     /// including 404, which means "no such cask".
     pub async fn fetch_cask(&self, token: &str) -> Result<String> {
         let url = format!("{}/api/cask/{token}.json", self.api_base);
@@ -1018,7 +1068,7 @@ impl HomebrewClient {
     ///
     /// # Errors
     ///
-    /// [`Error::Http`] on transport failures and non-success statuses —
+    /// [`Error::Http`] on transport failures and non-success statuses:
     /// including 404, which means "no such formula".
     pub async fn fetch_formula(&self, name: &str) -> Result<String> {
         let url = format!("{}/api/formula/{name}.json", self.api_base);
@@ -1037,7 +1087,7 @@ impl HomebrewClient {
             .await
     }
 
-    /// 404-aware variant of [`Self::fetch_formula`] — see
+    /// 404-aware variant of [`Self::fetch_formula`]: see
     /// [`Self::fetch_cask_optional`].
     async fn fetch_formula_optional(&self, name: &str) -> Result<Option<String>> {
         self.fetch_body(&format!("{}/api/formula/{name}.json", self.api_base))
@@ -1085,17 +1135,27 @@ impl HomebrewClient {
 
 /// The Homebrew adapter: one [`Adapter`](crate::adapter::Adapter)
 /// implementation over the two per-item endpoints, serving both
-/// [`SourceKind::HomebrewCask`] and [`SourceKind::HomebrewFormula`] rows —
+/// [`SourceKind::HomebrewCask`] and [`SourceKind::HomebrewFormula`] rows:
 /// [`Adapter::lookup`](crate::adapter::Adapter::lookup) dispatches on the
 /// row's kind; a cask-kind row (the adapter's primary, unqualified kind)
-/// resolves the unified token namespace formula first with cask fallback —
+/// resolves the unified token namespace formula first with cask fallback:
 /// `brew install`'s own order.
 /// Gated behind the crate's `http` feature together with
 /// [`HomebrewClient`] (DESIGN.md §9: the parsers build fully offline).
 #[cfg(feature = "http")]
 pub struct HomebrewAdapter {
     client: HomebrewClient,
-    index: tokio::sync::Mutex<Option<Arc<Vec<App>>>>,
+    index: tokio::sync::Mutex<Option<CachedIndex>>,
+}
+
+/// The in-memory catalog with its build timestamp: the same
+/// [`INDEX_CACHE_TTL`] window the on-disk cache applies bounds the
+/// process-lifetime copy, so a long-lived adapter re-resolves instead of
+/// serving a frozen catalog forever.
+#[cfg(feature = "http")]
+struct CachedIndex {
+    built_at: std::time::Instant,
+    apps: Arc<SearchIndex>,
 }
 
 #[cfg(feature = "http")]
@@ -1127,15 +1187,30 @@ impl HomebrewAdapter {
         }
     }
 
-    async fn index_apps(&self) -> Result<Arc<Vec<App>>> {
+    async fn index_apps(&self) -> Result<Arc<SearchIndex>> {
         let mut guard = self.index.lock().await;
-        if let Some(apps) = guard.as_ref() {
-            return Ok(Arc::clone(apps));
+        if let Some(cached) = guard.as_ref()
+            && cached.built_at.elapsed() < INDEX_CACHE_TTL
+        {
+            return Ok(Arc::clone(&cached.apps));
         }
-        let casks = parse_cask_index(&self.client.fetch_cask_index().await?)?;
-        let formulae = parse_formula_index(&self.client.fetch_formula_index().await?)?;
-        let apps = Arc::new(formulae.into_iter().chain(casks).collect::<Vec<App>>());
-        *guard = Some(Arc::clone(&apps));
+        // The two catalog downloads are independent: fetch them
+        // concurrently so a cold first search pays one round-trip window,
+        // not two. The mutex stays held across the fetch so concurrent
+        // first searches stay single-flight.
+        let (casks, formulae) = tokio::join!(
+            self.client.fetch_cask_index(),
+            self.client.fetch_formula_index()
+        );
+        let casks = parse_cask_index(&casks?)?;
+        let formulae = parse_formula_index(&formulae?)?;
+        let apps = Arc::new(SearchIndex::new(
+            formulae.into_iter().chain(casks).collect::<Vec<App>>(),
+        ));
+        *guard = Some(CachedIndex {
+            built_at: std::time::Instant::now(),
+            apps: Arc::clone(&apps),
+        });
         Ok(apps)
     }
 }
@@ -1178,17 +1253,18 @@ impl crate::adapter::Adapter for HomebrewAdapter {
         }
     }
 
-    /// Searches the cached cask+formula index through [`search_index`] —
-    /// the first search pays the catalog download, later ones are
-    /// in-memory. Errors: [`Error::Http`] / [`Error::Parse`].
+    /// Searches the cached cask+formula index through
+    /// [`SearchIndex::search`]: the first search pays the catalog
+    /// download, later ones are in-memory until [`INDEX_CACHE_TTL`]
+    /// elapses. Errors: [`Error::Http`] / [`Error::Parse`].
     async fn search(&self, query: &str) -> Result<Vec<App>> {
         let index = self.index_apps().await?;
-        Ok(search_index(&index, query))
+        Ok(index.search(query))
     }
 }
 
 // ---------------------------------------------------------------------------
-// Tests — parse half against the frozen fixtures (offline)
+// Tests: parse half against the frozen fixtures (offline)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1196,7 +1272,7 @@ mod tests {
     use super::*;
     use crate::model::VerificationPolicy;
 
-    /// Manifest-dir-anchored fixture loading (conventions.md §7 — runtime
+    /// Manifest-dir-anchored fixture loading (conventions.md §7: runtime
     /// read via `env!("CARGO_MANIFEST_DIR")`, deliberately not
     /// `include_str!`).
     fn read_fixture(name: &str) -> String {
@@ -1519,7 +1595,7 @@ mod tests {
     fn absent_variation_keys_inherit_while_explicit_null_marks_unavailable() {
         // `sonoma` overrides only sha256 (url inherited), `ventura` is
         // explicitly null (unavailable), `big_sur` overrides nothing at
-        // all — the absent-vs-null crux of §4.1 caveat 3.
+        // all: the absent-vs-null crux of §4.1 caveat 3.
         let payload = r#"{
             "token": "t", "name": ["T"], "version": "1.0",
             "url": "https://example.com/t.dmg", "sha256": "top",
@@ -1711,7 +1787,7 @@ mod tests {
 
         // Wrong JSON types for the whole payload are errors. (Note serde's
         // derived struct visitor also accepts sequences positionally, so
-        // `"[]"` would parse to an all-defaults struct rather than error —
+        // `"[]"` would parse to an all-defaults struct rather than error:
         // tolerable, but not an error case.)
         assert!(parse_formula_json("42").is_err());
         assert!(parse_formula_json("\"a string\"").is_err());
@@ -1888,7 +1964,7 @@ mod tests {
         );
         assert!(
             search_index(&apps, "firefox spreadsheet").is_empty(),
-            "every word must match — one unmatched word excludes the app"
+            "every word must match: one unmatched word excludes the app"
         );
         assert_eq!(
             install_tokens(&search_index(&apps, "studio code")),
@@ -2073,6 +2149,57 @@ mod index_cache_tests {
             .filter(|name| name.contains(".part"))
             .collect();
         assert!(leftovers.is_empty(), "failed writes clean their parts");
+    }
+
+    /// A single-shot-per-path HTTP/1.0 server whose every response waits
+    /// `delay` first, so the cask and formula index downloads are
+    /// distinguishable: sequential fetches cost 2x`delay`, concurrent ones
+    /// cost ~`delay`.
+    async fn slow_index_server(delay: std::time::Duration) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let request = String::from_utf8_lossy(&buf).to_string();
+                    let body = if request.contains("/api/cask.json") {
+                        SYNTHETIC_CASK_INDEX
+                    } else {
+                        SYNTHETIC_FORMULA_INDEX
+                    };
+                    tokio::time::sleep(delay).await;
+                    let response = format!(
+                        "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(response.as_bytes()).await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn cold_index_fetches_the_two_catalogs_concurrently() {
+        let delay = std::time::Duration::from_millis(150);
+        let base = slow_index_server(delay).await;
+        let adapter = super::HomebrewAdapter::with_api_base(base);
+
+        let started = std::time::Instant::now();
+        let hits = adapter.search("probe").await.expect("cold search answers");
+        let elapsed = started.elapsed();
+
+        assert_eq!(hits.len(), 2, "both synthetic rows are served");
+        assert!(
+            elapsed < delay * 2,
+            "the two catalog downloads must overlap: sequential would take at least {:?}, took {elapsed:?}",
+            delay * 2
+        );
     }
 }
 
@@ -2283,7 +2410,7 @@ mod lookup_dispatch_tests {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — fetch half, env-gated live round-trip (DESIGN.md §9)
+// Tests: fetch half, env-gated live round-trip (DESIGN.md §9)
 // ---------------------------------------------------------------------------
 
 #[cfg(all(test, feature = "http"))]
@@ -2325,7 +2452,7 @@ mod integration_tests {
             .expect("fetch must succeed")
             .expect("brave-browser exists upstream");
 
-        // Invariant set of DESIGN.md §3.1 — never field-for-field equality
+        // Invariant set of DESIGN.md §3.1: never field-for-field equality
         // against the fixture frozen 2026-09-28 (cask `version` /
         // `generated_date` drift upstream immediately).
         assert_eq!(app.id.as_str(), "brave-browser");

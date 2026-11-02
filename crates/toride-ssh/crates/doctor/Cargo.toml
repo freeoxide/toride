@@ -12,6 +12,7 @@ categories = ["network-programming", "development-tools"]
 [dependencies]
 toride-ssh-core = { path = "../core", version = "0.2.0" }
 toride-ssh-config = { path = "../config", version = "0.2.0" }
+toride-ssh-known-hosts = { path = "../known-hosts", version = "0.2.0" }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync", "time"] }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -20,15 +21,28 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 dirs = { workspace = true }
 duct = "1"
-# join_all semantics for bounded-concurrency check/forward fan-out (F10 lever).
-futures = "0.3"
 libc = "0.2"
 base64 = "0.22"
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
 
+[lib]
+# Keeps `cargo bench -- --baseline ...` out of the libtest harness; only the
+# criterion [[bench]] target should receive bench args.
+bench = false
+
 [dev-dependencies]
 serial_test = "3"
 tempfile = "3"
+async-trait = { workspace = true }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "remote_checks"
+harness = false
+
+[[bench]]
+name = "local_checks"
+harness = false
 
 [lints]
 workspace = true

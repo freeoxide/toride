@@ -58,6 +58,10 @@ impl PrivateKey {
     }
 
     /// Returns the Base64-encoded private key.
+    ///
+    /// This is the one deliberate accessor for the secret: [`PrivateKey`]'s
+    /// `Display` and `Debug` render `**REDACTED**`, so printing a key the
+    /// caller means to reveal (e.g. a `genkey` command) must go through here.
     pub fn as_base64(&self) -> &str {
         &self.inner
     }

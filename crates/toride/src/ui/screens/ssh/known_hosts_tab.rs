@@ -420,12 +420,6 @@ impl SshTab for KnownHostsTab {
         self.detail_open.is_some() || self.action_modal.is_some()
     }
 
-    fn close_modal(&mut self) {
-        self.detail_open = None;
-        self.detail_modal_rect = None;
-        self.action_modal = None;
-    }
-
     fn drain_ops(&mut self) -> Vec<SshOp> {
         std::mem::take(&mut self.pending_ops)
     }
@@ -503,7 +497,6 @@ impl KnownHostsTab {
 
             let mut spans = Vec::new();
 
-            // Icon — accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
                 Style::new().fg(if is_selected || is_hovered {
@@ -534,7 +527,6 @@ impl KnownHostsTab {
             let padded = format!("{:width$}", "", width = host_w.saturating_sub(host_chars));
             spans.push(Span::raw(padded));
 
-            // Key type — show primary or count when grouped
             if host.key_types.len() > 1 {
                 spans.push(Span::styled(
                     format!(" {} ", host.key_type),

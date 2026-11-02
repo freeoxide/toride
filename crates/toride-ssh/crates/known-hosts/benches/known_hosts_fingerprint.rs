@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::hint::black_box;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -8,9 +9,14 @@ use toride_ssh_known_hosts::KnownHostsService;
 
 const FIXTURE: &str = include_str!("../../../tests/fixtures/known_hosts_markers.txt");
 
-const SAMPLE_SIZE: usize = 30;
-const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
-const WARM_UP_TIME: Duration = Duration::from_millis(500);
+const CONFIG_LINES: usize = 200;
+
+const SAMPLE_SIZE: usize = 100;
+const MEASUREMENT_TIME: Duration = Duration::from_secs(8);
+const WARM_UP_TIME: Duration = Duration::from_secs(1);
+/// Deltas under 20 percent are shared-host regime drift, matching the
+/// campaign's bench gate tolerance; larger ones still fail as regressions.
+const NOISE_THRESHOLD: f64 = 0.20;
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -34,6 +40,10 @@ fn rig() -> Rig {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one bench group per fixture; splitting adds no clarity"
+)]
 fn known_hosts_fingerprint_pass(c: &mut Criterion) {
     let rig = rig();
     let rt = runtime();
@@ -48,7 +58,91 @@ fn known_hosts_fingerprint_pass(c: &mut Criterion) {
     assert_eq!(entries.len(), 9, "fixture must yield 9 entries");
     assert_eq!(expected_entries, 6, "fixture must yield 6 ed25519 entries");
 
+    let config_dir = tempfile::tempdir().expect("temp dir");
+    let config_path = config_dir.path().join("config");
+    let mut config = String::with_capacity(CONFIG_LINES * 48);
+    for index in 0..CONFIG_LINES {
+        if index == CONFIG_LINES / 2 {
+            config.push_str("Host bench\n    UserKnownHostsFile /custom/known_hosts\n");
+        }
+        if index == CONFIG_LINES / 2 + 1 {
+            config.push_str("VerifyHostKeyDNS yes\n");
+        }
+        if index == CONFIG_LINES / 2 + 2 {
+            config.push_str("UpdateHostKeys yes\n");
+        }
+        writeln!(
+            config,
+            "Host filler-{index:03}\n    ServerAliveInterval 60\n    Compression no"
+        )
+        .expect("write to String cannot fail");
+    }
+    std::fs::write(&config_path, config).expect("write ssh config fixture");
+
+    let config_paths: &'static SshPaths =
+        Box::leak(Box::new(SshPaths::with_dir(config_dir.path())));
+    let config_runner: &'static MockCliRunner = Box::leak(Box::new(MockCliRunner::new()));
+    let config_service = KnownHostsService::new(config_paths, config_runner);
+
+    assert!(
+        rt.block_on(config_service.is_update_host_keys_enabled())
+            .expect("config scan answers"),
+        "the UpdateHostKeys line is found"
+    );
+    let resolved = rt
+        .block_on(config_service.resolve_user_known_hosts_file("bench"))
+        .expect("resolve answers");
+    assert_eq!(
+        resolved,
+        std::path::PathBuf::from("/custom/known_hosts"),
+        "the UserKnownHostsFile value resolves from the matching Host block"
+    );
+
+    let mut group = c.benchmark_group("known_hosts/config_scan");
+    group.noise_threshold(NOISE_THRESHOLD);
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(MEASUREMENT_TIME);
+    group.warm_up_time(WARM_UP_TIME);
+    group.throughput(Throughput::Bytes(
+        std::fs::metadata(&config_path)
+            .expect("config fixture present")
+            .len(),
+    ));
+
+    group.bench_function("update_host_keys_scan", |b| {
+        b.iter(|| {
+            let enabled = rt
+                .block_on(config_service.is_update_host_keys_enabled())
+                .expect("config scan answers");
+            black_box(enabled)
+        });
+    });
+
+    group.bench_function("verify_host_key_dns_scan", |b| {
+        b.iter(|| {
+            let status = rt
+                .block_on(config_service.verify_host_key_dns_status())
+                .expect("config scan answers");
+            black_box(matches!(
+                status,
+                toride_ssh_known_hosts::DnsVerifyStatus::Enabled
+            ))
+        });
+    });
+
+    group.bench_function("resolve_user_known_hosts_file_scan", |b| {
+        b.iter(|| {
+            let resolved = rt
+                .block_on(config_service.resolve_user_known_hosts_file(black_box("bench")))
+                .expect("config scan answers");
+            black_box(resolved)
+        });
+    });
+
+    group.finish();
+
     let mut group = c.benchmark_group("known_hosts/fingerprint_pass");
+    group.noise_threshold(NOISE_THRESHOLD);
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
     group.warm_up_time(WARM_UP_TIME);

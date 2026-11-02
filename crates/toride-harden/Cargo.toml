@@ -11,7 +11,7 @@ categories = ["os"]
 
 [features]
 default = ["client", "doctor"]
-client = ["dep:duct", "toride-runner/duct-runner"]
+client = ["toride-runner/duct-runner"]
 doctor = ["service"]
 service = ["client", "dep:toride-service"]
 config = ["client"]
@@ -34,10 +34,8 @@ toride-service = { path = "../toride-service", version = "0.2.0", optional = tru
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
-duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
-regex = { version = "1", optional = true }
 similar = "2"
 clap = { version = "4", features = ["derive"], optional = true }
 
@@ -47,6 +45,11 @@ tempfile = "3"
 assert_fs = "1"
 proptest = "1"
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "status_spawn_count"
+harness = false
 
 [lints]
 workspace = true

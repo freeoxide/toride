@@ -7,15 +7,13 @@
 //!   `logging` lines: `YYYY-MM-DD HH:MM:SS,mmm LEVEL message`).
 //! - [`parse_apt_check`](crate::parse::parse_apt_check) -- parses `ubuntu-advantage security-status` or `apt-check` output
 //! - [`parse_dnf_check`](crate::parse::parse_dnf_check) -- parses `dnf check-update` output
+//! - [`parse_dnf_check_security`](crate::parse::parse_dnf_check_security) -- parses
+//!   `dnf check-update --security` output (every listed row is a security update)
 //! - [`parse_dnf_automatic_journal`](crate::parse::parse_dnf_automatic_journal) -- parses `journalctl -u dnf-automatic`
 //!   output (the dnf-automatic stdio/motd emitter messages).
 
 use crate::error::{Error, Result};
 use crate::report::UpdateStatus;
-
-// ---------------------------------------------------------------------------
-// parse_unattended_upgrades_status
-// ---------------------------------------------------------------------------
 
 /// Marker that opens an unattended-upgrades run.
 ///
@@ -87,13 +85,9 @@ pub fn parse_unattended_upgrades_status(content: &str) -> Result<UpdateStatus> {
             continue;
         }
 
-        // Extract the timestamp (first two whitespace-separated tokens after
-        // any journal prefix) when present, regardless of message content.
-        let ts = extract_uu_timestamp(line);
-
         if line.contains(UU_START_MARKER) {
             saw_run = true;
-            if let Some(ts) = ts {
+            if let Some(ts) = extract_uu_timestamp(line) {
                 status.last_run = Some(ts.to_owned());
             }
             // Reset the per-run package accumulator.
@@ -105,7 +99,7 @@ pub fn parse_unattended_upgrades_status(content: &str) -> Result<UpdateStatus> {
             // tokens that look like bare package names (start at the token, not
             // a parenthesised origin string). Origin tokens like `o=Ubuntu`
             // live on the separate `Allowed origins are:` line, NOT here, so we
-            // must not exclude names starting with 'o' — that would silently
+            // must not exclude names starting with 'o'; that would silently
             // drop openssl/openldap/openssh-*/openjdk-* and undercount.
             let count = rest
                 .split_whitespace()
@@ -137,52 +131,47 @@ pub fn parse_unattended_upgrades_status(content: &str) -> Result<UpdateStatus> {
 /// ```
 /// When `journalctl` is layered on top, the line is prefixed with
 /// `<MMM DD HH:MM:SS hostname> ...` -- in that case the embedded
-/// unattended-upgrades timestamp still follows. This helper walks the
-/// whitespace-delimited tokens of the line and returns the first
-/// `YYYY-MM-DD HH:MM:SS` pair it finds. The returned span is the verbatim
-/// `YYYY-MM-DD HH:MM:SS,mmm` (or `YYYY-MM-DD HH:MM:SS` when the log omits
-/// the milliseconds), so callers preserve the real on-disk format.
+/// unattended-upgrades timestamp still follows. This helper scans the line's
+/// whitespace-delimited tokens in place (no token vec is materialized) and
+/// returns the first `YYYY-MM-DD HH:MM:SS` pair it finds. The returned span
+/// is the verbatim `YYYY-MM-DD HH:MM:SS,mmm` (or `YYYY-MM-DD HH:MM:SS` when
+/// the log omits the milliseconds), so callers preserve the real on-disk
+/// format.
 fn extract_uu_timestamp(line: &str) -> Option<&str> {
-    let mut tokens = token_spans(line);
-    while let Some((d_start, date_tok)) = tokens.next() {
-        if !looks_like_uu_date(date_tok) {
-            continue;
-        }
-        let (t_start, time_tok) = tokens.next()?;
-        if !looks_like_uu_time(time_tok) {
-            continue;
-        }
-        let end = t_start + time_tok.len();
-        return Some(&line[d_start..end]);
-    }
-    None
-}
-
-/// Yield `(start_byte_offset, &token)` for each whitespace-delimited token in
-/// `line`, preserving offsets (unlike `str::split_whitespace` which discards
-/// them).
-fn token_spans(line: &str) -> std::iter::Peekable<std::vec::IntoIter<(usize, &str)>> {
-    let mut out = Vec::new();
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        // Skip whitespace.
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
         if i >= bytes.len() {
             break;
         }
-        let start = i;
+        let date_start = i;
         while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
             i += 1;
         }
-        // SAFETY: we advanced over ASCII-whitespace boundaries only, which are
+        // SAFETY: token boundaries are ASCII-whitespace boundaries, which are
         // valid char boundaries.
-        let tok = std::str::from_utf8(&bytes[start..i]).unwrap_or("");
-        out.push((start, tok));
+        let date_tok = std::str::from_utf8(&bytes[date_start..i]).unwrap_or("");
+        if !looks_like_uu_date(date_tok) {
+            continue;
+        }
+        let mut j = i;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        let time_start = j;
+        while j < bytes.len() && !bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        let time_tok = std::str::from_utf8(&bytes[time_start..j]).unwrap_or("");
+        if !looks_like_uu_time(time_tok) {
+            continue;
+        }
+        return Some(&line[date_start..j]);
     }
-    out.into_iter().peekable()
+    None
 }
 
 /// Heuristic: does this token look like `YYYY-MM-DD`?
@@ -209,10 +198,6 @@ fn find_after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
     let idx = line.find(marker)?;
     Some(line[idx + marker.len()..].trim_start())
 }
-
-// ---------------------------------------------------------------------------
-// parse_apt_check
-// ---------------------------------------------------------------------------
 
 /// Parse the output of `apt-check` (or equivalent) to extract update counts.
 ///
@@ -251,17 +236,41 @@ pub fn parse_apt_check(output: &str) -> Result<(usize, usize)> {
     Ok((security, total))
 }
 
-// ---------------------------------------------------------------------------
-// parse_dnf_check
-// ---------------------------------------------------------------------------
+/// Parse `apt-get -s upgrade` output into update counts.
+///
+/// The portable fallback for hosts without Ubuntu's
+/// `/usr/lib/update-notifier/apt-check` (shipped in `update-notifier-common`,
+/// absent on stock Debian). Each `Inst <pkg> [cur] (new repo, ...)` line is
+/// one simulated upgrade; lines naming a `*-security` suite in the version
+/// list count as security updates.
+///
+/// # Errors
+/// Does not return errors; unparseable lines are skipped.
+pub fn parse_apt_get_simulate(output: &str) -> Result<(usize, usize)> {
+    let mut security = 0usize;
+    let mut total = 0usize;
+    for line in output.lines() {
+        if !line.starts_with("Inst ") {
+            continue;
+        }
+        total += 1;
+        if line.to_lowercase().contains("security") {
+            security += 1;
+        }
+    }
+    Ok((security, total))
+}
 
 /// Parse the output of `dnf check-update` to extract update counts.
 ///
 /// Returns a tuple of `(security_updates, total_updates)`.
 ///
-/// The output lists available updates, one per line. Security updates are
-/// typically identified by advisory IDs starting with `ALSA-`, `FEDORA-`,
-/// or `RHSA-`.
+/// Rows are `name.arch evr repo` columns; the security count uses a
+/// substring heuristic (`security` or an `ALSA-`/`RHSA-`/`FEDORA-`/...
+/// advisory prefix) that real check-update columns never carry, so callers
+/// running `dnf check-update --security` must use
+/// [`parse_dnf_check_security`](crate::parse::parse_dnf_check_security)
+/// instead.
 ///
 /// # Errors
 ///
@@ -273,16 +282,12 @@ pub fn parse_dnf_check(output: &str) -> Result<(usize, usize)> {
 
     for line in output.lines() {
         let line = line.trim();
-        // Skip empty lines and header/footer lines.
         if line.is_empty() || line.starts_with("Last metadata") || line.contains("Updating") {
             continue;
         }
 
-        // Lines with package names contain update info.
-        // A simple heuristic: count non-empty, non-header lines as updates.
         if line.contains('.') && line.contains(' ') {
             total += 1;
-            // Check for security advisory patterns.
             if line.contains("security")
                 || line.contains("ALSA-")
                 || line.contains("ALAS-")
@@ -300,9 +305,22 @@ pub fn parse_dnf_check(output: &str) -> Result<(usize, usize)> {
     Ok((security, total))
 }
 
-// ---------------------------------------------------------------------------
-// parse_dnf_automatic_journal
-// ---------------------------------------------------------------------------
+/// Parse `dnf check-update --security` output into update counts.
+///
+/// Returns a tuple of `(security_updates, total_updates)` where both counts
+/// equal the listed-row total: the `--security` flag restricts the listing
+/// to security advisories, so every `name.arch evr repo` row is a security
+/// update and the substring heuristic in
+/// [`parse_dnf_check`](crate::parse::parse_dnf_check) is not applicable.
+///
+/// # Errors
+///
+/// Returns [`Error::ConfigParse`] if the output is fundamentally malformed
+/// (though DNF output is relatively free-form, so parsing is lenient).
+pub fn parse_dnf_check_security(output: &str) -> Result<(usize, usize)> {
+    let (_, total) = parse_dnf_check(output)?;
+    Ok((total, total))
+}
 
 /// Marker emitted by the dnf-automatic stdio/motd/command emitters when updates
 /// are available but have not been installed yet.
@@ -358,6 +376,11 @@ const DNF_NO_SECURITY_BUT_OTHERS: &str = "No security updates needed, but";
 /// No security updates needed, but 154 updates available
 /// ```
 ///
+/// Lines are matched by substring so both shapes parse: raw emitter output
+/// and journalctl's default format, which prefixes every line with
+/// `Mon Jun 02 06:42:11 host prog[pid]:`. The production journal spec passes
+/// `--output=cat` to strip that prefix.
+///
 /// The parser reports:
 ///
 /// - `last_run` -- the verbatim timestamp from the most recent
@@ -383,10 +406,14 @@ pub fn parse_dnf_automatic_journal(content: &str) -> Result<UpdateStatus> {
     for raw in content.lines() {
         let line = raw.trim();
 
-        if line.starts_with(DNF_AVAILABLE_MARKER)
-            || line.starts_with(DNF_APPLIED_MARKER)
-            || line.starts_with(DNF_DOWNLOADED_MARKER)
-        {
+        let marker_found = [
+            DNF_AVAILABLE_MARKER,
+            DNF_APPLIED_MARKER,
+            DNF_DOWNLOADED_MARKER,
+        ]
+        .iter()
+        .any(|marker| find_after(line, marker).is_some());
+        if marker_found {
             saw_marker = true;
             in_listing = true;
             current_count = 0;
@@ -435,10 +462,6 @@ pub fn parse_dnf_automatic_journal(content: &str) -> Result<UpdateStatus> {
     Ok(status)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,11 +485,42 @@ mod tests {
         assert!(parse_apt_check("invalid").is_err());
     }
 
+    /// Real `apt-get -s upgrade` shape: `Inst` lines with the candidate
+    /// version list naming the suites it comes from.
+    #[test]
+    fn parse_apt_get_simulate_counts_inst_lines() {
+        let output = "\
+Reading package lists... Done\n\
+Inst libc6 [2.36-9] (2.36-9+deb12u1 Debian:12.7/stable)\n\
+Inst libssl3 [3.0.13-1] (3.0.15-1~deb12u1 Debian:12.7/stable, Debian-Security:12/stable-security [amd64])\n\
+Conf libc6 (2.36-9+deb12u1 Debian:12.7/stable)\n";
+        let (security, total) = parse_apt_get_simulate(output).unwrap();
+        assert_eq!(total, 2, "Inst lines only");
+        assert_eq!(security, 1, "the -security suite line only");
+        assert_eq!(parse_apt_get_simulate("").unwrap(), (0, 0));
+    }
+
     #[test]
     fn parse_dnf_check_empty() {
         let (security, total) = parse_dnf_check("").unwrap();
         assert_eq!(security, 0);
         assert_eq!(total, 0);
+    }
+
+    /// Real `dnf check-update --security` output: column-aligned
+    /// `name.arch evr repo` rows with plain repo names, no advisory prefix.
+    #[test]
+    fn parse_dnf_check_security_counts_every_row() {
+        let output = "Last metadata expiration check: 0:01:00 ago.\n\
+                      kernel-core.x86_64                   6.8.9-300.fc40             updates\n\
+                      openssl-libs.x86_64                  3.2.1-1.fc40               updates\n";
+        assert_eq!(parse_dnf_check_security(output).unwrap(), (2, 2));
+        let (substring_security, _) = parse_dnf_check(output).unwrap();
+        assert_eq!(
+            substring_security, 0,
+            "the substring classifier must not fire on real columns"
+        );
+        assert_eq!(parse_dnf_check_security("").unwrap(), (0, 0));
     }
 
     #[test]
@@ -585,6 +639,21 @@ The following updates are available on 'host.example.com':\n\
         assert_eq!(status.pending_security, 2);
         // No `Updates completed at` -> last_run is None.
         assert!(status.last_run.is_none());
+    }
+
+    /// journalctl's default (non-`cat`) format prefixes every line with
+    /// `Mon Jun 02 06:42:11 host prog[pid]:`; markers must still match.
+    #[test]
+    fn parse_dnf_automatic_journal_prefixed_lines() {
+        let journal = "\
+Jun 02 06:41:58 host.example.com dnf-automatic[812]: The following updates have been applied on 'host.example.com':\n\
+Jun 02 06:41:58 host.example.com dnf-automatic[812]:     bzip2-libs-1.0.8-10.el9.x86_64          baseos\n\
+Jun 02 06:41:58 host.example.com dnf-automatic[812]:     kernel-core-6.8.9-300.fc40.x86_64       updates\n\
+Jun 02 06:42:11 host.example.com dnf-automatic[812]: Updates completed at Mon Jun  2 06:42:11 2025\n";
+        let status = parse_dnf_automatic_journal(journal).unwrap();
+        assert!(status.auto_updates_enabled);
+        assert_eq!(status.last_run.as_deref(), Some("Mon Jun  2 06:42:11 2025"));
+        assert_eq!(status.pending_security, 2);
     }
 
     #[test]

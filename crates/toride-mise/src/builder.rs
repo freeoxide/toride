@@ -23,10 +23,6 @@ use camino::Utf8PathBuf;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
-// ---------------------------------------------------------------------------
-// MiseBuilder
-// ---------------------------------------------------------------------------
-
 /// Builder for constructing [`Mise`] instances.
 ///
 /// Provides a fluent interface for configuring the runner, binary path,

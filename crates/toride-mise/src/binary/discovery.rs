@@ -10,15 +10,11 @@
 
 use camino::Utf8PathBuf;
 use toride_installer::Detector;
-use toride_installer::tools::mise::mise_tool;
+use toride_installer::tools::mise::{MISE_BIN_NAME, mise_tool};
 
 use super::version::MiseVersion;
 use crate::error::MiseError;
 use crate::error::MiseResult;
-
-// ---------------------------------------------------------------------------
-// MiseBinary
-// ---------------------------------------------------------------------------
 
 struct OfflineCascade<'a> {
     env_bin: Option<&'a str>,
@@ -45,16 +41,18 @@ impl MiseBinary {
     ///    env-override tier.
     /// 2. `toride_installer`'s offline `Detector` over the mise descriptor:
     ///    the real `$PATH` first (the binary a shell would execute), then
-    ///    the managed install location (`~/.local/bin/mise`) — the same
+    ///    the managed install location (`~/.local/bin/mise`): the same
     ///    precedence the installer's install path uses, so discovery cannot
     ///    drift from installs. The detector probes `mise --version` (then
     ///    `-V`) and reports it in `version`; a failed probe degrades to
     ///    `version: None`, never to a missed binary. A non-UTF-8 `$PATH`
     ///    hit is treated as absent by the detector (it falls through to the
     ///    later tiers) rather than surfacing as an error.
-    /// 3. The system-wide `/usr/local/bin/mise`, kept as an extra fallback:
-    ///    the detector models only `$PATH` and the managed location, and a
-    ///    PATH-scrubbed host with a system-wide mise must still be found.
+    /// 3. The system-wide `/usr/local/bin` copy of the mise binary
+    ///    ([`MISE_BIN_NAME`]: `mise.exe` under Windows), kept as an extra
+    ///    fallback: the detector models only `$PATH` and the managed
+    ///    location, and a PATH-scrubbed host with a system-wide mise must
+    ///    still be found.
     /// 4. App-bundled binary path (alongside the current executable).
     ///
     /// Discovery performs blocking work: tier 2 runs the detector's
@@ -90,7 +88,8 @@ impl MiseBinary {
         }
 
         // 3. System-wide fallback the detector does not model.
-        let system_wide = Utf8PathBuf::from("/usr/local/bin/mise");
+        let system_wide =
+            Utf8PathBuf::from("/usr/local/bin").join(toride_installer::tools::mise::MISE_BIN_NAME);
         if system_wide.is_file() {
             return Ok(Self {
                 path: system_wide,
@@ -98,11 +97,12 @@ impl MiseBinary {
             });
         }
 
-        // 4. App-bundled binary path: look for `mise` alongside the current executable.
+        // 4. App-bundled binary path: look for the mise binary alongside the
+        //    current executable.
         if let Ok(exe) = std::env::current_exe()
             && let Some(dir) = exe.parent()
         {
-            let bundled = dir.join("mise");
+            let bundled = dir.join(toride_installer::tools::mise::MISE_BIN_NAME);
             if bundled.is_file()
                 && let Ok(utf8) = Utf8PathBuf::from_path_buf(bundled)
             {
@@ -116,7 +116,7 @@ impl MiseBinary {
         Err(MiseError::BinaryNotFound)
     }
 
-    /// `spawn_blocking` wrapper over [`MiseBinary::discover`] — the cascade
+    /// `spawn_blocking` wrapper over [`MiseBinary::discover`]: the cascade
     /// ends in the detector's sync subprocess probes (`mise --version`,
     /// then `-V`), which must not run on an async runtime worker.
     ///
@@ -131,9 +131,9 @@ impl MiseBinary {
     }
 
     /// Discover the `mise` binary offline: the same cascade and precedence
-    /// as [`MiseBinary::discover`] — `MISE_BIN` override, `$PATH`, the
+    /// as [`MiseBinary::discover`]: `MISE_BIN` override, `$PATH`, the
     /// managed install location, the system-wide fallback, the app-bundled
-    /// path — resolved by file checks alone. No subprocess ever runs (no
+    /// path: resolved by file checks alone. No subprocess ever runs (no
     /// `--version` probe), so `version` is always `None` and the call is
     /// safe from detection seams that must not execute commands.
     ///
@@ -150,7 +150,7 @@ impl MiseBinary {
                 .ok()
                 .and_then(|path| Utf8PathBuf::from_path_buf(path).ok()),
             managed_bin: Detector::managed_path(&mise_tool(), None).ok().as_ref(),
-            system_wide: Some(Utf8PathBuf::from("/usr/local/bin/mise")),
+            system_wide: Some(Utf8PathBuf::from("/usr/local/bin").join(MISE_BIN_NAME)),
             bundled_dir: bundled_dir.as_deref(),
         })
     }
@@ -190,7 +190,7 @@ impl MiseBinary {
             });
         }
         if let Some(dir) = tiers.bundled_dir {
-            let bundled = dir.join("mise");
+            let bundled = dir.join(MISE_BIN_NAME);
             if bundled.is_file()
                 && let Ok(utf8) = Utf8PathBuf::from_path_buf(bundled)
             {
@@ -220,10 +220,6 @@ impl MiseBinary {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,7 +229,7 @@ mod tests {
     use toride_installer::ToolStatus;
     use toride_runner::{CommandOutput, CommandSpec, FakeRunner};
 
-    /// The exact version-probe spec `Detector` issues — registered as a
+    /// The exact version-probe spec `Detector` issues: registered as a
     /// strict `FakeRunner` response (which ignores `timeout` when
     /// matching) and asserted on below.
     fn probe_spec(bin: &Utf8Path, arg: &str) -> CommandSpec {
@@ -265,7 +261,7 @@ mod tests {
     fn managed_location_matches_detector_for_the_mise_descriptor() {
         // The discovery contract this adoption rests on: the directory the
         // installer's install path writes to is exactly what `Detector`
-        // (and therefore tier 2 of `discover`) consults — here pinned with
+        // (and therefore tier 2 of `discover`) consults: here pinned with
         // an explicit override; the default tier resolves to `~/.local/bin`
         // on both sides because it is the same `Detector` code.
         let tmp = TempDir::new().unwrap();
@@ -279,7 +275,7 @@ mod tests {
 
     /// ENVIRONMENTAL: drives the adopted detector over the real mise
     /// descriptor with a strict `FakeRunner`, pinning the precedence the
-    /// discovery cascade relies on — the managed copy is found off `$PATH`
+    /// discovery cascade relies on: the managed copy is found off `$PATH`
     /// and its version comes from the `--version` probe. Skipped when the
     /// host has a real mise on `$PATH` (the PATH hit would win with no
     /// registered response); `$PATH` is never mutated here.
@@ -323,7 +319,7 @@ mod tests {
 
     /// Parity (the same shape as the installer's `detect_async_matches_
     /// detect`): `discover_async` runs the identical cascade on the
-    /// blocking pool, so both routes must agree — the same binary when one
+    /// blocking pool, so both routes must agree: the same binary when one
     /// is found, a shared miss verdict otherwise.
     #[tokio::test]
     async fn discover_async_matches_discover() {
@@ -374,18 +370,20 @@ mod tests {
     }
 
     #[test]
-    fn offline_bundled_tier_and_absent_verdict() {
+    fn offline_bundled_tier_joins_the_platform_binary_name() {
         let empty = TempDir::new().unwrap();
         let empty_dir = std::path::PathBuf::from(empty.path());
-        std::fs::write(empty_dir.join("mise"), b"bundled binary").unwrap();
+        std::fs::write(empty_dir.join(MISE_BIN_NAME), b"bundled binary").unwrap();
 
         let found = MiseBinary::discover_offline_with(cascade(None, None, Some(&empty_dir)))
             .expect("the bundled tier is the last file check");
         assert_eq!(
             found.path,
-            Utf8PathBuf::from_path_buf(empty_dir.join("mise")).expect("tempdir path is utf-8")
+            Utf8PathBuf::from_path_buf(empty_dir.join(MISE_BIN_NAME))
+                .expect("tempdir path is utf-8"),
+            "the bundled tier must join MISE_BIN_NAME ({MISE_BIN_NAME}), not a unix literal"
         );
-        std::fs::remove_file(empty_dir.join("mise")).unwrap();
+        std::fs::remove_file(empty_dir.join(MISE_BIN_NAME)).unwrap();
 
         let absent = MiseBinary::discover_offline_with(cascade(None, None, Some(&empty_dir)))
             .expect_err("no tier hit");
@@ -399,7 +397,7 @@ mod tests {
         std::fs::write(&managed_bin, b"managed").unwrap();
         let bundled = TempDir::new().unwrap();
         let bundled_dir = std::path::PathBuf::from(bundled.path());
-        std::fs::write(bundled_dir.join("mise"), b"bundled").unwrap();
+        std::fs::write(bundled_dir.join(MISE_BIN_NAME), b"bundled").unwrap();
         let tmp = TempDir::new().unwrap();
         let path_hit = utf8_dir(&tmp).join("mise-on-path");
         std::fs::write(&path_hit, b"path hit").unwrap();
@@ -416,7 +414,7 @@ mod tests {
     #[test]
     fn offline_system_wide_tier_falls_in_behind_managed() {
         let tmp = TempDir::new().unwrap();
-        let system_wide = utf8_dir(&tmp).join("mise");
+        let system_wide = utf8_dir(&tmp).join(MISE_BIN_NAME);
         std::fs::write(&system_wide, b"system wide").unwrap();
 
         let found = MiseBinary::discover_offline_with(OfflineCascade {

@@ -16,11 +16,19 @@
 pub struct UpdateStatus {
     /// Whether automatic updates are enabled.
     pub auto_updates_enabled: bool,
-    /// Timestamp of the last successful update run (ISO 8601), if available.
+    /// Timestamp of the last successful update run (verbatim from the log or
+    /// journal, e.g. `2025-03-13 22:44:29,802`), if available.
     pub last_run: Option<String>,
-    /// Number of pending security updates.
+    /// Number of updates handled by the most recent recorded run: the apt
+    /// parser counts the last run's `Packages that will be upgraded:` line
+    /// and the dnf parser counts its last transaction listing. This is a
+    /// record of what the last run did, not a live count of updates
+    /// currently pending installation (use
+    /// [`UpdatesClient::check_updates`](crate::client::UpdatesClient::check_updates)
+    /// for that).
     pub pending_security: usize,
-    /// Whether the update service (unattended-upgrades / dnf-automatic) is active.
+    /// Whether the update service is active (probed via its systemd timer:
+    /// `apt-daily-upgrade.timer` on apt hosts, `dnf-automatic.timer` on dnf).
     pub service_active: bool,
 }
 
@@ -65,13 +73,13 @@ impl std::fmt::Display for UpdateStatus {
             Some(last_run) => write!(
                 f,
                 "auto-updates {enabled} (service {active}); last run {last_run}; \
-                 {sec} pending security update(s)",
+                 {sec} update(s) in last run",
                 sec = self.pending_security,
             ),
             None => write!(
                 f,
                 "auto-updates {enabled} (service {active}); no recorded run; \
-                 {sec} pending security update(s)",
+                 {sec} update(s) in last run",
                 sec = self.pending_security,
             ),
         }

@@ -1,4 +1,4 @@
-//! Report rendering — converts doctor findings into text, JSON, and Markdown output.
+//! Report rendering: converts doctor findings into text, JSON, and Markdown output.
 
 use std::fmt::Write;
 
@@ -75,7 +75,7 @@ pub fn render_findings(findings: &[Finding]) -> String {
 ///
 /// Produces a JSON array of finding objects, each with `id`, `severity`,
 /// `title`, `detail`, and optional `fix` fields. No external serde
-/// dependency is required — this is hand-rendered for maximum portability.
+/// dependency is required: this is hand-rendered for maximum portability.
 #[must_use]
 pub fn render_findings_json(findings: &[Finding]) -> String {
     let mut items = Vec::new();
@@ -184,7 +184,7 @@ pub fn render_findings_markdown(findings: &[Finding]) -> String {
 
 /// Render a single finding as Markdown.
 fn render_finding_markdown(out: &mut String, finding: &Finding) {
-    let _ = writeln!(out, "### `{} `{}`", finding.severity, finding.title);
+    let _ = writeln!(out, "### {} - {}", finding.severity, finding.title);
     let _ = writeln!(out, "- **ID:** `{}`", finding.id);
     if !finding.detail.is_empty() {
         let _ = writeln!(out, "- **Detail:** {}", finding.detail);
@@ -335,6 +335,27 @@ mod tests {
         assert!(md.contains("Critical issue"));
         assert!(md.contains("Fix it now."));
         assert!(md.contains("| **Total** | **3** |"));
+    }
+
+    #[test]
+    fn render_findings_markdown_headings_are_balanced() {
+        // Regression: the heading format string emitted three backticks with
+        // unbalanced pairing, breaking rendering of every finding heading.
+        let findings = vec![Finding {
+            id: "test:warn",
+            severity: Severity::Warning,
+            title: "Watch out".into(),
+            detail: "Something might be wrong.".into(),
+            fix: None,
+        }];
+        let md = render_findings_markdown(&findings);
+        let heading = md.lines().find(|l| l.starts_with("### ")).expect("heading");
+        assert!(heading.ends_with("WARNING - Watch out"), "got: {heading}");
+        assert_eq!(
+            heading.matches('`').count(),
+            0,
+            "no stray backticks in the heading: {heading}"
+        );
     }
 
     #[test]

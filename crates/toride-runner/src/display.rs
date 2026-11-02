@@ -2,7 +2,7 @@
 //!
 //! These functions produce human-readable strings from a [`CommandSpec`]
 //! suitable for logging and diagnostics. Sensitive flag values are replaced
-//! with `"***"` — the actual child process arguments are never modified.
+//! with `"***"`; the actual child process arguments are never modified.
 
 use crate::output::CommandOutput;
 use crate::redact::redact_args;
@@ -37,8 +37,9 @@ pub const REDACT_ENV_KEYS: &[&str] = &[
 /// Produce a redacted display string for a command invocation.
 ///
 /// If `spec.redact` is `true`, values after sensitive flags are replaced with
-/// `"***"`. The `extra_flags` parameter lets callers add domain-specific flags
-/// beyond the default [`REDACT_FLAGS`](crate::redact::REDACT_FLAGS).
+/// `"***"`. The flag list is the default
+/// [`REDACT_FLAGS`](crate::redact::REDACT_FLAGS) plus the spec's
+/// [`CommandSpec::redact_flags`] plus the `extra_flags` parameter.
 ///
 /// # Examples
 ///
@@ -58,29 +59,46 @@ pub fn display_command(spec: &CommandSpec, extra_flags: &[&str]) -> String {
     display_command_with(spec, extra_flags, false)
 }
 
+/// Merge the default redaction flags with a spec's and a caller's extras.
+fn merged_redact_flags<'a>(spec: &'a CommandSpec, extra_flags: &'a [&'a str]) -> Vec<&'a str> {
+    crate::redact::REDACT_FLAGS
+        .iter()
+        .copied()
+        .chain(extra_flags.iter().copied())
+        .chain(spec.redact_flags.iter().map(String::as_str))
+        .collect()
+}
+
 /// Render `spec`'s invocation, optionally forcing redaction on.
 ///
 /// `force_redact` redacts sensitive flag values even when `spec.redact` is
 /// `false`; it never *disables* redaction for a spec that asked for it.
 fn display_command_with(spec: &CommandSpec, extra_flags: &[&str], force_redact: bool) -> String {
-    let mut parts = Vec::with_capacity(1 + spec.args.len());
+    let args_len: usize = spec.args.iter().map(|a| a.len() + 1).sum();
+    let mut out = String::with_capacity(spec.program.len() + 1 + args_len);
+    out.push_str(&spec.program);
 
-    parts.push(spec.program.clone());
-
-    let args = if spec.redact || force_redact {
-        let mut flags: Vec<&str> = crate::redact::REDACT_FLAGS.to_vec();
-        flags.extend_from_slice(extra_flags);
-        redact_args(&spec.args, &flags)
+    if spec.redact || force_redact {
+        let merged;
+        let flags: &[&str] = if extra_flags.is_empty() && spec.redact_flags.is_empty() {
+            crate::redact::REDACT_FLAGS
+        } else {
+            merged = merged_redact_flags(spec, extra_flags);
+            &merged
+        };
+        for arg in redact_args(&spec.args, flags) {
+            out.push(' ');
+            out.push_str(&arg);
+        }
     } else {
-        spec.args.clone()
-    };
-
-    parts.extend(args);
-
-    let mut out = parts.join(" ");
+        for arg in &spec.args {
+            out.push(' ');
+            out.push_str(arg);
+        }
+    }
 
     if let Some(ref cwd) = spec.cwd {
-        out = format!("(cwd: {}) {}", cwd.display(), out);
+        out = format!("(cwd: {}) {out}", cwd.display());
     }
 
     out
@@ -90,7 +108,7 @@ fn display_command_with(spec: &CommandSpec, extra_flags: &[&str], force_redact: 
 ///
 /// Runner logs are redacted by default: when `redact_logs` is on (the
 /// default for both real runners), sensitive flag values are replaced with
-/// `"***"` even for specs that did not opt into [`CommandSpec::redact`] —
+/// `"***"` even for specs that did not opt into [`CommandSpec::redact`]:
 /// logs are human diagnostics, and over-redaction there is the safe failure
 /// direction. With `redact_logs` off, the display honors `spec.redact`,
 /// preserving the historical behavior for operators debugging trusted
@@ -160,10 +178,11 @@ pub fn redacted_args_display(spec: &CommandSpec) -> String {
 /// as a pre-joined display string. When `spec.redact` is `false`, the args are
 /// returned unchanged. When it is `true`, values after sensitive flags are
 /// replaced with `"***"` (using the default
-/// [`REDACT_FLAGS`](crate::redact::REDACT_FLAGS)).
+/// [`REDACT_FLAGS`](crate::redact::REDACT_FLAGS) plus the spec's
+/// [`CommandSpec::redact_flags`]).
 pub fn redacted_args_vec(spec: &CommandSpec) -> Vec<String> {
     if spec.redact {
-        redact_args(&spec.args, crate::redact::REDACT_FLAGS)
+        redact_args(&spec.args, &merged_redact_flags(spec, &[]))
     } else {
         spec.args.clone()
     }
@@ -189,18 +208,17 @@ pub fn redacted_args_vec(spec: &CommandSpec) -> Vec<String> {
 /// assert_eq!(env[1], ("PATH".into(), "/usr/bin".into()));
 /// ```
 pub fn display_env(spec: &CommandSpec, keys: &[&str]) -> Vec<(String, String)> {
-    let match_keys = if keys.is_empty() {
-        REDACT_ENV_KEYS.to_vec()
+    let match_keys: &[&str] = if keys.is_empty() {
+        REDACT_ENV_KEYS
     } else {
-        keys.to_vec()
+        keys
     };
 
     spec.env
         .iter()
         .map(|(k, v)| {
-            let should_redact = match_keys
-                .iter()
-                .any(|pattern| k.to_uppercase().contains(pattern));
+            let upper = k.to_uppercase();
+            let should_redact = match_keys.iter().any(|pattern| upper.contains(pattern));
             if should_redact {
                 (k.clone(), "***".to_owned())
             } else {
@@ -215,8 +233,8 @@ pub fn display_env(spec: &CommandSpec, keys: &[&str]) -> Vec<(String, String)> {
 /// Joins [`display_env`] output as comma-separated `KEY=value` pairs.
 /// Sensitive values (per [`REDACT_ENV_KEYS`]) are already `"***"`, so the
 /// summary is safe to print at runtime regardless of `spec.redact`. Returns
-/// an empty string when the spec sets no explicit environment — runner log
-/// events then omit the `env` field entirely.
+/// an empty string when the spec sets no explicit environment, so runner
+/// log events then omit the `env` field entirely.
 ///
 /// # Examples
 ///
@@ -245,8 +263,8 @@ pub fn display_env_summary(spec: &CommandSpec) -> String {
 ///
 /// The span carries the program name and the log-redacted display (see
 /// [`display_command_for_log`]), so every diagnostic emitted while the
-/// command runs — the completion event, kill/reap warnings, failure returns
-/// — correlates with the invocation. Both runners enter it around the
+/// command runs (the completion event, kill/reap warnings, failure
+/// returns) correlates with the invocation. Both runners enter it around the
 /// *entire* execution, wrapping success and failure paths alike.
 ///
 /// Returns a disabled span ([`tracing::Span::none`]) when `log_commands` is
@@ -290,12 +308,13 @@ pub const MIN_SUBSTRING_SCRUB_LEN: usize = 3;
 ///
 /// 1. **Value scrubbing** (only when `spec.redact` is `true`): the *values*
 ///    of sensitive arguments, environment variables, and secret-bearing
-///    [`CommandSpec::stdin`] content are replaced with `"***"` wherever they
-///    appear in stderr. Failed auth/key commands routinely echo a token or
-///    passphrase back to stderr even though the caller asked for redaction,
-///    so this mirrors the arg-redaction intent on the free-form stderr
-///    stream. Only the secret *values* are matched (not flag names), keeping
-///    the scrub targeted and low-risk.
+///    stdin content ([`CommandSpec::stdin`] or
+///    [`CommandSpec::stdin_bytes`], whichever is effective) are replaced
+///    with `"***"` wherever they appear in stderr. Failed auth/key commands
+///    routinely echo a token or passphrase back to stderr even though the
+///    caller asked for redaction, so this mirrors the arg-redaction intent
+///    on the free-form stderr stream. Only the secret *values* are matched
+///    (not flag names), keeping the scrub targeted and low-risk.
 ///
 ///    Stdin scrubbing covers the two paths this crate pipes a secret through
 ///    stdin: `wg pubkey <privkey>` (the raw single-token case) and
@@ -330,9 +349,9 @@ pub fn scrub_stderr(spec: &CommandSpec, stderr: &str) -> String {
 
 /// Return a copy of `output` with secret values scrubbed from both stdout and
 /// stderr when `spec.redact()` is `true`, honoring the redact flag on the
-/// *returned* captured output (not just error variants).
+/// *returned* captured output (not only error variants).
 ///
-/// Uses [`redact_output`] (value replacement only — no length cap), so a
+/// Uses [`redact_output`] (value replacement only, no length cap), so a
 /// successful captured stdout/stderr stream never carries a token or passphrase
 /// a failing command would have had scrubbed. The exit code and `success` flag
 /// are preserved unchanged. When `spec.redact()` is `false`, the output is
@@ -348,16 +367,42 @@ pub fn scrub_output(spec: &CommandSpec, output: &CommandOutput) -> CommandOutput
     )
 }
 
+/// Ownership-taking sibling of [`scrub_output`] used by the real runners on
+/// their success paths: when `spec.redact()` is `false` the captured output
+/// is returned as-is instead of paying a full clone of megabytes of stdout
+/// and stderr. Under redaction the scrubbing semantics are identical to
+/// [`scrub_output`].
+pub(crate) fn scrub_output_owned(spec: &CommandSpec, output: CommandOutput) -> CommandOutput {
+    if !spec.redact {
+        return output;
+    }
+    let CommandOutput {
+        stdout,
+        stderr,
+        exit_code,
+        ..
+    } = output;
+    CommandOutput::new(
+        redact_output(spec, &stdout),
+        redact_output(spec, &stderr),
+        exit_code,
+    )
+}
+
 /// Replace secret *values* in `text` with `"***"`, honoring `spec.redact`.
 ///
 /// This is the value-replacement core shared by [`scrub_stderr`] (which then
 /// applies the error-variant length cap) and the streaming path (which must
 /// redact each line/chunk without truncating live output). It collects the
-/// same secret sources as [`scrub_stderr`] — argument values following a
-/// sensitive flag, `--flag=value` secret values, environment values whose key
-/// matches a redaction pattern, and secret-bearing values carried in stdin —
-/// and replaces each occurrence with `"***"`, longest-first so a longer secret
-/// shadows a shorter prefix overlap.
+/// same secret sources as [`scrub_stderr`]: argument values following a
+/// sensitive flag (the default list plus the spec's
+/// [`CommandSpec::redact_flags`]), `--flag=value` secret values, environment
+/// values whose key matches a redaction pattern, and secret-bearing values
+/// carried in stdin. Stdin secrets are collected from
+/// [`CommandSpec::effective_stdin_bytes`] decoded lossily, so a payload piped
+/// via `stdin_bytes` (the documented carrier for non-UTF-8 data) is scrubbed
+/// too. Each occurrence is replaced with `"***"`, longest-first so a longer
+/// secret shadows a shorter prefix overlap.
 ///
 /// Returns the text unchanged when `spec.redact` is `false`.
 pub fn redact_output(spec: &CommandSpec, text: &str) -> String {
@@ -365,34 +410,24 @@ pub fn redact_output(spec: &CommandSpec, text: &str) -> String {
         return text.to_owned();
     }
 
-    // Collect the secret values to scrub: argument values following a
-    // sensitive flag, `--flag=value` secret values, environment values
-    // whose key matches a redaction pattern, and secret-bearing values
-    // carried in stdin (e.g. a WireGuard private key piped to `wg pubkey`
-    // or embedded in a `wg setconf`/`wg syncconf` config blob).
     let mut secrets: Vec<String> = Vec::new();
-    collect_arg_secret_values(&spec.args, &mut secrets);
+    collect_arg_secret_values(&spec.args, &merged_redact_flags(spec, &[]), &mut secrets);
     for (key, value) in &spec.env {
+        let upper = key.to_uppercase();
         if REDACT_ENV_KEYS
             .iter()
-            .any(|pattern| key.to_uppercase().contains(pattern))
+            .any(|pattern| upper.contains(pattern))
         {
             secrets.push(value.clone());
         }
     }
-    if let Some(ref stdin) = spec.stdin {
-        collect_stdin_secret_values(stdin, &mut secrets);
+    if let Some(bytes) = spec.effective_stdin_bytes() {
+        collect_stdin_secret_values(&String::from_utf8_lossy(bytes), &mut secrets);
     }
 
-    // Longest-first so a longer secret shadows a shorter prefix overlap.
     secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
     let mut scrubbed = text.to_owned();
     for secret in secrets {
-        // Skip trivially short values for substring scrubbing: a 1-2 char
-        // "secret" would redact every occurrence of that sequence across the
-        // whole stream (e.g. token "a" redacts every 'a', mangling output).
-        // Position redaction (`redact_args`) still hides short secrets in argv;
-        // only the free-form stream scrub is guarded. Real secrets are longer.
         if secret.len() >= MIN_SUBSTRING_SCRUB_LEN {
             scrubbed = scrubbed.replace(&secret, "***");
         }
@@ -403,7 +438,7 @@ pub fn redact_output(spec: &CommandSpec, text: &str) -> String {
 /// Collect the *value* tokens that follow a sensitive flag, plus the value
 /// half of `--flag=value` pairs, into `out`. Mirrors the matching logic of
 /// [`redact_args`] but returns the secrets rather than the redacted form.
-fn collect_arg_secret_values(args: &[String], out: &mut Vec<String>) {
+fn collect_arg_secret_values(args: &[String], flags: &[&str], out: &mut Vec<String>) {
     let mut redact_next = false;
     for arg in args {
         if redact_next {
@@ -412,12 +447,9 @@ fn collect_arg_secret_values(args: &[String], out: &mut Vec<String>) {
             continue;
         }
         let mut handled = false;
-        for flag in crate::redact::REDACT_FLAGS {
-            if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
+        for flag in flags {
+            if let Some(value) = crate::redact::strip_flag_value(arg, flag) {
                 if value.is_empty() {
-                    // `--flag=` with no inline value: the real secret is the
-                    // NEXT arg (e.g. `--token= hunter2`). Arm `redact_next` to
-                    // collect it, mirroring `redact_args`.
                     redact_next = true;
                 } else {
                     out.push(value.to_owned());
@@ -429,7 +461,7 @@ fn collect_arg_secret_values(args: &[String], out: &mut Vec<String>) {
         if handled {
             continue;
         }
-        if crate::redact::REDACT_FLAGS.contains(&arg.as_str()) {
+        if flags.contains(&arg.as_str()) {
             redact_next = true;
         }
     }
@@ -457,12 +489,12 @@ const STDIN_SECRET_NAME_KEYS: &[&str] =
 ///   line that is not a recognized secret assignment, the whole (trimmed)
 ///   payload is treated as one secret value. A Base64 key ends in padding
 ///   `=` characters, so mere presence of `=` is not enough to classify a
-///   line as an assignment — only a `<name> = <value>` split that yields a
+///   line as an assignment; only a `<name> = <value>` split that yields a
 ///   secret-bearing name counts. This keeps the private-key-piped-to-`pubkey`
 ///   case scrubbed.
 ///
 /// Empty values are skipped. Values already present in `out` from other
-/// sources are harmless — the scrub loop deduplicates by replacement.
+/// sources are harmless: the scrub loop deduplicates by replacement.
 fn collect_stdin_secret_values(stdin: &str, out: &mut Vec<String>) {
     let mut found_assignment = false;
 
@@ -484,14 +516,9 @@ fn collect_stdin_secret_values(stdin: &str, out: &mut Vec<String>) {
         }
     }
 
-    // Single-token case: stdin is effectively ONE non-empty line that is not a
-    // recognized `<name> = <value>` assignment -> treat it as a secret (the
-    // `wg pubkey <privkey>` path). Accept optional trailing newline(s) (a
-    // caller piping `echo <key>` adds one) by counting non-empty lines rather
-    // than checking for any '\n'. A raw Base64 key's trailing `=` padding
-    // doesn't count as an assignment (split_once yields an empty value), so
-    // found_assignment stays false; a multi-line config blob has >1 non-empty
-    // line (and is handled by the assignment loop above), so it's excluded.
+    // Single non-empty line that is not a recognized assignment (e.g. a raw
+    // key piped to `wg pubkey`): the whole payload is the secret. Trailing
+    // newlines are tolerated by counting non-empty lines.
     if !found_assignment {
         let non_empty: Vec<&str> = stdin.lines().filter(|l| !l.trim().is_empty()).collect();
         if non_empty.len() == 1 {
@@ -616,7 +643,7 @@ pub(crate) mod diag_capture {
     ///
     /// Without a global default, a macro callsite first executed on a
     /// thread with no thread-local subscriber registers against the
-    /// implicit `NoSubscriber` and caches `Interest::never` — permanently
+    /// implicit `NoSubscriber` and caches `Interest::never`, permanently
     /// disabling that callsite for the rest of the process, including for
     /// capture subscribers installed later on other threads. This fallback
     /// keeps every callsite consultative (`sometimes`), so the capture
@@ -655,7 +682,7 @@ pub(crate) mod diag_capture {
     }
 
     /// Install [`PermissiveGlobal`] once per process. A global default can
-    /// only be set once; a later (or concurrent) `Err` simply means some
+    /// only be set once; a later (or concurrent) `Err` means some
     /// permissive default is already in place.
     fn ensure_permissive_global() {
         static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -805,7 +832,7 @@ mod tests {
         assert!(displayed.contains("(cwd: /srv)"), "{displayed}");
     }
 
-    /// 5.1: with the toggle off, the log display honors `spec.redact` — the
+    /// 5.1: with the toggle off, the log display honors `spec.redact`; the
     /// historical behavior is preserved for the opt-out direction.
     #[test]
     fn display_command_for_log_honors_spec_when_toggle_off() {
@@ -973,18 +1000,6 @@ mod tests {
         assert!(scrubbed.ends_with(STDERR_TRUNCATION_MARKER));
     }
 
-    // -----------------------------------------------------------------
-    // Regression: stdin-carried secrets must be scrubbed from stderr.
-    //
-    // `wireguard-tools` echoes an unrecognized config line verbatim to
-    // stderr (`fprintf(stderr, "Line unrecognized: '%s'\n", line)` in the
-    // `wg` config parser). When `wg setconf`/`wg syncconf` fail on a blob
-    // containing `PrivateKey = <val>`, that raw private key reaches the
-    // captured stderr and — without stdin scrubbing — flows into
-    // `Error::CommandFailed.stderr`. These tests prove the secret VALUE is
-    // absent from the scrubbed output (not merely that `redact == true`).
-    // -----------------------------------------------------------------
-
     /// A `WireGuard` private key is a 32-byte Base64 value (44 chars incl. padding).
     /// This is a synthetic test value, never used for anything secure.
     const WG_TEST_PRIVATE_KEY: &str = "yAnz5TF+lXXJte14tji3zsMNmPaKj7jMEumQzxRjZn4=";
@@ -1001,7 +1016,7 @@ mod tests {
             .stdin(config)
             .redact(true);
 
-        // `wg` echoing the offending line to stderr on failure — the exact
+        // `wg` echoing the offending line to stderr on failure; the exact
         // leak vector described in wireguard-tools' config parser.
         let stderr = format!("Line unrecognized: 'PrivateKey = {WG_TEST_PRIVATE_KEY}'\n");
 
@@ -1084,9 +1099,109 @@ mod tests {
         assert!(scrubbed.contains("***"));
     }
 
+    /// foundations-5: a payload piped via `stdin_bytes` is the documented
+    /// carrier for non-UTF-8 data and must be scrubbed from captured output
+    /// exactly like `stdin`, not silently skipped.
+    #[test]
+    fn redact_output_scrubs_stdin_bytes_payloads() {
+        let config = format!("[Interface]\nPrivateKey = {WG_TEST_PRIVATE_KEY}\n");
+        let spec = CommandSpec::new("wg")
+            .args(["setconf", "wg0", "/dev/stdin"])
+            .stdin_bytes(config.as_bytes().to_vec())
+            .redact(true);
+
+        let stderr = format!("Line unrecognized: 'PrivateKey = {WG_TEST_PRIVATE_KEY}'\n");
+        let scrubbed = redact_output(&spec, &stderr);
+        assert!(
+            !scrubbed.contains(WG_TEST_PRIVATE_KEY),
+            "stdin_bytes private key leaked: {scrubbed}"
+        );
+        assert!(scrubbed.contains("***"));
+
+        let raw_token_spec = CommandSpec::new("wg")
+            .arg("pubkey")
+            .stdin_bytes(WG_TEST_PRIVATE_KEY.as_bytes().to_vec())
+            .redact(true);
+        let echoed = format!("invalid key: {WG_TEST_PRIVATE_KEY}");
+        let scrubbed = redact_output(&raw_token_spec, &echoed);
+        assert!(
+            !scrubbed.contains(WG_TEST_PRIVATE_KEY),
+            "single-token stdin_bytes secret leaked: {scrubbed}"
+        );
+    }
+
+    /// `stdin_bytes` wins over `stdin` for what the child reads; the scrub
+    /// must follow the same precedence, collecting only the effective
+    /// payload.
+    #[test]
+    fn redact_output_scrubs_the_effective_stdin_payload() {
+        let spec = CommandSpec::new("wg")
+            .arg("pubkey")
+            .stdin("not-the-secret-payload-value")
+            .stdin_bytes(WG_TEST_PRIVATE_KEY.as_bytes().to_vec())
+            .redact(true);
+
+        let stderr = format!("invalid key: {WG_TEST_PRIVATE_KEY}");
+        let scrubbed = redact_output(&spec, &stderr);
+        assert!(
+            !scrubbed.contains(WG_TEST_PRIVATE_KEY),
+            "the effective (winning) payload must be scrubbed: {scrubbed}"
+        );
+    }
+
+    /// foundations-6: a spec-level `redact_flags` entry must hide the value
+    /// in argv display AND scrub it from free-form output, sharing one list
+    /// with the default flags.
+    #[test]
+    fn spec_redact_flags_apply_to_display_and_value_scrub() {
+        let spec = CommandSpec::new("restic")
+            .args([
+                "--repo",
+                "s3:https://backups.example",
+                "--restic-token",
+                "shhh-super-secret-token",
+            ])
+            .redact(true)
+            .redact_flag("--restic-token");
+
+        let displayed = display_command(&spec, &[]);
+        assert!(
+            displayed.contains("--restic-token ***"),
+            "display must redact the custom flag value: {displayed}"
+        );
+        assert!(!displayed.contains("shhh-super-secret-token"));
+
+        let vec = redacted_args_vec(&spec);
+        assert_eq!(vec[3], "***", "redacted_args_vec: {vec:?}");
+
+        let scrubbed = redact_output(&spec, "restic: rejected shhh-super-secret-token");
+        assert!(
+            !scrubbed.contains("shhh-super-secret-token"),
+            "custom flag value must be scrubbed from output: {scrubbed}"
+        );
+        assert!(scrubbed.contains("***"));
+    }
+
+    /// The `--flag=value` form of a spec-level redact flag is redacted and
+    /// scrubbed too.
+    #[test]
+    fn spec_redact_flags_cover_the_equals_form() {
+        let spec = CommandSpec::new("tool")
+            .args(["--client-secret=abc123def456"])
+            .redact(true)
+            .redact_flag("--client-secret");
+
+        let displayed = display_command(&spec, &[]);
+        assert!(displayed.contains("--client-secret=***"), "{displayed}");
+        assert!(!displayed.contains("abc123def456"));
+
+        let scrubbed = redact_output(&spec, "oauth denied abc123def456");
+        assert!(!scrubbed.contains("abc123def456"), "{scrubbed}");
+    }
+
     #[test]
     fn scrub_stderr_leaves_stdin_secret_when_redact_disabled() {
-        // redact=false MUST preserve prior behavior — no stdin scrubbing.
+        // redact=false MUST preserve prior behavior: no stdin scrubbing.
         let config = format!("[Interface]\nPrivateKey = {WG_TEST_PRIVATE_KEY}\n");
         let spec = CommandSpec::new("wg")
             .args(["setconf", "wg0", "/dev/stdin"])
@@ -1102,7 +1217,7 @@ mod tests {
     #[test]
     fn scrub_stderr_does_not_redact_non_secret_stdin_assignment() {
         // A non-secret `=` assignment (e.g. `ListenPort`) must not be scrubbed
-        // even when redact is on — keeps the scrub targeted.
+        // even when redact is on, keeping the scrub targeted.
         let config = String::from("[Interface]\nListenPort = 51820\n");
         let spec = CommandSpec::new("wg")
             .args(["setconf", "wg0", "/dev/stdin"])
@@ -1137,7 +1252,7 @@ mod tests {
     }
 
     /// A trivially short secret value (1-2 chars) is position-redacted in argv
-    /// but NOT substring-scrubbed from the free-form stream — otherwise a
+    /// but NOT substring-scrubbed from the free-form stream; otherwise a
     /// 1-char token would redact every occurrence of that char and mangle the
     /// output. Real-length secrets are still scrubbed.
     #[test]
@@ -1158,5 +1273,28 @@ mod tests {
             "normal-length secret must be scrubbed: {scrubbed_real}"
         );
         assert!(scrubbed_real.contains("***"));
+    }
+
+    /// The runners' ownership-taking scrub must agree with the public
+    /// [`scrub_output`]: unchanged output when redaction is off, scrubbed
+    /// values when it is on.
+    #[test]
+    fn scrub_output_owned_matches_scrub_output() {
+        let clean = CommandSpec::new("cmd").args(["--token", "hunter2"]);
+        let output = CommandOutput::new("plain out".to_owned(), "plain err".to_owned(), Some(0));
+        let owned = scrub_output_owned(&clean, output.clone());
+        assert_eq!(owned.stdout, "plain out", "no scrubbing when redact is off");
+        assert_eq!(owned.stderr, "plain err");
+        assert_eq!(owned.exit_code, Some(0));
+        assert!(owned.success);
+
+        let redacting = clean.redact(true);
+        let secret_output =
+            CommandOutput::new("token hunter2 here".to_owned(), String::new(), Some(0));
+        let owned = scrub_output_owned(&redacting, secret_output.clone());
+        let borrowed = scrub_output(&redacting, &secret_output);
+        assert_eq!(owned.stdout, borrowed.stdout, "scrubbed text must match");
+        assert!(!owned.stdout.contains("hunter2"), "{}", owned.stdout);
+        assert_eq!(owned.exit_code, Some(0));
     }
 }

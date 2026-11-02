@@ -1,6 +1,6 @@
 use ratatui::style::{Color, Style};
 
-/// All semantic colour slots — one `Palette` per theme, mirroring themes.js.
+/// All semantic colour slots: one `Palette` per theme, mirroring themes.js.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Palette {
     /// Base background
@@ -39,7 +39,7 @@ pub struct Palette {
     pub sel_bg: Color,
     /// Render hint: when `true`, neutralize cosmetic animations (shimmer,
     /// animated borders, spinner frame-cycling, transitions) to keep redraws
-    /// rare — essential over high-latency SSH links to a VPS where a 30fps
+    /// rare: essential over high-latency SSH links to a VPS where a 30fps
     /// redraw loop multiplies network round-trips.
     ///
     /// This is a *behaviour* flag carried on the palette (rather than a

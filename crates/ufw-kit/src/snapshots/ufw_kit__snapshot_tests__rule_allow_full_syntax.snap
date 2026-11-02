@@ -2,4 +2,4 @@
 source: crates/ufw-kit/src/snapshots.test.rs
 expression: "format!(\"{args:?}\")"
 ---
-["allow", "log", "in", "on", "eth0", "proto", "tcp", "from", "10.0.0.0/8", "to", "any", "port", "443", "comment", "managed:web"]
+["allow", "in", "on", "eth0", "log", "proto", "tcp", "from", "10.0.0.0/8", "to", "any", "port", "443", "comment", "managed:web"]

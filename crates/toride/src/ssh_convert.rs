@@ -91,7 +91,7 @@ pub fn convert_authorized_keys(
         .into_iter()
         .map(|e| {
             let options_str = e.options.as_ref().map(format_options);
-            let fp = e.fingerprint().unwrap_or_else(|| "(unknown)".into());
+            let fp = e.fingerprint();
             AuthorizedKeyEntry {
                 key_type: e.key_type,
                 public_key: truncate_key(&e.public_key, 60),
@@ -149,8 +149,14 @@ fn format_options(opts: &toride_ssh::authorized_keys::Options) -> String {
     if let Some(ref exp) = opts.expiry_time {
         parts.push(format!("expiry-time=\"{exp}\""));
     }
-    if opts.perferrp {
-        parts.push("perferrp".into());
+    if opts.no_touch_required {
+        parts.push("no-touch-required".into());
+    }
+    if opts.verify_required {
+        parts.push("verify-required".into());
+    }
+    for addr in &opts.permit_listen {
+        parts.push(format!("permitlisten=\"{addr}\""));
     }
     for (name, val) in &opts.custom {
         match val {
@@ -225,12 +231,13 @@ pub fn convert_diagnostics(diagnostics: Vec<toride_ssh::Diagnostic>) -> Vec<Diag
 }
 
 /// Format a diagnostic severity to a string.
-pub fn format_severity(s: toride_ssh::Severity) -> String {
+pub fn format_severity(s: toride_ssh::DiagnosticSeverity) -> String {
     match s {
-        toride_ssh::Severity::Ok => "ok".into(),
-        toride_ssh::Severity::Info => "info".into(),
-        toride_ssh::Severity::Warning => "warning".into(),
-        toride_ssh::Severity::Error => "error".into(),
+        toride_ssh::DiagnosticSeverity::Ok => "ok".into(),
+        toride_ssh::DiagnosticSeverity::Info => "info".into(),
+        toride_ssh::DiagnosticSeverity::Warning => "warning".into(),
+        toride_ssh::DiagnosticSeverity::Important => "important".into(),
+        toride_ssh::DiagnosticSeverity::Critical => "critical".into(),
     }
 }
 
@@ -286,7 +293,7 @@ pub fn convert_config_ast(ast: &toride_ssh::config::ast::ConfigAst) -> Vec<Confi
 
 /// Convert agent keys and status into UI types.
 ///
-/// `is_locked` and `has_constraints` are always `false` — the agent
+/// `is_locked` and `has_constraints` are always `false`: the agent
 /// protocol does not expose them.
 pub fn convert_agent_keys(
     keys: Vec<toride_ssh::SshKey>,
@@ -323,37 +330,42 @@ pub fn convert_agent_keys(
     (status, entries)
 }
 
-/// Convert forwarding sessions and their port forwards to UI types.
+/// Convert forwarding sessions to UI types.
+///
+/// The ssh mux protocol cannot enumerate a master's forwards, so sessions
+/// carry an empty per-session forward list; canceling needs a caller-held
+/// spec.
 pub fn convert_forwarding(
-    sessions: Vec<(
-        toride_ssh::forward::ControlSession,
-        Vec<toride_ssh::forward::PortForward>,
-    )>,
+    sessions: Vec<toride_ssh::forward::ControlSession>,
 ) -> Vec<ForwardSessionEntry> {
     sessions
         .into_iter()
-        .map(|(session, forwards)| {
-            let converted_forwards: Vec<ForwardEntry> = forwards
-                .into_iter()
-                .map(|pf| ForwardEntry {
-                    forward_type: pf.forward_type.to_string(),
-                    local_addr: pf.local_addr,
-                    local_port: pf.local_port,
-                    remote_addr: pf.remote_addr,
-                    remote_port: pf.remote_port,
-                })
-                .collect();
-            let forward_count = converted_forwards.len();
-            ForwardSessionEntry {
-                host: session.host,
-                control_path: session.control_path.display().to_string(),
-                pid: session.pid,
-                established_ago: format_duration_since(session.established),
-                forwards: converted_forwards,
-                forward_count,
-            }
+        .map(|session| ForwardSessionEntry {
+            host: session.host,
+            control_path: session.control_path.display().to_string(),
+            pid: session.pid,
+            established_ago: format_duration_since(session.established),
+            forwards: Vec::new(),
+            forward_count: 0,
         })
         .collect()
+}
+
+impl From<&ForwardEntry> for toride_ssh::forward::PortForward {
+    fn from(entry: &ForwardEntry) -> Self {
+        let forward_type = match entry.forward_type.as_str() {
+            "remote" => toride_ssh::forward::ForwardType::Remote,
+            "dynamic" => toride_ssh::forward::ForwardType::Dynamic,
+            _ => toride_ssh::forward::ForwardType::Local,
+        };
+        Self {
+            local_addr: entry.local_addr.clone(),
+            local_port: entry.local_port,
+            remote_addr: entry.remote_addr.clone(),
+            remote_port: entry.remote_port,
+            forward_type,
+        }
+    }
 }
 
 /// Convert certificate file paths and their parsed info into UI types.
@@ -638,14 +650,17 @@ mod tests {
 
     #[test]
     fn convert_authorized_keys_preserves_file_line_order() {
-        let mk = |comment: &str, line: usize| toride_ssh::authorized_keys::Entry {
-            options: None,
-            key_type: "ssh-ed25519".into(),
-            public_key: "AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5U"
-                .into(),
-            comment: Some(comment.to_owned()),
-            line_number: line,
-            raw_line: String::new(),
+        let mk = |comment: &str, line: usize| {
+            let line_text = format!(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl {comment}"
+            );
+            let mut entry =
+                toride_ssh::authorized_keys::parse::parse_authorized_keys_contents(&line_text)
+                    .expect("synthetic entry must parse")
+                    .pop()
+                    .expect("one entry");
+            entry.line_number = line;
+            entry
         };
         let entries = vec![mk("third", 3), mk("first", 1), mk("second", 2)];
         let out = convert_authorized_keys(entries);

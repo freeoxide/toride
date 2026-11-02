@@ -1,7 +1,8 @@
 //! Proxy service management via systemd.
 //!
 //! Provides methods for managing the systemd service units for Nginx
-//! and Caddy using the `toride-service` crate.
+//! and Caddy, issuing `systemctl` through the shared runner. Unit names
+//! are hardcoded (`nginx`, `caddy`), so no name reaches argv from callers.
 
 use crate::error::{Error, Result};
 use toride_runner::{CommandSpec, Runner};

@@ -16,14 +16,10 @@ use crate::client::Mise;
 use crate::error::MiseResult;
 use crate::tool::ToolSpec;
 
-// ---------------------------------------------------------------------------
-// EnvRequest
-// ---------------------------------------------------------------------------
-
 /// Parameters for a `mise env` query.
 ///
 /// Controls which tools and options are passed to the `mise env` sub-command.
-/// All fields are optional — an empty request resolves the environment for the
+/// All fields are optional: an empty request resolves the environment for the
 /// currently active tools in the working directory.
 ///
 /// Construct with [`EnvRequest::new`] and chain builder methods.
@@ -35,8 +31,13 @@ pub struct EnvRequest {
     /// Working directory override for the query.
     pub cwd: Option<Utf8PathBuf>,
     /// Include default / shell-profile environment variables.
+    ///
+    /// mise 2026.6.14 has no flag for this, so the field is accepted but
+    /// nothing is emitted; `mise env` output is unchanged when it is set.
     pub include_default: bool,
-    /// Output format hint (e.g. `"json"`, `"dotenv"`). Defaults to JSON.
+    /// Output format hint (`"json"`, `"dotenv"`, or a shell name). Selects
+    /// among the `--json` / `--dotenv` / `--shell` flags; mise 2026.6.14 has
+    /// no literal `--format` flag.
     pub format: Option<String>,
     /// Output in dotenv format (`KEY=VALUE` lines).
     pub dotenv: bool,
@@ -107,10 +108,6 @@ impl EnvRequest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MiseEnv
-// ---------------------------------------------------------------------------
-
 /// A resolved mise environment snapshot.
 ///
 /// Contains the full set of environment variables that mise would set, plus
@@ -168,10 +165,6 @@ impl MiseEnv {
     }
 }
 
-// ---------------------------------------------------------------------------
-// EnvEntry
-// ---------------------------------------------------------------------------
-
 /// A single environment variable entry (borrowed key-value pair).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvEntry<'a> {
@@ -207,10 +200,6 @@ pub struct ExtendedEnvEntry {
     pub source: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Mise impl — env methods
-// ---------------------------------------------------------------------------
-
 impl Mise {
     /// Resolve the environment for the current directory and active tools.
     ///
@@ -224,23 +213,27 @@ impl Mise {
         let mut args: Vec<String> = Vec::new();
         args.push("env".into());
 
-        // Format: dotenv takes precedence over JSON.
-        if req.dotenv {
+        // Format: dotenv takes precedence over JSON, then an explicit format
+        // hint, then JSON.
+        if req.dotenv || req.format.as_deref() == Some("dotenv") {
             args.push("--dotenv".into());
         } else if let Some(ref shell) = req.shell {
             args.push("--shell".into());
             args.push(shell.clone());
+        } else if let Some(format) = req
+            .format
+            .as_deref()
+            .filter(|f| !f.eq_ignore_ascii_case("json"))
+        {
+            args.push("--shell".into());
+            args.push(format.to_owned());
         } else {
             args.push("--json".into());
         }
 
         if let Some(ref cwd) = req.cwd {
-            args.push("--cwd".into());
+            args.push("--cd".into());
             args.push(cwd.to_string());
-        }
-
-        if req.include_default {
-            args.push("--default".into());
         }
 
         if req.redacted {
@@ -249,12 +242,6 @@ impl Mise {
 
         if req.values_only {
             args.push("--values".into());
-        }
-
-        if let Some(ref format) = req.format {
-            // Only add --format if it differs from the resolved output mode.
-            args.push("--format".into());
-            args.push(format.clone());
         }
 
         for tool in &req.tools {
@@ -273,7 +260,6 @@ impl Mise {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                // Handle "export KEY=VALUE" from shell mode.
                 let line = line.strip_prefix("export ").unwrap_or(line);
                 if let Some((key, value)) = line.split_once('=') {
                     let value = value.trim_matches('"').trim_matches('\'');
@@ -291,7 +277,6 @@ impl Mise {
             });
         }
 
-        // For JSON mode, handle empty output gracefully.
         let output = self.run_checked(args).await?;
         let raw = output.stdout_trimmed();
         let trimmed = raw.trim();
@@ -356,7 +341,6 @@ impl Mise {
         let raw = output.stdout_trimmed();
         let trimmed = raw.trim();
 
-        // Handle empty / null / {} gracefully.
         if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
             return Ok(Vec::new());
         }
@@ -380,10 +364,6 @@ impl Mise {
         Ok(entries)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

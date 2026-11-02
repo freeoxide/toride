@@ -38,7 +38,6 @@ fn make_paths(dir: &tempfile::TempDir) -> Fail2BanPaths {
         config_file: base.join("config").join("config.json"),
         data_dir: base.join("data"),
         ban_db: base.join("data").join("bans.json"),
-        pid_file: base.join("data").join("fail2ban.pid"),
         log_dir: base.join("data").join("logs"),
         journal_dir: base.join("data").join("journals"),
     }
@@ -488,7 +487,7 @@ fn jail_status_nonexistent_returns_not_found() {
 fn purge_expired_returns_empty_when_no_expired_bans() {
     let (_dir, manager) = setup();
 
-    let expired = manager.purge_expired().unwrap();
+    let expired = manager.purge_expired(ExecutionMode::DryRun).unwrap();
     assert_eq!(expired, Vec::new());
 }
 
@@ -541,7 +540,7 @@ fn purge_expired_removes_expired_bans() {
     let store_json = serde_json::to_string_pretty(&store_data).unwrap();
     std::fs::write(dir.path().join("data").join("bans.json"), store_json).unwrap();
 
-    let expired = manager.purge_expired().unwrap();
+    let expired = manager.purge_expired(ExecutionMode::DryRun).unwrap();
     assert_eq!(expired.len(), 1);
     assert_eq!(
         expired[0].ip,
@@ -989,7 +988,7 @@ fn test_purge_expired_with_mixed_bans() {
     let store_json = serde_json::to_string_pretty(&store_data).unwrap();
     std::fs::write(dir.path().join("data").join("bans.json"), store_json).unwrap();
 
-    let purged = manager.purge_expired().unwrap();
+    let purged = manager.purge_expired(ExecutionMode::DryRun).unwrap();
     assert_eq!(purged.len(), 2);
     let purged_ips: Vec<std::net::IpAddr> = purged.iter().map(|e| e.ip).collect();
     assert!(purged_ips.contains(&"10.0.0.1".parse::<std::net::IpAddr>().unwrap()));
@@ -1028,7 +1027,6 @@ fn test_manager_log_level_returns_config_value() {
         global: crate::config::GlobalConfig {
             scan_interval: 10,
             log_level: "debug".to_string(),
-            pid_file: None,
             max_history: 1000,
         },
     };
@@ -1080,4 +1078,127 @@ fn test_scan_jail_then_ban_ip_then_unban_ip_full_cycle() {
         js.total_bans >= 1,
         "History should contain at least 1 entry"
     );
+}
+
+/// Purging an expired ban in Execute mode must run the jail's unban action so
+/// expiry also lifts the firewall block (verified through a marker file the
+/// action's real `sh -c` invocation appends to).
+#[cfg(target_os = "linux")]
+#[test]
+fn purge_expired_executes_the_jails_unban_action() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("auth.log");
+    write_sample_log(&log_path);
+    let marker = dir.path().join("unbanned.log");
+
+    let mut config = make_config(&log_path);
+    config.actions.insert(
+        "marker-unban".to_string(),
+        crate::config::ActionConfig {
+            commands: crate::types::PlatformCommands::new(
+                vec![format!("printf '%s\\n' <ip> >> {}", marker.display())],
+                vec![],
+                vec![],
+            ),
+            validation_commands: Vec::new(),
+        },
+    );
+    let sshd = config.jails.get_mut("sshd").unwrap();
+    sshd.unban_action = Some("marker-unban".to_string());
+
+    let paths = make_paths(&dir);
+    let manager = Fail2BanManager::new(config, paths).unwrap();
+
+    // Seed the store with one already-expired ban for the loaded jail.
+    let store = crate::store::Store::new(manager.paths().ban_db.clone());
+    store
+        .add_ban(&crate::types::BanEntry {
+            ip: "203.0.113.9".parse().unwrap(),
+            prefix: 32,
+            banned_at: Utc::now() - Duration::seconds(7200),
+            expires_at: Some(Utc::now() - Duration::seconds(1)),
+            jail_name: "sshd".to_string(),
+            fail_count: 5,
+            last_fail_at: Utc::now() - Duration::seconds(7200),
+            reason: None,
+        })
+        .unwrap();
+
+    let purged = manager.purge_expired(ExecutionMode::Execute).unwrap();
+    assert_eq!(purged.len(), 1);
+
+    let marker_content =
+        std::fs::read_to_string(&marker).expect("the unban action executed for the purged entry");
+    assert!(
+        marker_content.contains("203.0.113.9"),
+        "action received the purged IP: {marker_content}"
+    );
+}
+
+#[test]
+fn purge_expired_in_dry_run_skips_the_unban_action() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("auth.log");
+    write_sample_log(&log_path);
+    let marker = dir.path().join("unbanned.log");
+
+    let mut config = make_config(&log_path);
+    config.actions.insert(
+        "marker-unban".to_string(),
+        crate::config::ActionConfig {
+            commands: crate::types::PlatformCommands::new(
+                vec![format!("printf '%s\\n' <ip> >> {}", marker.display())],
+                vec![],
+                vec![],
+            ),
+            validation_commands: Vec::new(),
+        },
+    );
+    let sshd = config.jails.get_mut("sshd").unwrap();
+    sshd.unban_action = Some("marker-unban".to_string());
+
+    let paths = make_paths(&dir);
+    let manager = Fail2BanManager::new(config, paths).unwrap();
+
+    let store = crate::store::Store::new(manager.paths().ban_db.clone());
+    store
+        .add_ban(&crate::types::BanEntry {
+            ip: "203.0.113.9".parse().unwrap(),
+            prefix: 32,
+            banned_at: Utc::now() - Duration::seconds(7200),
+            expires_at: Some(Utc::now() - Duration::seconds(1)),
+            jail_name: "sshd".to_string(),
+            fail_count: 5,
+            last_fail_at: Utc::now() - Duration::seconds(7200),
+            reason: None,
+        })
+        .unwrap();
+
+    let purged = manager.purge_expired(ExecutionMode::DryRun).unwrap();
+    assert_eq!(purged.len(), 1);
+    assert!(!marker.exists(), "dry-run purge must not execute actions");
+}
+
+/// stop() must actually gate operations, not only flip a status bit.
+#[test]
+fn stopped_manager_refuses_scan_and_ban_verbs() {
+    let (_dir, mut manager) = setup();
+    manager.stop();
+
+    assert!(manager.scan_all(ExecutionMode::DryRun).is_err());
+    assert!(manager.scan_jail("sshd", ExecutionMode::DryRun).is_err());
+    let ip: std::net::IpAddr = "192.0.2.10".parse().unwrap();
+    assert!(manager.ban_ip("sshd", ip, ExecutionMode::DryRun).is_err());
+    assert!(manager.unban_ip("sshd", ip, ExecutionMode::DryRun).is_err());
+
+    let status = manager.status().unwrap();
+    assert!(!status.running);
+    assert!(
+        !status.jails[0].active,
+        "jail status reflects stopped state"
+    );
+
+    manager.start();
+    assert!(manager.scan_all(ExecutionMode::DryRun).is_ok());
+    assert!(manager.status().unwrap().jails[0].active);
 }

@@ -9,6 +9,9 @@ readme = "README.md"
 keywords = ["audit", "auditd", "integrity", "aide", "logging"]
 categories = ["os", "filesystem"]
 
+[lib]
+bench = false
+
 [[bin]]
 name = "toride-audit"
 path = "src/bin/toride_audit.rs"
@@ -41,7 +44,7 @@ logs = ["client"]
 ids = []
 
 ## Configuration file parsing and management.
-config = ["client", "dep:regex"]
+config = ["client"]
 
 # === Meta / downstream features ===
 
@@ -64,7 +67,6 @@ which = { workspace = true }
 duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
-regex = { version = "1", optional = true }
 similar = "2"
 clap = { version = "4", features = ["derive"], optional = true }
 
@@ -73,6 +75,12 @@ insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "integrity_status"
+harness = false
+required-features = ["integrity"]
 
 [lints]
 workspace = true

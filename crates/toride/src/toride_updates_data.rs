@@ -39,8 +39,8 @@ pub struct UpdatesDataBundle {
 /// Manages periodic async updates collection with a 60s whole-bundle cache so
 /// the `apt-check` / `dnf check-update` / `systemctl` probes skip cache-hit ticks.
 pub struct UpdatesCollector {
-    rx: Option<oneshot::Receiver<(UpdatesDataBundle, bool)>>,
-    cached_bundle: Option<UpdatesDataBundle>,
+    rx: Option<oneshot::Receiver<(std::sync::Arc<UpdatesDataBundle>, bool)>>,
+    cached_bundle: Option<std::sync::Arc<UpdatesDataBundle>>,
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
@@ -88,28 +88,33 @@ impl UpdatesCollector {
             self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
         let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
+        // TTL hit: re-ship the cached Arc by refcount, no probe task.
+        if use_cache && let Some(bundle) = cached_bundle {
+            tokio::spawn(async move {
+                let _ = tx.send((bundle, true));
+            });
+            return;
+        }
         tokio::spawn(async move {
-            let outcome: (UpdatesDataBundle, bool) = match tokio::time::timeout(
-                PROBE_DEADLINE,
-                collect_real_updates(use_cache, cached_bundle),
-            )
-            .await
-            {
-                Ok(tuple) => tuple,
-                Err(_elapsed) => {
-                    tracing::warn!("updates collection exceeded {:?} deadline", PROBE_DEADLINE);
-                    let reason =
-                        format!("updates data collection timed out after {PROBE_DEADLINE:?}");
-                    (empty_bundle_with_reason(reason), false)
-                }
-            };
-            let _ = tx.send(outcome);
+            let outcome: (UpdatesDataBundle, bool) =
+                match tokio::time::timeout(PROBE_DEADLINE, collect_real_updates(false, None)).await
+                {
+                    Ok(tuple) => tuple,
+                    Err(_elapsed) => {
+                        tracing::warn!("updates collection exceeded {:?} deadline", PROBE_DEADLINE);
+                        let reason =
+                            format!("updates data collection timed out after {PROBE_DEADLINE:?}");
+                        (empty_bundle_with_reason(reason), false)
+                    }
+                };
+            let _ = tx.send((std::sync::Arc::new(outcome.0), outcome.1));
         });
     }
 
     /// Returns `Some(bundle)` once the collection completes, `None` while
     /// pending; a degraded bundle is never cached, so the next tick retries.
-    pub async fn poll(&mut self) -> Option<UpdatesDataBundle> {
+    /// A cache-hit poll re-ships the cached `Arc` by refcount.
+    pub async fn poll(&mut self) -> Option<std::sync::Arc<UpdatesDataBundle>> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
@@ -117,7 +122,7 @@ impl UpdatesCollector {
                     && bundle.available
                     && !used_cache
                 {
-                    self.cached_bundle = Some(bundle.clone());
+                    self.cached_bundle = Some(std::sync::Arc::clone(bundle));
                     self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
@@ -128,7 +133,6 @@ impl UpdatesCollector {
     }
 
     /// Invalidate the bundle cache so the next collection re-runs the probes.
-    #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
         self.cached_bundle = None;
         self.bundle_fresh_at = None;
@@ -376,12 +380,12 @@ mod tests {
     async fn poll_does_not_overwrite_cache_with_empty_on_degraded_bundle() {
         let mut collector = UpdatesCollector::new();
         let prior = available_bundle_with_finding();
-        collector.cached_bundle = Some(prior.clone());
+        collector.cached_bundle = Some(std::sync::Arc::new(prior.clone()));
         collector.bundle_fresh_at = Some(std::time::Instant::now());
 
         let (tx, rx) = oneshot::channel();
         tx.send((
-            empty_bundle_with_reason("timed out after 30s".into()),
+            std::sync::Arc::new(empty_bundle_with_reason("timed out after 30s".into())),
             false,
         ))
         .unwrap();
@@ -415,7 +419,7 @@ mod tests {
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = UpdatesCollector::new();
-        collector.cached_bundle = Some(empty_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(empty_bundle()));
         collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
         assert!(collector.cached_bundle.is_none());
@@ -499,7 +503,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn cache_hit_returns_cached_bundle_without_reprobing() {
         let mut collector = UpdatesCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 
@@ -543,7 +547,7 @@ mod cadence_oracle {
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = UpdatesCollector::new();
-        collector.cached_bundle = Some(sentinel_bundle());
+        collector.cached_bundle = Some(std::sync::Arc::new(sentinel_bundle()));
         let primed = std::time::Instant::now();
         collector.bundle_fresh_at = Some(primed);
 

@@ -2,7 +2,7 @@
 //!
 //! Detects Docker installations, firewall backend configuration, published
 //! container ports, and common reverse proxy setups (Traefik, Dokploy).
-//! All findings are informational or warnings — this module never mutates state.
+//! All findings are informational or warnings: this module never mutates state.
 
 use crate::command::CommandRunner;
 use crate::spec::{Finding, Severity};
@@ -19,10 +19,13 @@ pub fn is_traefik_installed<R: CommandRunner + ?Sized>(runner: &R) -> bool {
 }
 
 /// Check if Dokploy is likely installed by looking for its common paths.
-pub fn is_dokploy_installed() -> bool {
-    std::path::Path::new("/etc/dokploy").exists()
-        || std::path::Path::new("/opt/dokploy").exists()
-        || std::path::Path::new("/root/.dokploy").exists()
+///
+/// The existence probes go through the runner's filesystem view, so a
+/// forwarding runner answers for the host it targets.
+pub fn is_dokploy_installed<R: CommandRunner + ?Sized>(runner: &R) -> bool {
+    runner.file_exists("/etc/dokploy")
+        || runner.file_exists("/opt/dokploy")
+        || runner.file_exists("/root/.dokploy")
 }
 
 /// Docker firewall backend type.
@@ -87,7 +90,7 @@ pub fn inspect_docker<R: CommandRunner + ?Sized>(runner: &R) -> DockerInspection
     let iptables_enabled = detect_iptables_management(runner);
     let published_ports = detect_published_ports(runner);
     let traefik_detected = is_traefik_installed(runner);
-    let dokploy_detected = is_dokploy_installed();
+    let dokploy_detected = is_dokploy_installed(runner);
 
     DockerInspection {
         installed,
@@ -99,24 +102,52 @@ pub fn inspect_docker<R: CommandRunner + ?Sized>(runner: &R) -> DockerInspection
     }
 }
 
+/// Read the Docker daemon configuration, whichever variant exists.
+///
+/// Both the `iptables` and `firewall-backend` checks consult the same path
+/// list so they can never disagree about which file governs the answer.
+fn read_daemon_config<R: CommandRunner + ?Sized>(runner: &R) -> Option<String> {
+    ["/etc/docker/daemon.json", "/etc/docker/daemon.jsonc"]
+        .iter()
+        .find_map(|path| runner.read_file(path).ok())
+}
+
+/// Strip `//`-comment lines so jsonc files do not defeat key lookup.
+fn strip_jsonc_comments(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Extract the raw value token following `"key"` in a JSON object body.
+///
+/// Handles arbitrary whitespace around the colon, which naive substring
+/// matching (`"iptables" : false`) missed. The value is returned verbatim
+/// up to the closing `,` or `}`.
+fn json_value_after_key<'a>(content: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("\"{key}\"");
+    let pos = content.find(&needle)?;
+    let after_key = content[pos + needle.len()..].trim_start();
+    let after_colon = after_key.strip_prefix(':')?.trim_start();
+    let end = after_colon.find([',', '}']).unwrap_or(after_colon.len());
+    Some(after_colon[..end].trim())
+}
+
 /// Detect Docker's firewall backend by reading daemon.json.
 fn detect_docker_firewall_backend<R: CommandRunner + ?Sized>(runner: &R) -> DockerFirewallBackend {
-    // Check daemon.json for firewall-backend setting
-    let daemon_json_paths = ["/etc/docker/daemon.json", "/etc/docker/daemon.jsonc"];
-
-    for path in &daemon_json_paths {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let lower = content.to_ascii_lowercase();
-            if lower.contains("\"firewall-backend\"") {
-                if lower.contains("\"nftables\"") {
-                    return DockerFirewallBackend::Nftables;
-                }
-                if lower.contains("\"iptables\"") {
-                    return DockerFirewallBackend::Iptables;
-                }
-                if lower.contains("\"none\"") {
-                    return DockerFirewallBackend::None;
-                }
+    if let Some(content) = read_daemon_config(runner).map(|c| strip_jsonc_comments(&c)) {
+        if let Some(value) = json_value_after_key(&content, "firewall-backend") {
+            let value = value.trim_matches('"');
+            if value.eq_ignore_ascii_case("nftables") {
+                return DockerFirewallBackend::Nftables;
+            }
+            if value.eq_ignore_ascii_case("iptables") {
+                return DockerFirewallBackend::Iptables;
+            }
+            if value.eq_ignore_ascii_case("none") {
+                return DockerFirewallBackend::None;
             }
         }
     }
@@ -133,19 +164,13 @@ fn detect_docker_firewall_backend<R: CommandRunner + ?Sized>(runner: &R) -> Dock
 
 /// Detect whether Docker iptables management is enabled.
 fn detect_iptables_management<R: CommandRunner + ?Sized>(runner: &R) -> Option<bool> {
-    // Check daemon.json for "iptables": false
-    let daemon_json_paths = ["/etc/docker/daemon.json"];
-
-    for path in &daemon_json_paths {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let lower = content.to_ascii_lowercase();
-            if lower.contains("\"iptables\"") {
-                if lower.contains("\"iptables\": false") || lower.contains("\"iptables\":false") {
-                    return Some(false);
-                }
-                if lower.contains("\"iptables\": true") || lower.contains("\"iptables\":true") {
-                    return Some(true);
-                }
+    if let Some(content) = read_daemon_config(runner).map(|c| strip_jsonc_comments(&c)) {
+        if let Some(value) = json_value_after_key(&content, "iptables") {
+            if value.eq_ignore_ascii_case("false") {
+                return Some(false);
+            }
+            if value.eq_ignore_ascii_case("true") {
+                return Some(true);
             }
         }
     }
@@ -263,7 +288,7 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
     let info = inspect_docker(runner);
 
     if !info.installed {
-        // Docker not installed — nothing to check
+        // Docker not installed: nothing to check
         return findings;
     }
 
@@ -438,7 +463,7 @@ pub fn check_reverse_proxy(runner: &dyn CommandRunner) -> Vec<Finding> {
     if runner.binary_exists("caddy") {
         detected_proxies.push("Caddy");
     }
-    if is_dokploy_installed() {
+    if is_dokploy_installed(runner) {
         detected_proxies.push("Dokploy");
     }
 
@@ -466,35 +491,34 @@ pub fn check_reverse_proxy(runner: &dyn CommandRunner) -> Vec<Finding> {
 }
 
 /// Check for routing/forwarding issues.
+///
+/// Config and `/proc` reads go through the runner's filesystem view, so a
+/// forwarding runner answers for the host it targets.
 #[allow(clippy::too_many_lines)]
-pub fn check_routing(_runner: &dyn CommandRunner) -> Vec<Finding> {
+pub fn check_routing(runner: &dyn CommandRunner) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    // Check sysctl forwarding state
     let sysctl_paths = ["/etc/ufw/sysctl.conf", "/etc/sysctl.conf"];
     let mut ipv4_forwarding = false;
     let mut ipv6_forwarding = false;
 
     for path in &sysctl_paths {
-        if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(content) = runner.read_file(path) {
             let (v4, v6) = crate::nat::parse_forwarding_state(&content);
             ipv4_forwarding = ipv4_forwarding || v4;
             ipv6_forwarding = ipv6_forwarding || v6;
         }
     }
 
-    // Also check the running kernel state
-    if let Ok(content) = std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward") {
-        let val = content.trim();
-        if val == "1" {
-            ipv4_forwarding = true;
-        }
+    if let Ok(content) = runner.read_file("/proc/sys/net/ipv4/ip_forward")
+        && content.trim() == "1"
+    {
+        ipv4_forwarding = true;
     }
-    if let Ok(content) = std::fs::read_to_string("/proc/sys/net/ipv6/conf/all/forwarding") {
-        let val = content.trim();
-        if val == "1" {
-            ipv6_forwarding = true;
-        }
+    if let Ok(content) = runner.read_file("/proc/sys/net/ipv6/conf/all/forwarding")
+        && content.trim() == "1"
+    {
+        ipv6_forwarding = true;
     }
 
     if ipv4_forwarding {
@@ -523,7 +547,7 @@ pub fn check_routing(_runner: &dyn CommandRunner) -> Vec<Finding> {
 
     // Check if DEFAULT_FORWARD_POLICY is set when forwarding is enabled
     if ipv4_forwarding {
-        if let Ok(content) = std::fs::read_to_string("/etc/default/ufw") {
+        if let Ok(content) = runner.read_file("/etc/default/ufw") {
             let config = crate::config::parse_default_ufw(&content);
             match &config.default_forward_policy {
                 Some(policy) => {
@@ -569,6 +593,41 @@ pub fn check_routing(_runner: &dyn CommandRunner) -> Vec<Finding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_value_after_key_handles_space_before_colon() {
+        // Regression: '"iptables" : false' defeated the fixed-spacing
+        // substring match and fell through to Some(true), firing a false
+        // docker:iptables:enabled warning on correctly configured hosts.
+        let content = "{ \"iptables\" : false }";
+        assert_eq!(json_value_after_key(content, "iptables"), Some("false"));
+
+        let tight = "{\"iptables\":false}";
+        assert_eq!(json_value_after_key(tight, "iptables"), Some("false"));
+
+        let spaced = "{\n  \"iptables\" :   true,\n  \"debug\": false\n}";
+        assert_eq!(json_value_after_key(spaced, "iptables"), Some("true"));
+    }
+
+    #[test]
+    fn json_value_after_key_handles_jsonc_comments() {
+        let content = "// managed by ops\n{\n  // disable docker's iptables management\n  \"iptables\": false\n}";
+        let stripped = strip_jsonc_comments(content);
+        assert_eq!(
+            json_value_after_key(&stripped, "iptables"),
+            Some("false"),
+            "comment lines must not defeat key lookup"
+        );
+    }
+
+    #[test]
+    fn json_value_after_key_reads_firewall_backend() {
+        let content = "{ \"firewall-backend\": \"nftables\" }";
+        assert_eq!(
+            json_value_after_key(content, "firewall-backend"),
+            Some("\"nftables\"")
+        );
+    }
 
     #[test]
     fn parse_single_port_mapping_should_handle_common_formats() {

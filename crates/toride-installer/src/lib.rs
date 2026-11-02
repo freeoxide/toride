@@ -17,14 +17,14 @@
 //!   is wired today).
 //!
 //! Adding a new tool (node, bun, …) means implementing [`ReleaseResolver`]
-//! and constructing a [`Tool`] — the engine is otherwise unchanged.
+//! and constructing a [`Tool`]: the engine is otherwise unchanged.
 //!
 //! ## Feature gate
 //!
 //! The `http` feature (off the default set) carries the install engine and
 //! everything that needs reqwest, sha2 hashing, or gzip/xz extraction. The
 //! offline detector ([`Detector`], [`ToolVersion`], [`Freshness`],
-//! [`latest`], [`LatestCache`]) is what the default build carries — a
+//! [`latest`], [`LatestCache`]) is what the default build carries: a
 //! detection-only, C-build-script-free graph.
 //!
 //! ## Pipeline
@@ -33,15 +33,15 @@
 //!    request is `"latest"`).
 //! 2. **Download** via `reqwest`, following redirects, capped at
 //!    [`crate::installer::DEFAULT_MAX_BYTES`].
-//! 3. **Verify** — the published digest when the tool publishes one
+//! 3. **Verify**: the published digest when the tool publishes one
 //!    (sha256, or sha512 for 128-hex digests); otherwise the documented
 //!    size-floor sanity check
 //!    ([`crate::installer::DEFAULT_MIN_BYTES`]).
-//! 4. **Extract** — [`Binary`][ArtifactKind::Binary] placed directly,
+//! 4. **Extract**: [`Binary`][ArtifactKind::Binary] placed directly,
 //!    [`Tarball`][ArtifactKind::Tarball] decompressed (gzip **or** xz) and
 //!    the configured entry located. Both kinds are implemented so the
 //!    framework is genuinely general.
-//! 5. **Install** — written atomically (temp file in the same dir, then
+//! 5. **Install**: written atomically (temp file in the same dir, then
 //!    rename) into the install dir and `chmod 0o755` on Unix.
 //!
 //! ## Quick start (mise)
@@ -112,14 +112,14 @@ pub mod target;
 pub mod tool;
 pub mod tools;
 
-// Re-exports — the public API surface.
+// Re-exports: the public API surface.
 pub use error::{Error, Result};
 #[cfg(feature = "http")]
 pub use installer::{
     DEFAULT_MAX_BYTES, DEFAULT_MIN_BYTES, Installer, InstallerBuilder, TemplateResolver, Verifier,
     install_tool,
 };
-pub use installer::{SHA256_HEX_LEN, SHA512_HEX_LEN};
+pub use installer::{SHA256_HEX_LEN, SHA512_HEX_LEN, extract_digest_from_checksum_body};
 #[cfg(feature = "http")]
 pub use progress::Progress;
 #[cfg(feature = "http")]

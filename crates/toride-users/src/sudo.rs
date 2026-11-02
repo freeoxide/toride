@@ -42,12 +42,18 @@ fn sudoers_dropin_contained(paths: &UserPaths, username: &str) -> Result<PathBuf
 /// Creates `/etc/sudoers.d/<username>` with the appropriate rule.
 /// Optionally sets `NOPASSWD` mode.
 ///
+/// The content is written to a probe file inside `sudoers.d` and validated
+/// with `visudo -c -f` before anything lands at the final path: sudo refuses
+/// to run while any file in `sudoers.d` has a syntax error, so an invalid
+/// drop-in left in place would brick the system's sudo until manual removal.
+/// Only a validated file is atomically renamed into place at mode 0440.
+///
 /// # Errors
 ///
 /// - [`Error::Validation`] if the username is invalid.
 /// - [`Error::UserExists`] if a sudoers drop-in already exists for this user.
 /// - [`Error::SudoError`] if the drop-in path escapes `sudoers.d` or the
-///   written file fails `visudo -c` validation.
+///   content fails `visudo -c` validation.
 /// - [`Error::Io`] if the file cannot be written.
 pub fn grant_sudo(paths: &UserPaths, username: &str, nopasswd: bool) -> Result<()> {
     let dropin = sudoers_dropin_contained(paths, username)?;
@@ -62,14 +68,53 @@ pub fn grant_sudo(paths: &UserPaths, username: &str, nopasswd: bool) -> Result<(
     let content = render::render_sudoers_entry(username, "ALL", nopasswd, Some("ALL"));
     let content = format!("# Managed by toride\n{content}\n");
 
-    // Write with mode 0440 (sudoers requirement)
-    write_sudoers_file(&dropin, &content)?;
+    std::fs::create_dir_all(&paths.sudoers_d)?;
+    let probe = unique_probe_path(&paths.sudoers_d, username);
+    let grant = install_validated_dropin(&dropin, &probe, &content);
 
-    // Validate
-    validate_sudoers(&dropin)?;
+    if grant.is_err()
+        && let Err(cleanup_error) = std::fs::remove_file(&probe)
+        && cleanup_error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            probe = %probe.display(),
+            error = %cleanup_error,
+            "could not remove the sudoers validation probe"
+        );
+    }
+    grant?;
 
     tracing::info!("granted sudo to {username} (nopasswd={nopasswd})");
     Ok(())
+}
+
+/// Write `content` to `probe`, validate it with `visudo -c -f`, and only then
+/// atomically rename the probe onto `dropin` (mode 0440, the sudoers
+/// requirement).
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] for filesystem failures and propagates
+/// [`validate_sudoers`]'s error when the content is rejected.
+fn install_validated_dropin(dropin: &Path, probe: &Path, content: &str) -> Result<()> {
+    std::fs::write(probe, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(probe, std::fs::Permissions::from_mode(0o440))?;
+    }
+    validate_sudoers(probe)?;
+    std::fs::rename(probe, dropin)?;
+    Ok(())
+}
+
+/// A collision-resistant probe path inside `sudoers.d` for `username`.
+fn unique_probe_path(dir: &Path, username: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    dir.join(format!(".toride-{username}-sudoers-probe-{nanos}"))
 }
 
 /// Revoke sudo access for a user by removing their drop-in file.
@@ -130,54 +175,46 @@ pub fn has_sudo(paths: &UserPaths, username: &str) -> Result<bool> {
     Ok(false)
 }
 
-/// Write a sudoers file with the correct permissions (0440).
-fn write_sudoers_file(path: &Path, content: &str) -> Result<()> {
-    // Ensure parent directory exists
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    std::fs::write(path, content)?;
-
-    // Set permissions to 0440
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o440);
-        std::fs::set_permissions(path, perms)?;
-    }
-
-    Ok(())
-}
-
 /// Validate a sudoers file using `visudo -c -f <path>`.
+///
+/// The command's merged output and exit code are captured even on failure;
+/// visudo's syntax-error exit (4) or a `syntax error`/`parse error` in the
+/// output maps to [`Error::SudoError`], other failures to
+/// [`Error::CommandFailed`] with the real exit code.
 ///
 /// # Errors
 ///
-/// Returns [`Error::SudoError`] if `visudo` reports a syntax error or the
-/// binary is not found.
+/// Returns [`Error::BinaryNotFound`] if `visudo` is not on `$PATH`,
+/// [`Error::SudoError`] on a syntax error, and [`Error::CommandFailed`] for
+/// other non-zero exits.
 #[cfg(feature = "client")]
 pub fn validate_sudoers(path: &Path) -> Result<()> {
     let visudo = which::which("visudo").map_err(|_| Error::BinaryNotFound("visudo".into()))?;
 
-    let path_str = path.to_string_lossy().to_string();
-    let output = duct::cmd(&visudo, ["-c", "-f", &path_str])
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "visudo".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
-
-    if output.contains("syntax error") || output.contains("parse error") {
+    let args = [
+        "-c".to_owned(),
+        "-f".to_owned(),
+        path.to_string_lossy().into_owned(),
+    ];
+    let output = crate::capture::run_captured("visudo", &visudo, &args)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let text = crate::capture::merged_output_text(&output);
+    let syntax_error = output.status.code() == Some(4)
+        || text.contains("syntax error")
+        || text.contains("parse error");
+    if syntax_error {
         return Err(Error::SudoError(format!(
-            "sudoers validation failed for {}: {output}",
+            "sudoers validation failed for {}: {text}",
             path.display()
         )));
     }
-
-    Ok(())
+    Err(Error::CommandFailed {
+        program: "visudo".to_owned(),
+        code: output.status.code(),
+        stderr: text,
+    })
 }
 
 /// Validate a sudoers file for non-client builds.
@@ -200,9 +237,53 @@ pub fn validate_sudoers(path: &Path) -> Result<()> {
     )))
 }
 
+/// The lockout guard for `grant_sudo`: validation must run on a probe file
+/// and a rejected grant must leave neither the drop-in nor the probe behind,
+/// because sudo refuses to run while sudoers.d holds a syntax error.
+#[cfg(all(test, feature = "client"))]
+mod grant_tests {
+    use super::*;
+    use crate::paths::UserPaths;
+
+    #[cfg(feature = "client")]
+    fn sudoers_dir_with_visudo_absent() -> (tempfile::TempDir, UserPaths) {
+        // This host has no visudo on PATH in the test sandbox; if a real
+        // visudo IS found the test would exercise the success path instead,
+        // so skip in that case.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = UserPaths::with_base(dir.path());
+        (dir, paths)
+    }
+
+    #[test]
+    fn grant_sudo_leaves_no_files_behind_when_validation_cannot_run() {
+        if which::which("visudo").is_ok() {
+            return;
+        }
+        let (dir, paths) = sudoers_dir_with_visudo_absent();
+
+        let err = grant_sudo(&paths, "alice", false)
+            .expect_err("grant must fail when visudo cannot validate");
+
+        assert!(
+            matches!(err, Error::BinaryNotFound(ref b) if b == "visudo"),
+            "expected BinaryNotFound(visudo), got {err:?}"
+        );
+        let entries: Vec<String> = std::fs::read_dir(&paths.sudoers_d)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "a failed grant must leave no drop-in and no probe file: {entries:?}"
+        );
+        assert!(!dir.path().join("sudoers.d/alice").exists());
+    }
+}
+
 #[cfg(all(test, not(feature = "client")))]
 mod no_client_tests {
-    use super::*;
 
     /// Regression: the `not(client)` branch of `validate_sudoers` must NOT be a
     /// silent `Ok(())` no-op, because `grant_sudo` calls it after writing a

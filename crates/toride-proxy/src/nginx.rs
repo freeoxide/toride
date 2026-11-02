@@ -80,7 +80,7 @@ impl<'a> NginxManager<'a> {
     ///
     /// Renders the server block to Nginx config and writes it to
     /// `sites-available`. Optionally creates a symlink in `sites-enabled`.
-    /// A pre-mutation backup of the existing config is created first via
+    /// A pre-mutation backup of the existing site file is created first via
     /// [`crate::backup::create_backup`] so the change can be rolled back.
     ///
     /// # Errors
@@ -111,18 +111,14 @@ impl<'a> NginxManager<'a> {
         let config = render_nginx_server_block_with_headers(block, headers);
         let site_path = self.paths.nginx_site_path(&block.server_name);
 
-        // Ensure the directory exists
         if let Some(parent) = site_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Create a pre-mutation backup before overwriting. The backup captures
-        // the current sites-available directory (and nginx.conf / Caddyfile)
-        // and persists it to `backup_dir` so the change can be rolled back. A
-        // backup failure is non-fatal — we log and continue rather than
-        // blocking a legitimate write, matching how operators expect "best
-        // effort" snapshots to behave.
-        match crate::backup::create_backup(self.paths) {
+        // Best-effort pre-mutation backup of exactly the file being
+        // overwritten; a failure logs and continues rather than blocking the
+        // write.
+        match crate::backup::create_backup(&site_path) {
             Ok(snapshot) => {
                 if let Err(e) = crate::backup::save_backup_to_disk(self.paths, &snapshot) {
                     tracing::warn!("nginx: persisting pre-write backup failed (continuing): {e}");
@@ -134,7 +130,7 @@ impl<'a> NginxManager<'a> {
         }
 
         // Site configs are read by nginx (and symlinked into sites-enabled);
-        // write them 0o644 — the daemon-readable convention — rather than the
+        // write them 0o644, the daemon-readable convention, rather than the
         // 0o600 atomic_write default, matching ProxyConfig::write_site_config.
         toride_fs::atomic_write_with_perms(&site_path, &config, 0o644)?;
 
@@ -153,86 +149,38 @@ impl<'a> NginxManager<'a> {
 
     /// Enable a site by creating a symlink in sites-enabled.
     ///
-    /// `domain` is validated as a single, safe path segment before joining onto
-    /// the sites directory, mirroring `ConfigManager`
-    /// — defense-in-depth against traversal-shaped inputs reaching the
-    /// `symlink` primitive.
+    /// Delegates to the shared hardened implementation in
+    /// [`crate::site_links`]: it validates `domain` as a safe path segment
+    /// and publishes the symlink via temp-name plus atomic rename, so
+    /// re-enabling over a dangling link cannot fail EEXIST and no observer
+    /// sees `sites-enabled` without the link.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Validation`] if `domain` is not a safe segment, or an
     /// error if the symlink cannot be created.
     pub fn enable_site(&self, domain: &str) -> Result<()> {
-        validate_site_domain(domain)?;
-
-        let source = self.paths.nginx_site_path(domain);
-        let link = self.paths.nginx_enabled_path(domain);
-
-        if !source.exists() {
-            return Err(Error::NotFound(format!(
-                "site config not found: {}",
-                source.display()
-            )));
-        }
-
-        // Remove existing symlink if present
-        if link.exists() {
-            std::fs::remove_file(&link)?;
-        }
-
-        // Ensure sites-enabled directory exists
-        if let Some(parent) = link.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // `sites-enabled` symlinking is a Unix web-server deployment
-        // convention; other targets have no equivalent deployment layout, so
-        // the operation fails with a clear error instead of pretending to
-        // succeed (and the Windows symlink API needs privileges anyway).
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(&source, &link)?;
-            tracing::info!("nginx: enabled site {}", domain);
-            Ok(())
-        }
-        #[cfg(not(unix))]
-        {
-            Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                format!(
-                    "cannot enable site {domain}: sites-enabled symlinks are only supported on Unix"
-                ),
-            )))
-        }
+        crate::site_links::enable_site(self.paths, domain)
     }
 
     /// Disable a site by removing the symlink from sites-enabled.
     ///
-    /// `domain` is validated as a single, safe path segment before joining onto
-    /// the sites directory, so traversal-shaped inputs cannot delete arbitrary
-    /// files via the `remove_file` call.
+    /// Delegates to [`crate::site_links::disable_site`], which detects the
+    /// link via `symlink_metadata` so a dangling link (one whose target
+    /// disappeared) is still removed.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Validation`] if `domain` is not a safe segment, or an
     /// error if the symlink cannot be removed.
     pub fn disable_site(&self, domain: &str) -> Result<()> {
-        validate_site_domain(domain)?;
-
-        let link = self.paths.nginx_enabled_path(domain);
-
-        if link.exists() {
-            std::fs::remove_file(&link)?;
-            tracing::info!("nginx: disabled site {}", domain);
-        }
-
-        Ok(())
+        crate::site_links::disable_site(self.paths, domain)
     }
 
     /// Remove a site configuration file and its symlink.
     ///
     /// `domain` is validated as a single, safe path segment before joining onto
-    /// the sites directory — defense-in-depth on this delete primitive, so a
+    /// the sites directory: defense-in-depth on this delete primitive, so a
     /// traversal-shaped input cannot target an arbitrary file via the
     /// `remove_file` call on `site_path`.
     ///
@@ -258,6 +206,51 @@ impl<'a> NginxManager<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn enable_site_replaces_a_dangling_symlink_and_disable_removes_it() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let fake = toride_runner::fake::FakeRunner::new();
+        let mgr = NginxManager::new(&fake, &paths);
+
+        std::fs::create_dir_all(&paths.nginx_sites_available).unwrap();
+        std::fs::create_dir_all(&paths.nginx_sites_enabled).unwrap();
+        std::fs::write(paths.nginx_site_path("example.com"), "server {}\n").unwrap();
+        // A dangling link: `Path::exists()` follows it and reports false, so
+        // the old remove-then-symlink sequence failed EEXIST here.
+        std::os::unix::fs::symlink(
+            dir.path().join("gone.conf"),
+            paths.nginx_enabled_path("example.com"),
+        )
+        .unwrap();
+
+        mgr.enable_site("example.com")
+            .expect("re-enabling over a dangling link must replace it");
+        assert_eq!(
+            std::fs::read_link(paths.nginx_enabled_path("example.com")).unwrap(),
+            paths.nginx_site_path("example.com")
+        );
+
+        // Re-point the link at a vanished target and disable: symlink_metadata
+        // must still see and remove the dangling link.
+        std::fs::remove_file(paths.nginx_enabled_path("example.com")).unwrap();
+        std::os::unix::fs::symlink(
+            dir.path().join("vanished.conf"),
+            paths.nginx_enabled_path("example.com"),
+        )
+        .unwrap();
+        mgr.disable_site("example.com")
+            .expect("a dangling link must still be disabled");
+        assert!(
+            paths
+                .nginx_enabled_path("example.com")
+                .symlink_metadata()
+                .is_err(),
+            "the dangling link must be gone"
+        );
+    }
 
     #[test]
     fn test_config_returns_error_on_failure() {
@@ -315,15 +308,16 @@ mod tests {
         let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000");
         mgr.write_site(&block, false).unwrap();
 
-        // Backup directory must now exist and contain a snapshot file.
+        // Backup directory must now exist and contain a snapshot named after
+        // the mutated site file.
         assert!(backup_dir.is_dir());
         let entries: Vec<_> = std::fs::read_dir(backup_dir).unwrap().collect();
         assert!(
             entries.iter().any(|e| {
                 e.as_ref()
-                    .is_ok_and(|e| e.file_name().to_string_lossy().starts_with("proxy-backup-"))
+                    .is_ok_and(|e| e.file_name().to_string_lossy().starts_with("example.com."))
             }),
-            "expected a proxy-backup-*.txt snapshot in backup_dir"
+            "expected an example.com.*.bak snapshot in backup_dir"
         );
 
         // The site file was overwritten with the new config.

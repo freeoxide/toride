@@ -2,18 +2,18 @@
 //!
 //! This directory-level module groups all tool-related functionality:
 //!
-//! - **spec** — Parsing of mise tool specification strings.
-//! - **registry** — Searching the mise tool registry.
-//! - **remote** — Querying remote tool versions available for install.
-//! - **installed** — Inspecting locally installed tools and their status.
-//! - **active** — Listing currently active (resolved) tools.
-//! - **install** — Installing and activating tool versions.
-//! - **uninstall** — Uninstalling and deactivating tool versions.
-//! - **upgrade** — Upgrading installed tools to newer versions.
-//! - **prune** — Removing unused tool installations.
-//! - **plugin** — Managing mise plugins (install, link, uninstall, update).
-//! - **alias** — Managing tool aliases.
-//! - **task** — Managing and running mise tasks.
+//! - **spec**: Parsing of mise tool specification strings.
+//! - **registry**: Searching the mise tool registry.
+//! - **remote**: Querying remote tool versions available for install.
+//! - **installed**: Inspecting locally installed tools and their status.
+//! - **active**: Listing currently active (resolved) tools.
+//! - **install**: Installing and activating tool versions.
+//! - **uninstall**: Uninstalling and deactivating tool versions.
+//! - **upgrade**: Upgrading installed tools to newer versions.
+//! - **prune**: Removing unused tool installations.
+//! - **plugin**: Managing mise plugins (install, link, uninstall, update).
+//! - **alias**: Managing tool aliases.
+//! - **task**: Managing and running mise tasks.
 
 pub mod active;
 pub mod alias;

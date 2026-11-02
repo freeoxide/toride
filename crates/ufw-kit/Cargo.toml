@@ -21,6 +21,7 @@ systemd-zbus = []
 firewall-nft = []
 firewall-iptables = []
 tokio = ["dep:tokio"]
+ssh = ["dep:toride-ssh-exec"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -28,6 +29,7 @@ tracing = { workspace = true }
 which = { workspace = true }
 serde = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
+toride-ssh-exec = { path = "../toride-ssh/crates/exec", version = "0.2.0", optional = true }
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["duct-runner", "fake"] }
 toride-fs = { path = "../toride-fs", version = "0.2.0" }
 toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.2.0" }
@@ -42,8 +44,18 @@ tempfile = "3"
 proptest = "1"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
+# The lib's unit tests run under `cargo test`; in bench mode the libtest
+# harness would receive criterion's flags (`--baseline pre`) and abort, so
+# only the criterion targets below run under `cargo bench`.
+[lib]
+bench = false
+
 [[bench]]
 name = "status_parse"
+harness = false
+
+[[bench]]
+name = "doctor_and_status"
 harness = false
 test = false
 

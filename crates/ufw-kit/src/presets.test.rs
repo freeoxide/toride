@@ -69,7 +69,7 @@ fn wireguard_preset_has_two_rules_with_port_51820() {
 
 #[test]
 fn database_preset_with_mysql_port() {
-    let p = database(3306);
+    let p = database(3306).unwrap();
     assert_eq!(p.id, "database");
     assert_eq!(p.rules.len(), 2);
     assert!(p.description.contains("3306"));
@@ -149,7 +149,7 @@ fn every_rule_in_every_preset_validates() {
 
 #[test]
 fn database_preset_with_custom_port_validates() {
-    let p = database(3306);
+    let p = database(3306).unwrap();
     for rule in &p.rules {
         assert!(rule.validate().is_ok());
     }
@@ -244,7 +244,7 @@ fn traefik_dokploy_has_ssh_http_https() {
 
 #[test]
 fn monitoring_private_restricts_to_trusted_cidr() {
-    let p = monitoring_private("10.0.0.0/8");
+    let p = monitoring_private("10.0.0.0/8").unwrap();
     assert_eq!(p.id, "monitoring-private");
     assert_eq!(p.rules.len(), 4); // SSH + Grafana + Prometheus + Node Exporter
 
@@ -258,4 +258,28 @@ fn monitoring_private_restricts_to_trusted_cidr() {
         !matches!(grafana.from_addr, crate::spec::Address::Any),
         "Grafana should be restricted to trusted CIDR"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Constructor rejection (no panics on caller-supplied input)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn monitoring_private_should_reject_invalid_cidr() {
+    // Regression: this constructor panicked via .expect on caller input.
+    let result = monitoring_private("not-a-cidr");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, crate::Error::Validation(_)),
+        "expected Error::Validation, got: {err:?}"
+    );
+}
+
+#[test]
+fn database_should_reject_port_zero() {
+    // Regression: db_port 0 panicked via the builder's expect; spec
+    // validation rejects port 0.
+    let result = database(0);
+    assert!(result.is_err(), "port 0 must be rejected, not panicked on");
 }

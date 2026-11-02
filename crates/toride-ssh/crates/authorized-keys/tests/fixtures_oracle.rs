@@ -34,9 +34,9 @@ async fn fixture_yields_six_entries() {
 #[tokio::test]
 async fn every_entry_fingerprints() {
     let entries = parse_fixture().await;
-    let hashes: Vec<Option<String>> = entries.iter().map(Entry::fingerprint).collect();
+    let hashes: Vec<String> = entries.iter().map(Entry::fingerprint).collect();
     assert!(
-        hashes.iter().all(Option::is_some),
+        hashes.iter().all(|h| !h.is_empty()),
         "some entries failed to fingerprint: {hashes:?}"
     );
 }
@@ -44,11 +44,7 @@ async fn every_entry_fingerprints() {
 #[tokio::test]
 async fn shared_blobs_share_fingerprints() {
     let entries = parse_fixture().await;
-    let fp = |i: usize| {
-        entries[i]
-            .fingerprint()
-            .unwrap_or_else(|| panic!("entry {i} must fingerprint"))
-    };
+    let fp = |i: usize| entries[i].fingerprint();
     assert_eq!(fp(0), fp(3), "entries 0 and 3 share a blob");
     assert_eq!(fp(1), fp(4), "entries 1 and 4 share a blob");
     assert_ne!(fp(0), fp(1), "distinct ed25519 blobs must differ");

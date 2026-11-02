@@ -2,7 +2,7 @@
 //! presentation types, fusing each recipe with its live `which::which` status.
 //!
 //! This is the ONLY module in the `toride` crate that owns the recipe
-//! DEFINITIONS — mirroring `toride_harden_convert.rs`'s role as the single
+//! DEFINITIONS: mirroring `toride_harden_convert.rs`'s role as the single
 //! boundary between the static app feature manifest and the presentation
 //! layer. Each function handles malformed input gracefully: empty required
 //! fields are logged and replaced with a placeholder, never propagated (the
@@ -26,7 +26,7 @@ use crate::ui::screens::templates::{FindingEntry, RecipeEntry};
 
 /// A recipe DEFINITION: a named hardening/service capability toride can apply.
 ///
-/// This is static app data — NOT live state. Each entry maps to a real backend
+/// This is static app data: NOT live state. Each entry maps to a real backend
 /// capability; the live "is this applicable here?" answer is the presence of
 /// `target_binary` on PATH, probed by the collector via [`which::which`].
 #[derive(Clone, Debug)]
@@ -165,7 +165,7 @@ const CATALOGUE: &[RecipeDef] = &[
 
 /// Borrow the constant catalogue so the collector can sweep it once.
 ///
-/// Returns the static slice directly — no allocation — so the collector's
+/// Returns the static slice directly: no allocation, so the collector's
 /// `spawn_blocking` closure can iterate it without crossing the thread
 /// boundary with owned data.
 #[must_use]
@@ -181,12 +181,12 @@ pub fn catalogue() -> &'static [RecipeDef] {
 ///
 /// `installed` MUST be in the same order and length as [`catalogue`]; the
 /// collector guarantees this by zipping the two. An out-of-range index is
-/// treated as `false` (degraded — the recipe reads "available") rather than
+/// treated as `false` (degraded: the recipe reads "available") rather than
 /// panicking. An empty `name` is logged and replaced with a placeholder so the
 /// row is still visible.
 ///
 /// `status` is `"ready"` when the target tool is installed and `"available"`
-/// otherwise (the recipe CAN be applied — toride knows how — but the backing
+/// otherwise (the recipe CAN be applied: toride knows how, but the backing
 /// tool is not yet present on this host).
 pub fn convert_recipes(installed: &[bool]) -> Vec<RecipeEntry> {
     CATALOGUE
@@ -232,7 +232,7 @@ pub fn convert_recipes(installed: &[bool]) -> Vec<RecipeEntry> {
 /// Every un-ready recipe maps to one finding with id
 /// `templates.missing.<recipe_id>`. A missing tool is an OPPORTUNITY, not a
 /// fault, so the severity is `info` (which [`status_label_for`](crate::ui::screens::section_overview::status_label_for) does NOT count
-/// as degraded) — a partially-ready catalogue reads `active`, matching the
+/// as degraded): a partially-ready catalogue reads `active`, matching the
 /// panel's readiness summary.
 ///
 /// `installed` MUST align with [`catalogue`] in order/length (same contract as

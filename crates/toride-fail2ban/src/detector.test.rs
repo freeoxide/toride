@@ -148,7 +148,7 @@ fn scan_empty_file_returns_zero_counts() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 0);
     assert_eq!(result.matches_found, 0);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
@@ -163,9 +163,9 @@ Failed password from 10.0.0.2 port 22
 
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 2);
-    assert_eq!(result.new_bans.len(), 2);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates.len(), 2);
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.2");
 }
 
 #[test]
@@ -180,7 +180,7 @@ connection established
 
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 0);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
@@ -198,7 +198,7 @@ line three\n\
     let second = detector.scan().expect("second scan");
     assert_eq!(second.lines_scanned, 0);
     assert_eq!(second.matches_found, 0);
-    assert_eq!(second.new_bans, Vec::new());
+    assert_eq!(second.candidates, Vec::new());
 }
 
 #[test]
@@ -235,28 +235,23 @@ Failed from 10.0.0.2
         detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 3);
-    assert_eq!(result.new_bans.len(), 3);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[2].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates.len(), 3);
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[2].ip.to_string(), "10.0.0.2");
 }
 
 #[test]
-fn scan_ban_entry_has_correct_jail_name() {
-    let content = "Failed from 10.0.0.1\n";
+fn scan_candidate_carries_ip_and_line_number() {
+    let content = "Failed from 10.0.0.1\nFailed from 10.0.0.2\n";
     let (mut detector, _tmp) =
         detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
-    assert_eq!(result.new_bans[0].jail_name, "test-jail");
-}
-
-#[test]
-fn scan_ban_entry_prefix_is_32_for_ipv4() {
-    let content = "Failed from 10.0.0.1\n";
-    let (mut detector, _tmp) =
-        detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
-    let result = detector.scan().unwrap();
-    assert_eq!(result.new_bans[0].prefix, 32);
+    assert_eq!(result.candidates.len(), 2);
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[0].line_number, 1);
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates[1].line_number, 2);
 }
 
 #[test]
@@ -295,13 +290,13 @@ fn scan_match_without_ip_produces_no_ban_but_counts_match() {
     let (mut detector, _tmp) = detector_with_content(content, r"error.*");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert!(result.new_bans.is_empty(), "no IP means no ban entry");
+    assert!(result.candidates.is_empty(), "no IP means no ban entry");
 }
 
 #[test]
 fn set_position_updates_offset_and_line_number() {
     let (mut detector, _tmp) = detector_with_content("line\n", "line");
-    detector.set_position(100, 50);
+    detector.set_position(100, 50, 0, 0);
     let journal = detector.journal();
     assert_eq!(journal.offset, 100);
     assert_eq!(journal.line_number, 50);
@@ -317,7 +312,7 @@ fn set_position_affects_scan_start() {
 
     let mut detector = LogDetector::new("test-jail", tmp.path(), r"\w+").unwrap();
 
-    detector.set_position(4, 1);
+    detector.set_position(4, 1, 0, 0);
 
     let result = detector.scan().unwrap();
     assert_eq!(result.lines_scanned, 2);
@@ -327,8 +322,8 @@ fn set_position_affects_scan_start() {
 #[test]
 fn set_position_zero_resets() {
     let (mut detector, _tmp) = detector_with_content("line\n", "line");
-    detector.set_position(999, 999);
-    detector.set_position(0, 0);
+    detector.set_position(999, 999, 0, 0);
+    detector.set_position(0, 0, 0, 0);
 
     let journal = detector.journal();
     assert_eq!(journal.offset, 0);
@@ -366,7 +361,7 @@ fn journal_reflects_scan_progress() {
 #[test]
 fn journal_reflects_set_position() {
     let (mut detector, _tmp) = detector_with_content("", "pattern");
-    detector.set_position(42, 7);
+    detector.set_position(42, 7, 0, 0);
     let journal = detector.journal();
     assert_eq!(journal.offset, 42);
     assert_eq!(journal.line_number, 7);
@@ -388,17 +383,32 @@ fn edge_case_very_long_line() {
     let result = detector.scan().unwrap();
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
 }
 
 #[test]
 fn edge_case_no_trailing_newline_at_eof() {
     let content = "Failed from 10.0.0.1";
-    let (mut detector, _tmp) =
+    let (mut detector, tmp) =
         detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
+
+    // A trailing partial line is held back: no match, no offset advance.
+    let result = detector.scan().unwrap();
+    assert_eq!(result.lines_scanned, 0);
+    assert_eq!(result.matches_found, 0);
+    assert_eq!(detector.journal().offset, 0);
+
+    // Once the writer completes the line, the next scan reads it whole.
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(tmp.path())
+        .unwrap();
+    file.write_all(b"\n").unwrap();
+    drop(file);
     let result = detector.scan().unwrap();
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
 }
 
 #[test]
@@ -407,7 +417,7 @@ fn edge_case_pattern_with_no_capture_groups() {
     let (mut detector, _tmp) = detector_with_content(content, r"error: .*");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
@@ -419,7 +429,7 @@ fn edge_case_pattern_with_multiple_named_groups() {
     );
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
 }
 
 #[test]
@@ -437,7 +447,7 @@ fn edge_case_match_line_ip_with_invalid_octets() {
     let (mut detector, _tmp) = detector_with_content(content, r"connection from .* failed");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
@@ -492,7 +502,7 @@ fn scan_result_types_are_correct() {
     let content = "match\n";
     let (mut detector, _tmp) = detector_with_content(content, "match");
     let result = detector.scan().unwrap();
-    let _bans: Vec<crate::types::BanEntry> = result.new_bans;
+    let _candidates: Vec<MatchCandidate> = result.candidates;
     let _scanned: u64 = result.lines_scanned;
     let _found: u32 = result.matches_found;
     let _dur: std::time::Duration = result.scan_duration;
@@ -505,7 +515,10 @@ fn scan_regex_matching_empty_string() {
     let result = detector.scan().expect("scan should not hang or fail");
     assert_eq!(result.lines_scanned, 3);
     assert_eq!(result.matches_found, 3);
-    assert!(result.new_bans.is_empty(), "no capture group means no bans");
+    assert!(
+        result.candidates.is_empty(),
+        "no capture group means no bans"
+    );
 }
 
 #[test]
@@ -529,7 +542,7 @@ fn scan_non_utf8_content() {
 fn set_position_beyond_eof_resets_on_rotation() {
     let content = "short\n";
     let (mut detector, _tmp) = detector_with_content(content, r"\w+");
-    detector.set_position(999_999, 100);
+    detector.set_position(999_999, 100, 0, 0);
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
@@ -553,8 +566,8 @@ fn scan_crlf_line_endings() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 2);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.2");
 }
 
 #[test]
@@ -565,9 +578,9 @@ fn scan_mixed_line_endings() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 3);
     assert_eq!(result.matches_found, 3);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
-    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.2");
-    assert_eq!(result.new_bans[2].ip.to_string(), "10.0.0.3");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[1].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.candidates[2].ip.to_string(), "10.0.0.3");
 }
 
 #[test]
@@ -594,7 +607,7 @@ fn scan_very_long_line_100kb() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
-    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.candidates[0].ip.to_string(), "10.0.0.1");
 }
 
 #[test]
@@ -612,7 +625,7 @@ fn scan_file_with_only_empty_lines() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 5);
     assert_eq!(result.matches_found, 0);
-    assert_eq!(result.new_bans, Vec::new());
+    assert_eq!(result.candidates, Vec::new());
 }
 
 #[test]
@@ -620,8 +633,10 @@ fn scan_file_with_no_newline_at_all() {
     let content = "no newline here";
     let (mut detector, _tmp) = detector_with_content(content, ".+");
     let result = detector.scan().expect("scan should succeed");
-    assert_eq!(result.lines_scanned, 1);
-    assert_eq!(result.matches_found, 1);
+    // The whole file is one unterminated line, so it is held back for the
+    // next scan instead of being consumed mid-write.
+    assert_eq!(result.lines_scanned, 0);
+    assert_eq!(result.matches_found, 0);
 }
 
 #[test]
@@ -633,7 +648,7 @@ fn set_position_to_middle_of_line() {
     file.flush().unwrap();
 
     let mut detector = LogDetector::new("test-jail", tmp.path(), ".").unwrap();
-    detector.set_position(4, 0);
+    detector.set_position(4, 0, 0, 0);
 
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 2);
@@ -660,6 +675,57 @@ fn scan_resets_offset_on_log_rotation() {
     let second = detector.scan().unwrap();
     assert_eq!(second.lines_scanned, 1);
     assert_eq!(second.matches_found, 1);
+}
+
+#[test]
+fn scan_resets_offset_on_equal_size_rotation() {
+    let tmp = NamedTempFile::new().unwrap();
+    let mut file = tmp.reopen().unwrap();
+    write!(file, "line one\nline two\nline three\n").unwrap();
+    file.flush().unwrap();
+
+    let mut detector = LogDetector::new("test-jail", tmp.path(), r"\w+").unwrap();
+    let first = detector.scan().unwrap();
+    assert_eq!(first.lines_scanned, 3);
+
+    // Replace the file through a rename so the inode changes while the new
+    // content is exactly as long as the old: the size heuristic alone would
+    // not detect this rotation.
+    let replacement = tempfile::tempdir().unwrap();
+    let replacement_path = replacement.path().join("replacement.log");
+    std::fs::write(&replacement_path, "alpha\nbravo\ncharlie\n").unwrap();
+    std::fs::rename(&replacement_path, tmp.path()).unwrap();
+
+    let second = detector.scan().unwrap();
+    assert_eq!(
+        second.lines_scanned, 3,
+        "identity change must reset the offset"
+    );
+    assert_eq!(second.matches_found, 3);
+}
+
+#[test]
+fn extract_ip_fallback_prefers_real_source_over_decoy_username() {
+    // A username that is a bare IPv4 literal must not redirect the ban away
+    // from the real source address later in the line (CVE-2021-32750 class).
+    let (detector, _tmp) = detector_with_content(
+        "anything\n",
+        r"Failed password for (?:invalid user )?\S+ from .*",
+    );
+    let detail = detector
+        .match_line(
+            "Failed password for invalid user 8.8.8.8 from 203.0.113.50 port 22 ssh2",
+            1,
+        )
+        .unwrap();
+    assert_eq!(detail.ip, Some("203.0.113.50".parse().unwrap()));
+}
+
+#[test]
+fn extract_ip_normalizes_ipv4_mapped_ipv6_group() {
+    let (detector, _tmp) = detector_with_content("anything\n", r"from (?P<ip>\S+)");
+    let detail = detector.match_line("from ::ffff:203.0.113.5", 1).unwrap();
+    assert_eq!(detail.ip, Some("203.0.113.5".parse().unwrap()));
 }
 
 #[test]
@@ -705,10 +771,10 @@ fn extract_ip_fallback_matches_ipv6_double_colon() {
 }
 
 #[test]
-fn extract_ip_fallback_prefers_ipv4_over_ipv6() {
+fn extract_ip_fallback_takes_rightmost_candidate() {
     let (detector, _tmp) = detector_with_content("anything\n", r"blocked .*");
     let detail = detector
         .match_line("blocked 10.0.0.1 and 2001:db8::1 request", 1)
         .unwrap();
-    assert_eq!(detail.ip, Some("10.0.0.1".parse().unwrap()));
+    assert_eq!(detail.ip, Some("2001:db8::1".parse().unwrap()));
 }

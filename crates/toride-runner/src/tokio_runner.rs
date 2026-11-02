@@ -17,8 +17,8 @@
 //! If the future returned by [`AsyncRunner::run`] is dropped (cancelled) before
 //! completion, the `tokio::process::Child` handle is also dropped. Tokio will
 //! send `SIGKILL` to the child when the handle is dropped, preventing orphaned
-//! processes. However, this is a best-effort guarantee — only the direct child
-//! is tracked, not the entire process tree. For robust cleanup of process trees,
+//! processes. However, this is a best-effort guarantee: only the direct child
+//! is tracked, not the entire process tree. For whole-tree cleanup,
 //! process-group support should be added later.
 //!
 //! Stdout and stderr reader tasks (if any) are joined or aborted during normal
@@ -95,7 +95,7 @@ pub struct TokioRunnerOptions {
     /// `true`).
     ///
     /// With this on, every log display of the command is redacted even for
-    /// specs that did not set [`CommandSpec::redact`] — logs are human
+    /// specs that did not set [`CommandSpec::redact`]: logs are human
     /// diagnostics, and over-redaction there is the safe failure direction.
     /// Error variants are not affected: they keep honoring `spec.redact`
     /// alone. Set `false` to restore the raw log display for debugging
@@ -186,8 +186,6 @@ impl AsyncStreamingRunner for ConfiguredTokioRunner {
         spec: &CommandSpec,
         sink: &mut dyn CommandEventSink,
     ) -> Result<CommandOutput> {
-        // Execution span: instruments the whole streaming session — success
-        // and every failure path — like the captured paths below.
         let span = crate::display::command_execution_span(
             spec,
             self.options.log_commands,
@@ -196,10 +194,9 @@ impl AsyncStreamingRunner for ConfiguredTokioRunner {
         let output = run_streaming_command(spec, sink, self.options.default_timeout)
             .instrument(span)
             .await?;
-        // Honor the redact flag on the *returned* captured output (the emitted
-        // chunks/lines are already scrubbed inline; scrub the final aggregate
-        // too for parity with the non-streaming run path).
-        Ok(crate::display::scrub_output(spec, &output))
+        // The emitted chunks/lines are already scrubbed inline; scrub the
+        // final aggregate too for parity with the non-streaming run path.
+        Ok(crate::display::scrub_output_owned(spec, output))
     }
 }
 
@@ -235,8 +232,6 @@ async fn run_tokio_with_options(
 ) -> Result<CommandOutput> {
     let timeout = spec.effective_timeout(options.default_timeout);
 
-    // Execution span: instruments the entire run — success and every failure
-    // path — so runner diagnostics correlate with the invocation.
     let span =
         crate::display::command_execution_span(spec, options.log_commands, options.redact_logs);
 
@@ -245,9 +240,7 @@ async fn run_tokio_with_options(
     let output = Box::pin(run_tokio_command(spec, timeout, options))
         .instrument(span)
         .await?;
-    // Honor the redact flag on the *returned* output too (parity with
-    // DuctRunner): scrub secret values from captured stdout/stderr.
-    Ok(crate::display::scrub_output(spec, &output))
+    Ok(crate::display::scrub_output_owned(spec, output))
 }
 
 async fn run_tokio_command(
@@ -267,11 +260,9 @@ async fn run_tokio_command(
 
     let program = prepare_program(spec)?;
 
-    // Output-limit enforcement only applies to captured output. Inherit mode
-    // does not capture, so the limit is ignored (the real exit code is still
-    // returned). This mirrors DuctRunner. Dispatch to the cap-aware path before
-    // the unlimited draining runs, because that path uses bounded reads instead
-    // of `read_to_end` so it can trip the cap mid-stream and kill the child.
+    // Inherit mode does not capture, so the cap is ignored there (mirrors
+    // DuctRunner); dispatch before the unlimited `read_to_end` drain, which
+    // could not trip the cap mid-stream.
     if spec.output_mode == crate::OutputMode::Capture
         && let Some(cap) = spec.effective_output_limit()
     {
@@ -294,21 +285,14 @@ async fn run_tokio_command(
     })?;
 
     write_stdin(&mut child, spec).await?;
-    // Take stdout and stderr handles before waiting. The pipes are owned
-    // separately from `&mut child`, so the reads below do not alias the borrow
-    // that `child.wait()` needs.
+    // The pipes are owned separately from `&mut child`, so the reads below
+    // do not alias the borrow that `child.wait()` needs.
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
-    // Concurrent pipe draining.
-    //
-    // Both pipes are read to completion *while* waiting for the child to exit.
-    // The previous model read the pipes only after `wait()` returned, which
-    // deadlocks when a child fills the ~64 KB OS pipe buffer and blocks on
-    // write — `wait()` never returns and only the outer timeout saves it. By
-    // running the two reads concurrently with `wait()` inside a single
-    // `tokio::time::timeout`, the parent keeps draining the pipes so the child
-    // can exit, and the captured bytes are complete regardless of timing.
+    // Both pipes must drain *while* waiting: reading only after `wait()`
+    // returns deadlocks on a child that fills the ~64 KB pipe buffer and
+    // blocks on write.
     let run = async {
         use tokio::io::AsyncReadExt;
 
@@ -341,23 +325,21 @@ async fn run_tokio_command(
         })?;
         let exit_code = status.code();
 
-        let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-        let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+        let stdout = crate::output::decode_lossy(stdout_bytes);
+        let stderr = crate::output::decode_lossy(stderr_bytes);
         Ok::<CommandOutput, Error>(CommandOutput::new(stdout, stderr, exit_code))
     };
 
     // A `None` timeout (runner configured with `no_default_timeout` and a
-    // spec without its own) runs unbounded — no timeout wrapper at all.
+    // spec without its own) runs unbounded: no timeout wrapper at all.
     let result = match timeout {
         Some(timeout) => {
-            // Bound the run by the timeout. The future borrowing `child` is
-            // consumed and dropped when this `await` resolves, so the `else`
-            // branch below may kill and reap the child.
+            // The future borrowing `child` is dropped when this `await`
+            // resolves, so the `else` branch below may kill and reap it.
             let timed = tokio::time::timeout(timeout, run).await;
             let Ok(result) = timed else {
-                // Timeout expired — the inner future (and its `&mut child`
-                // borrow) has been dropped, so we can kill and reap the child
-                // here.
+                // The inner future (and its `&mut child` borrow) has been
+                // dropped, so the child can be killed and reaped here.
                 let _ = child.kill().await;
                 // Wait for the child to terminate so we don't leave zombies.
                 let _ = child.wait().await;
@@ -393,7 +375,7 @@ async fn run_tokio_command(
 /// Emit the completion debug event for a finished command.
 ///
 /// The event carries the log-redacted display plus, when the spec sets
-/// explicit environment variables, the sanitized env summary — sensitive
+/// explicit environment variables, the sanitized env summary: sensitive
 /// values are `"***"` there regardless of `spec.redact`, so a runtime env
 /// summary never leaks a secret.
 fn log_command_completion(
@@ -429,11 +411,9 @@ fn build_tokio_command(spec: &CommandSpec, program: &OsStr) -> tokio::process::C
         // guarantee actually holds regardless of how the future is polled.
         .kill_on_drop(true);
 
-    // Honor the spec's output mode. Capture pipes both streams so they can be
-    // drained below; Inherit leaves them connected to the parent (the drain
-    // then observes `None` pipes and returns empty captured strings, while the
-    // real exit code is still returned). Stream is rejected upstream by
-    // `run_tokio_command` (it is the streaming runner's domain).
+    // Capture pipes both streams for draining below; Inherit leaves them on
+    // the parent and the drain returns empty strings with the real exit code.
+    // Stream is rejected upstream (the streaming runner's domain).
     let piped = matches!(
         spec.output_mode,
         crate::OutputMode::Capture | crate::OutputMode::Stream
@@ -516,11 +496,9 @@ async fn run_tokio_limited(
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
-    // Cap-aware draining. Done streams are replaced with `std::future::pending`
-    // so the `select!` naturally focuses on the remaining one (no busy-polling).
-    // The loop returns `Breach` as soon as a read crosses `cap` — this is the
-    // synchronous breach signal, raced against `child.wait()` and the outer
-    // timeout below.
+    // Done streams become `std::future::pending` so the `select!` focuses on
+    // the remaining one; `Breach` is the synchronous signal raced against
+    // `child.wait()` and the outer timeout below.
     let drain = async {
         let mut stdout_buf = Vec::new();
         let mut stderr_buf = Vec::new();
@@ -577,18 +555,14 @@ async fn run_tokio_limited(
         }
     };
 
-    // Race the drain against the child exiting, all bounded by the outer
-    // timeout. `biased` order doesn't matter here because the drain reports a
-    // breach synchronously and the wait reports a normal exit; whichever fires
-    // first wins. On breach, kill+reap. On normal drain completion, wait for
-    // the child to get its status. On timeout, kill+reap and report timeout.
+    // Race the drain against the child exiting, bounded by the outer timeout.
+    // Whichever fires first wins: breach or timeout kill+reap, a finished
+    // drain waits for the child's status.
     let race = async {
         let mut drain = Box::pin(drain);
         let mut wait = Box::pin(child.wait());
-        // Both arms resolve the race on their own (the drain finishes or the
-        // child exits and we then drain to EOF), so a single `select!`
-        // resolves the race without a loop. (A loop here would be a
-        // clippy::never_loop: neither arm ever falls through to iterate.)
+        // Both arms resolve the race on their own, so a single `select!`
+        // suffices (a loop would trip clippy::never_loop).
         tokio::select! {
             outcome = &mut drain => {
                 match outcome {
@@ -649,15 +623,9 @@ async fn run_tokio_limited(
             })
         }
         RaceOutcome::Drained(bytes) => {
-            // Both pipes reached EOF under the cap, but the child had not yet
-            // exited when the drain finished. Since `race` completed (not the
-            // timeout arm), this means the drain finished inside the timeout
-            // window. Wait for the child to exit to get its status, bounded by
-            // a post-drain reap budget so a child that closes its pipes early
-            // but lingers (ignoring signals, stuck in uninterruptible sleep,
-            // or a surviving grandchild keeping the process entry alive) cannot
-            // hang the runner indefinitely. On reap-timeout, kill+reap and
-            // surface a timeout error.
+            // Pipes reached EOF under the cap but the child lingers: bound
+            // the status wait by POST_DRAIN_REAP_TIMEOUT so it cannot hang the
+            // runner; on reap-timeout, kill+reap and surface a timeout.
             match tokio::time::timeout(POST_DRAIN_REAP_TIMEOUT, child.wait()).await {
                 Ok(Ok(status)) => Ok(finish_under_cap(spec, status.code(), bytes, options)),
                 Ok(Err(e)) => Err(Error::WaitFailed {
@@ -701,8 +669,8 @@ fn finish_under_cap(
     (stdout_bytes, stderr_bytes): (Vec<u8>, Vec<u8>),
     options: &TokioRunnerOptions,
 ) -> CommandOutput {
-    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+    let stdout = crate::output::decode_lossy(stdout_bytes);
+    let stderr = crate::output::decode_lossy(stderr_bytes);
     if options.log_commands {
         log_command_completion(spec, options, exit_code);
     }
@@ -729,10 +697,6 @@ enum RaceOutcome {
     WaitFailed(std::io::Error),
 }
 
-// ---------------------------------------------------------------------------
-// Streaming execution (behind `stream` feature)
-// ---------------------------------------------------------------------------
-
 #[cfg(feature = "stream")]
 use crate::streaming::{AsyncStreamingRunner, CommandEvent, CommandEventSink};
 
@@ -747,7 +711,6 @@ async fn run_streaming_command(
 
     let program = prepare_program(spec)?;
 
-    // --- Phase 1: spawn the child (not timed, should be instant) ---
     let mut cmd = tokio::process::Command::new(program.as_os_str());
     cmd.args(&spec.args)
         // Ensure the child is SIGKILLed when the `Child` handle is dropped
@@ -785,19 +748,15 @@ async fn run_streaming_command(
     // paths (the documented contract of Error::StdinFailed).
     write_stdin(&mut child, spec).await?;
 
-    // Take pipes. We use bounded `read(&mut [u8; N])` (not `read_line`) so a
-    // single newline-free stream cannot buffer unbounded memory before the cap
-    // can trigger, and interleave stdout and stderr with `tokio::select!` so the
-    // cap observes both streams' bytes (the old drain-stdout-then-stderr
-    // sequencing was itself a latent deadlock and hid stderr from the cap).
+    // Bounded `read(&mut [u8; N])` (not `read_line`): a newline-free stream
+    // cannot buffer unbounded memory before the cap triggers. `select!`
+    // interleaves both streams so the cap observes their combined bytes.
     let stdout_reader = child.stdout.take();
     let stderr_reader = child.stderr.take();
 
-    // The stderr task reads bounded chunks and forwards them over a channel of
-    // *fixed-size* chunks (not whole lines), so the cap can count its bytes.
-    // Its JoinHandle is retained so it can be aborted on a breach (otherwise a
-    // grandchild inheriting the stderr pipe keeps the read end from EOF and the
-    // task — and its fd — leaks).
+    // Fixed-size chunks (not whole lines) so the cap can count stderr bytes;
+    // the JoinHandle is retained so a breach can abort the task (a lingering
+    // grandchild would otherwise keep it, and its fd, alive forever).
     let (stderr_tx, mut stderr_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(STREAM_CHANNEL_CHUNKS);
 
     let stderr_task: Option<tokio::task::JoinHandle<()>> = if let Some(mut reader) = stderr_reader {
@@ -819,7 +778,6 @@ async fn run_streaming_command(
         None
     };
 
-    // --- Phase 2: read pipes + wait, all bounded by timeout ---
     let exec = async {
         use tokio::io::AsyncReadExt;
 
@@ -830,19 +788,14 @@ async fn run_streaming_command(
         let mut stdout_reader = stdout_reader;
         let mut sbuf = [0u8; STREAM_READ_BUF];
         let mut stderr_closed = stderr_task.is_none();
-        // Partial-line accumulators per stream. Bounded because each is flushed
-        // every bounded read (≤ STREAM_READ_BUF), so they hold at most one
-        // partial line of ≤ STREAM_READ_BUF bytes.
+        // Partial-line accumulators, flushed on every bounded read: each
+        // holds at most one partial line of ≤ STREAM_READ_BUF bytes.
         let mut stdout_line_buf = String::new();
         let mut stderr_line_buf = String::new();
 
-        // Drain stdout and stderr concurrently with bounded reads, interleaved
-        // via `tokio::select!` so the cap observes both streams' bytes. The
-        // stderr reader task forwards fixed-size chunks over a channel; we
-        // interleave its `recv()` with stdout's `read()`. When stderr closes,
-        // we fall through to a stdout-only loop (no busy-polling).
+        // `recv()` from the stderr channel interleaves with stdout `read()`;
+        // when stderr closes, fall through to a stdout-only loop.
         loop {
-            // Phase A: both stdout and stderr are live — interleave them.
             while stdout_reader.is_some() && !stderr_closed {
                 tokio::select! {
                     biased;
@@ -850,15 +803,15 @@ async fn run_streaming_command(
                         match n {
                             Ok(0) | Err(_) => { stdout_reader = None; }
                             Ok(n) => {
-                                let chunk = sbuf[..n].to_vec();
+                                let chunk = &sbuf[..n];
                                 if let Some(limit) = cap {
                                     observed = observed.saturating_add(chunk.len());
                                     if observed > limit {
                                         return Err(stream_breach_error(spec, limit, observed));
                                     }
                                 }
-                                stdout_bytes.extend_from_slice(&chunk);
-                                forward_stream_chunk(StreamKind::Stdout, &chunk, &mut stdout_line_buf, spec, sink).await?;
+                                stdout_bytes.extend_from_slice(chunk);
+                                forward_stream_chunk(StreamKind::Stdout, chunk, &mut stdout_line_buf, spec, sink).await?;
                             }
                         }
                     }
@@ -880,7 +833,6 @@ async fn run_streaming_command(
                 }
             }
 
-            // Phase B: stdout-only (stderr already closed or absent).
             if let Some(reader) = stdout_reader.as_mut() {
                 let n = reader.read(&mut sbuf).await;
                 match n {
@@ -888,17 +840,17 @@ async fn run_streaming_command(
                         stdout_reader = None;
                     }
                     Ok(n) => {
-                        let chunk = sbuf[..n].to_vec();
+                        let chunk = &sbuf[..n];
                         if let Some(limit) = cap {
                             observed = observed.saturating_add(chunk.len());
                             if observed > limit {
                                 return Err(stream_breach_error(spec, limit, observed));
                             }
                         }
-                        stdout_bytes.extend_from_slice(&chunk);
+                        stdout_bytes.extend_from_slice(chunk);
                         forward_stream_chunk(
                             StreamKind::Stdout,
-                            &chunk,
+                            chunk,
                             &mut stdout_line_buf,
                             spec,
                             sink,
@@ -909,8 +861,6 @@ async fn run_streaming_command(
                 continue;
             }
 
-            // Phase C: stderr-only (stdout already closed). Drain the channel
-            // to completion.
             while !stderr_closed {
                 match stderr_rx.recv().await {
                     Some(chunk) => {
@@ -939,40 +889,34 @@ async fn run_streaming_command(
             break;
         }
 
-        // Flush any trailing partial lines (no terminating newline). When the
-        // spec requests redaction, the trailing chunk/line is scrubbed too, so
-        // a secret in the final partial line never reaches the sink.
+        // Flush trailing partial lines; under redact the trailing chunk/line
+        // is scrubbed too, so a secret in the final line never leaks.
         flush_stream_line(StreamKind::Stdout, &mut stdout_line_buf, spec, sink).await?;
         flush_stream_line(StreamKind::Stderr, &mut stderr_line_buf, spec, sink).await?;
 
-        // Wait for the child to exit.
         let status = child.wait().await.map_err(|e| Error::WaitFailed {
             program: spec.program.clone(),
             detail: e.to_string(),
         })?;
         let exit_code = status.code();
 
-        // Emit Exited.
         sink.on_event(CommandEvent::Exited { exit_code }).await?;
 
-        let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-        let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+        let stdout = crate::output::decode_lossy(stdout_bytes);
+        let stderr = crate::output::decode_lossy(stderr_bytes);
 
         Ok::<CommandOutput, Error>(CommandOutput::new(stdout, stderr, exit_code))
     };
 
-    // A `None` timeout (runner configured with `no_default_timeout` and a
-    // spec without its own) runs the streaming session unbounded.
+    // A `None` timeout runs the streaming session unbounded.
     let result = match timeout {
         Some(timeout) => {
-            // Bound the session by the timeout. The future borrowing `child`
-            // is consumed and dropped when this `await` resolves, so the
-            // `else` branch below may kill and reap the child.
+            // The future borrowing `child` is dropped when this `await`
+            // resolves, so the `else` branch below may kill and reap it.
             let timed = tokio::time::timeout(timeout, exec).await;
             let Ok(result) = timed else {
-                // Timeout expired — explicitly kill the child. Abort the
-                // stderr task first so a lingering grandchild holding the
-                // stderr pipe can't keep the task (and its fd) alive.
+                // Abort the stderr task first so a lingering grandchild can't
+                // keep it, and its fd, alive after the child is killed.
                 if let Some(handle) = stderr_task {
                     handle.abort();
                     let _ = handle.await;
@@ -990,8 +934,8 @@ async fn run_streaming_command(
         None => exec.await,
     };
 
-    // On any terminating path, abort the stderr task so a lingering grandchild
-    // holding the stderr pipe can't keep the task (and its fd) alive.
+    // Abort the stderr task on any terminating path so a lingering
+    // grandchild cannot keep it, and its fd, alive.
     if let Some(handle) = stderr_task {
         handle.abort();
         let _ = handle.await;
@@ -1000,7 +944,6 @@ async fn run_streaming_command(
     match result {
         Ok(output) => Ok(output),
         Err(e) => {
-            // Breach or sink error: kill+reap the child.
             let _ = child.kill().await;
             let _ = child.wait().await;
             Err(e)
@@ -1078,7 +1021,7 @@ impl StreamKind {
 /// The buffer is bounded: it holds at most one partial line per bounded read
 /// (≤ `STREAM_READ_BUF` bytes), plus whatever tail has not yet reached a
 /// newline under redact (flushed at EOF). A secret is assumed not to contain a
-/// newline — matching the assumption of the captured-output scrubber — so
+/// newline, matching the assumption of the captured-output scrubber, so
 /// newline boundaries are safe split points.
 #[cfg(feature = "stream")]
 async fn forward_stream_chunk(
@@ -1099,7 +1042,7 @@ async fn forward_stream_chunk(
         // so redaction will catch it. The trailing partial line stays buffered.
         let safe_end = line_buf.rfind('\n').map_or(0, |i| i + 1);
         if safe_end == 0 {
-            // No complete line yet — keep buffering; nothing to emit.
+            // No complete line yet; nothing to emit.
             return Ok(());
         }
         let safe: String = line_buf.drain(..safe_end).collect();
@@ -1108,7 +1051,7 @@ async fn forward_stream_chunk(
         sink.on_event(kind.chunk_event(redacted.as_bytes().to_vec()))
             .await?;
         // Walk the (already-redacted) safe region for line events. There is no
-        // trailing partial line here — `safe` ends at a newline.
+        // trailing partial line here; `safe` ends at a newline.
         emit_complete_lines(kind, &redacted, sink).await
     } else {
         // Forward the raw chunk verbatim, then emit the newly completed lines
@@ -1129,10 +1072,17 @@ async fn drain_complete_lines(
     line_buf: &mut String,
     sink: &mut dyn CommandEventSink,
 ) -> Result<()> {
-    while let Some(idx) = line_buf.find('\n') {
-        let line: String = line_buf.drain(..=idx).collect();
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+    let text = line_buf.as_str();
+    let mut rest = text;
+    while let Some(idx) = rest.find('\n') {
+        let line = &rest[..idx];
+        rest = &rest[idx + 1..];
+        let trimmed = line.trim_end_matches('\r');
         sink.on_event(kind.line_event(trimmed.to_owned())).await?;
+    }
+    let consumed = text.len() - rest.len();
+    if consumed > 0 {
+        line_buf.drain(..consumed);
     }
     Ok(())
 }
@@ -1192,17 +1142,14 @@ impl AsyncStreamingRunner for TokioRunner {
         sink: &mut dyn CommandEventSink,
     ) -> Result<CommandOutput> {
         let options = TokioRunnerOptions::default();
-        // Execution span: instruments the whole streaming session — success
-        // and every failure path — like the captured paths.
         let span =
             crate::display::command_execution_span(spec, options.log_commands, options.redact_logs);
         let output = run_streaming_command(spec, sink, options.default_timeout)
             .instrument(span)
             .await?;
-        // Honor the redact flag on the *returned* captured output (the emitted
-        // chunks/lines are already scrubbed inline; scrub the final aggregate
-        // too for parity with the non-streaming run path).
-        Ok(crate::display::scrub_output(spec, &output))
+        // The emitted chunks/lines are already scrubbed inline; scrub the
+        // final aggregate too for parity with the non-streaming run path.
+        Ok(crate::display::scrub_output_owned(spec, output))
     }
 }
 
@@ -1429,7 +1376,7 @@ mod tests {
         if marker_exists {
             // Clean up and fail.
             let _ = std::fs::remove_file("/tmp/toride_runner_timeout_test");
-            panic!("child process survived timeout — it was not killed");
+            panic!("child process survived timeout: it was not killed");
         }
     }
 
@@ -1483,7 +1430,7 @@ mod tests {
         }
     }
 
-    /// `run_checked` (async default) must redact args when spec.redact is true —
+    /// `run_checked` (async default) must redact args when spec.redact is true;
     /// this is the async-runner parity gap with the sync `Runner` default.
     #[tokio::test]
     async fn run_checked_redacts_args_when_requested() {
@@ -1503,7 +1450,7 @@ mod tests {
     }
 
     /// `OutputMode::Inherit` must connect child stdio to the parent and return
-    /// empty captured strings plus the real exit code — matching `DuctRunner`.
+    /// empty captured strings plus the real exit code, matching `DuctRunner`.
     #[tokio::test]
     async fn inherit_output_mode_returns_empty_captured_output() {
         let runner = TokioRunner;
@@ -1612,14 +1559,14 @@ mod tests {
     /// more than the ~64 KB OS pipe buffer must not deadlock.
     ///
     /// Under the old read-after-`wait()` model, this command would fill the
-    /// pipe buffer, block on write, and never exit — only the 60s default
+    /// pipe buffer, block on write, and never exit; only the 60s default
     /// timeout would eventually fire. Here we give the run a short timeout and
     /// assert it completes successfully well before that, proving the parent
     /// drains the pipe concurrently with the wait.
     #[tokio::test]
     async fn large_output_does_not_deadlock() {
         let runner = TokioRunner;
-        // ~512 KB to stdout — well over the 64 KB pipe buffer.
+        // ~512 KB to stdout, well over the 64 KB pipe buffer.
         let spec = CommandSpec::new("bash")
             .args([
                 "-c",
@@ -1895,7 +1842,7 @@ mod tests {
             matches!(result, Err(Error::CommandTimeout { .. })),
             "expected CommandTimeout, got {result:?}"
         );
-        // Must return well before the child's 30s lifetime — proves the timeout
+        // Must return well before the child's 30s lifetime, proving the timeout
         // bounded the drain (allow generous CI headroom over the 100ms timeout).
         assert!(
             elapsed < Duration::from_secs(10),
@@ -1932,7 +1879,7 @@ mod tests {
             matches!(result, Err(Error::OutputLimitExceeded { .. })),
             "expected OutputLimitExceeded, got {result:?}"
         );
-        // Must return promptly — the cap fires after ~2 chunks, not after a
+        // Must return promptly: the cap fires after ~2 chunks, not after a
         // timeout or the million-iteration self-exit.
         assert!(
             elapsed < Duration::from_secs(5),
@@ -2156,8 +2103,8 @@ mod tests {
 
     /// `log_commands(false)` is the single diagnostics switch for command
     /// logging: a silent runner emits neither completion events nor
-    /// execution spans. (Pre-existing failure `warn!`s — e.g. the timeout
-    /// kill notice — are always-on safety diagnostics and remain.)
+    /// execution spans. (Pre-existing failure `warn!`s, e.g. the timeout
+    /// kill notice, are always-on safety diagnostics and remain.)
     #[tokio::test]
     async fn log_commands_off_emits_no_diagnostics() {
         let cap = crate::display::diag_capture::install();

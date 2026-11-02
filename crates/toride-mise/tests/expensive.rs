@@ -34,7 +34,7 @@ fn build_real_mise() -> Mise {
     Mise::builder()
         .runner(Arc::new(TokioRunner) as Arc<dyn toride_runner::AsyncRunner>)
         .build()
-        .expect("failed to build Mise client — is mise installed?")
+        .expect("failed to build Mise client: is mise installed?")
 }
 
 // ---------------------------------------------------------------------------

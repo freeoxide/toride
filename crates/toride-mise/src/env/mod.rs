@@ -4,7 +4,7 @@
 //! variables that mise would set for a given set of tools or the active
 //! configuration.
 //!
-//! - [`generated`] — generated environment types ([`EnvRequest`], [`MiseEnv`],
+//! - [`generated`]: generated environment types ([`EnvRequest`], [`MiseEnv`],
 //!   [`EnvEntry`]) and the [`Mise::env`](crate::client::Mise::env) / [`Mise::env_for`](crate::client::Mise::env_for) methods.
 
 pub mod generated;

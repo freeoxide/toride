@@ -14,6 +14,11 @@
 //! | `Diagnostics`   | shown       | `[redacted]` | name only    | `[redacted]`|
 //! | `Full`          | shown       | shown        | shown        | shown       |
 //!
+//! "Username" covers every field that names or embeds the user:
+//! `os_info.current_user`, process `user`, and the process
+//! `executable_path`/`working_dir` paths under `/home/<user>`; all are
+//! dropped outside `Full` mode.
+//!
 //! The default is `Safe`, so callers that forget to configure privacy still
 //! get a safe output.
 //!

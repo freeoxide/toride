@@ -95,10 +95,6 @@ fn parse_line_should_parse_security_key_type() {
     assert_eq!(entry.key_type, "sk-ssh-ed25519@openssh.com");
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn parse_line_empty_string_errors() {
     assert!(parse_line("", 1).is_err());
@@ -142,10 +138,6 @@ fn parse_line_glob_pattern() {
     assert_eq!(entry.hosts, vec!["*.example.com"]);
 }
 
-// ---------------------------------------------------------------------------
-// Weird edge-case tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn parse_line_with_trailing_whitespace() {
     let line =
@@ -156,7 +148,6 @@ fn parse_line_with_trailing_whitespace() {
 
 #[test]
 fn parse_line_with_empty_comment() {
-    // Comment field that's just whitespace after the key
     let line =
         "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl ";
     let entry = parse_line(line.trim(), 1).unwrap();
@@ -209,17 +200,13 @@ fn parse_line_rsa_4096_key() {
 
 #[test]
 fn parse_line_with_multiple_markers() {
-    // Multiple markers — the parser captures only the first one
+    // Multiple markers, the parser captures only the first one
     let line = "@cert-authority @revoked host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 1).unwrap();
     // The parser treats "@revoked host" as part of the hosts field
     assert_eq!(entry.markers.len(), 1);
     assert_eq!(entry.markers[0], "@cert-authority");
 }
-
-// ---------------------------------------------------------------------------
-// Production-grade weird edge cases
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_line_with_very_long_base64() {
@@ -314,10 +301,6 @@ fn parse_line_line_number_preserved() {
     assert_eq!(entry.line_number, 999);
 }
 
-// ---------------------------------------------------------------------------
-// Workflow-discovered edge cases
-// ---------------------------------------------------------------------------
-
 #[test]
 fn parse_line_with_revoked_key_id() {
     // A key ID that happens to be "REVOKED" should not be skipped
@@ -337,10 +320,6 @@ fn parse_line_with_host_matching_another_entry() {
     assert_eq!(entry1.hosts, entry2.hosts);
     assert_ne!(entry1.key_type, entry2.key_type);
 }
-
-// ---------------------------------------------------------------------------
-// Very long base64 keys
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_line_rsa_8192_key() {

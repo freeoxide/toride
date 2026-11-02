@@ -173,7 +173,7 @@ fn expand_env_vars_undefined_var() {
 
 #[test]
 fn expand_env_vars_unclosed_brace() {
-    // Unclosed ${ — the literal ${ is preserved to avoid path corruption.
+    // Unclosed ${: the literal ${ is preserved to avoid path corruption.
     assert_eq!(expand_env_vars("${UNCLOSED"), "${UNCLOSED");
 }
 
@@ -280,7 +280,6 @@ fn expand_tokens_no_tokens() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -298,7 +297,6 @@ fn expand_tokens_host() {
         local_user: "user",
         port: "22",
         canonical_host: "example.com",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -316,7 +314,6 @@ fn expand_tokens_user() {
         local_user: "alice",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -334,7 +331,6 @@ fn expand_tokens_port() {
         local_user: "user",
         port: "2222",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -352,7 +348,6 @@ fn expand_tokens_home_dir() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -370,7 +365,6 @@ fn expand_tokens_local_hostname() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -388,7 +382,6 @@ fn expand_tokens_remote_user() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -406,7 +399,6 @@ fn expand_tokens_unknown_token() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -424,7 +416,6 @@ fn expand_tokens_trailing_percent() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -442,7 +433,6 @@ fn expand_tokens_double_percent() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -460,7 +450,6 @@ fn expand_tokens_mixed() {
         local_user: "user",
         port: "22",
         canonical_host: "example.com",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -487,22 +476,38 @@ fn simple_glob_match_no_wildcards() {
 
 #[test]
 fn match_criteria_host_basic() {
-    assert!(match_criteria_host("host web", "web", "alice", "web"));
-    assert!(!match_criteria_host("host web", "db", "alice", "web"));
+    assert!(match_criteria_host(
+        "host web", "web", "alice", "web", false
+    ));
+    assert!(!match_criteria_host(
+        "host web", "db", "alice", "web", false
+    ));
 }
 
 #[test]
 fn match_criteria_host_no_host_clause() {
     // "user alice" with target_user "bob" should not match.
-    assert!(!match_criteria_host("user alice", "web", "bob", "web"));
+    assert!(!match_criteria_host(
+        "user alice",
+        "web",
+        "bob",
+        "web",
+        false
+    ));
     // "user alice" with target_user "alice" should match.
-    assert!(match_criteria_host("user alice", "web", "alice", "web"));
+    assert!(match_criteria_host(
+        "user alice",
+        "web",
+        "alice",
+        "web",
+        false
+    ));
 }
 
 #[test]
 fn match_criteria_host_wildcard() {
     assert!(match_criteria_host(
-        "host *", "anything", "alice", "anything"
+        "host *", "anything", "alice", "anything", false
     ));
 }
 
@@ -520,7 +525,6 @@ fn expand_tokens_consecutive_tokens() {
         local_user: "u",
         port: "p",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -538,7 +542,6 @@ fn expand_tokens_adjacent_different_tokens() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -556,7 +559,6 @@ fn expand_tokens_percent_at_end() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -574,7 +576,6 @@ fn expand_tokens_percent_at_start() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -593,7 +594,6 @@ fn expand_tokens_only_percent() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -611,7 +611,6 @@ fn expand_tokens_escaped_percent_sequence() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -630,7 +629,6 @@ fn expand_tokens_empty_string() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -648,7 +646,6 @@ fn expand_tokens_no_tokens_complex() {
         local_user: "user",
         port: "22",
         canonical_host: "host",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -702,7 +699,7 @@ fn expand_env_vars_adjacent_vars() {
 
 #[test]
 fn expand_env_vars_nested_braces() {
-    // ${${VAR}} — the inner ${ is consumed, leaving $VAR}
+    // ${${VAR}}: the inner ${ is consumed, leaving $VAR}
     // This is unusual but should not panic
     let result = expand_env_vars("${${NESTED}}");
     let _ = result; // just check it doesn't panic
@@ -710,9 +707,15 @@ fn expand_env_vars_nested_braces() {
 
 #[test]
 fn match_criteria_host_case_insensitive_keyword() {
-    assert!(match_criteria_host("HOST web", "web", "alice", "web"));
-    assert!(match_criteria_host("Host web", "web", "alice", "web"));
-    assert!(match_criteria_host("host web", "web", "alice", "web"));
+    assert!(match_criteria_host(
+        "HOST web", "web", "alice", "web", false
+    ));
+    assert!(match_criteria_host(
+        "Host web", "web", "alice", "web", false
+    ));
+    assert!(match_criteria_host(
+        "host web", "web", "alice", "web", false
+    ));
 }
 
 #[test]
@@ -722,37 +725,42 @@ fn match_criteria_host_multiple_host_clauses() {
         "host web host db",
         "web",
         "alice",
-        "web"
+        "web",
+        false
     ));
     assert!(match_criteria_host(
         "host web host db",
         "db",
         "alice",
-        "web"
+        "web",
+        false
     ));
     assert!(!match_criteria_host(
         "host web host db",
         "other",
         "alice",
-        "web"
+        "web",
+        false
     ));
 }
 
 #[test]
 fn match_criteria_host_unknown_keyword_before_host() {
-    // Unknown keyword before host clause — user "alice" must also match.
+    // Unknown keyword before host clause: user "alice" must also match.
     assert!(match_criteria_host(
         "user alice host web",
         "web",
         "alice",
-        "web"
+        "web",
+        false
     ));
     // If user doesn't match, the whole block is rejected.
     assert!(!match_criteria_host(
         "user alice host web",
         "web",
         "bob",
-        "web"
+        "web",
+        false
     ));
 }
 
@@ -845,7 +853,6 @@ fn expand_tokens_all_tokens_combined() {
         local_user: "alice",
         port: "2222",
         canonical_host: "example.com",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -864,7 +871,6 @@ fn expand_tokens_with_path() {
         local_user: "u",
         port: "22",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -882,7 +888,6 @@ fn expand_tokens_with_env_var() {
         local_user: "u",
         port: "22",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -901,7 +906,6 @@ fn expand_tokens_canonical_host() {
         local_user: "user",
         port: "22",
         canonical_host: "real.host.com",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -921,7 +925,6 @@ fn expand_tokens_identity_file_token() {
         local_user: "alice",
         port: "22",
         canonical_host: "h",
-        identity_file: Some("~/.ssh/id_ed25519_work"),
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -940,7 +943,6 @@ fn expand_tokens_identity_file_without_context() {
         local_user: "alice",
         port: "22",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -958,7 +960,6 @@ fn expand_tokens_local_hostname_short() {
         local_user: "user",
         port: "22",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -977,7 +978,6 @@ fn expand_tokens_local_hostname_short_no_dot() {
         local_user: "user",
         port: "22",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -996,7 +996,6 @@ fn expand_tokens_remote_user_alias() {
         local_user: "u",
         port: "22",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -1014,7 +1013,6 @@ fn expand_tokens_connection_hash() {
         local_user: "u",
         port: "22",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -1035,7 +1033,6 @@ fn expand_tokens_all_new_tokens() {
         local_user: "alice",
         port: "2222",
         canonical_host: "real.com",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -1057,7 +1054,8 @@ fn match_criteria_host_with_port() {
         "host [::1]:22",
         "[::1]:22",
         "alice",
-        "[::1]:22"
+        "[::1]:22",
+        false
     ));
 }
 
@@ -1068,20 +1066,27 @@ fn match_criteria_host_with_wildcard_port() {
         "host *",
         "example.com:22",
         "alice",
-        "example.com:22"
+        "example.com:22",
+        false
     ));
 }
 
 #[test]
 fn match_criteria_host_empty_criteria() {
     // Empty criteria should not match
-    assert!(!match_criteria_host("", "host", "alice", "host"));
+    assert!(!match_criteria_host("", "host", "alice", "host", false));
 }
 
 #[test]
 fn match_criteria_host_only_unknown_keyword() {
-    // Only unsupported keywords — user "alice" doesn't match target_user "bob".
-    assert!(!match_criteria_host("exec true", "host", "bob", "host"));
+    // Only unsupported keywords: user "alice" doesn't match target_user "bob".
+    assert!(!match_criteria_host(
+        "exec true",
+        "host",
+        "bob",
+        "host",
+        false
+    ));
 }
 
 #[test]
@@ -1113,23 +1118,25 @@ fn match_criteria_host_negation() {
         "host *,!badhost",
         "badhost",
         "alice",
-        "badhost"
+        "badhost",
+        false
     ));
     assert!(match_criteria_host(
         "host *,!badhost",
         "goodhost",
         "alice",
-        "goodhost"
+        "goodhost",
+        false
     ));
 }
 
 // ---------------------------------------------------------------------------
-// Edge case tests for expand_env_vars (v2 — no duplicate names)
+// Edge case tests for expand_env_vars (v2: no duplicate names)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn expand_env_vars_empty_braces() {
-    // ${} with empty name — should expand to empty
+    // ${} with empty name: should expand to empty
     assert_eq!(expand_env_vars("${}"), "");
 }
 
@@ -1161,7 +1168,6 @@ fn expand_tokens_unknown_x() {
         local_user: "u",
         port: "p",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -1179,7 +1185,6 @@ fn expand_tokens_double_percent_preserved() {
         local_user: "u",
         port: "p",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -1197,7 +1202,6 @@ fn expand_tokens_empty() {
         local_user: "u",
         port: "p",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -1219,7 +1223,6 @@ fn expand_tokens_skip_i_preserves_percent_i() {
         local_user: "alice",
         port: "22",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -1240,7 +1243,6 @@ fn expand_tokens_skip_i_expands_other_tokens() {
         local_user: "alice",
         port: "22",
         canonical_host: "example.com",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -1261,7 +1263,6 @@ fn expand_tokens_skip_i_expands_u_but_not_i() {
         local_user: "alice",
         port: "22",
         canonical_host: "h",
-        identity_file: None,
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -1297,15 +1298,45 @@ fn collapse_double_pct_empty() {
 
 #[test]
 fn match_criteria_user_basic() {
-    assert!(match_criteria_host("user alice", "host", "alice", "host"));
-    assert!(!match_criteria_host("user alice", "host", "bob", "host"));
+    assert!(match_criteria_host(
+        "user alice",
+        "host",
+        "alice",
+        "host",
+        false
+    ));
+    assert!(!match_criteria_host(
+        "user alice",
+        "host",
+        "bob",
+        "host",
+        false
+    ));
 }
 
 #[test]
 fn match_criteria_user_case_insensitive() {
-    assert!(match_criteria_host("user Alice", "host", "alice", "host"));
-    assert!(match_criteria_host("user ALICE", "host", "alice", "host"));
-    assert!(match_criteria_host("user alice", "host", "ALICE", "host"));
+    assert!(match_criteria_host(
+        "user Alice",
+        "host",
+        "alice",
+        "host",
+        false
+    ));
+    assert!(match_criteria_host(
+        "user ALICE",
+        "host",
+        "alice",
+        "host",
+        false
+    ));
+    assert!(match_criteria_host(
+        "user alice",
+        "host",
+        "ALICE",
+        "host",
+        false
+    ));
 }
 
 #[test]
@@ -1314,14 +1345,22 @@ fn match_criteria_user_multiple_names() {
         "user alice,bob",
         "host",
         "alice",
-        "host"
+        "host",
+        false
     ));
-    assert!(match_criteria_host("user alice,bob", "host", "bob", "host"));
+    assert!(match_criteria_host(
+        "user alice,bob",
+        "host",
+        "bob",
+        "host",
+        false
+    ));
     assert!(!match_criteria_host(
         "user alice,bob",
         "host",
         "charlie",
-        "host"
+        "host",
+        false
     ));
 }
 
@@ -1333,18 +1372,21 @@ fn match_criteria_user_with_host() {
         "web",
         "alice",
         "web",
+        false,
     ));
     assert!(!match_criteria_host(
         "user alice host web",
         "web",
         "bob",
         "web",
+        false,
     ));
     assert!(!match_criteria_host(
         "user alice host web",
         "db",
         "alice",
         "web",
+        false,
     ));
 }
 
@@ -1359,12 +1401,14 @@ fn match_criteria_originalhost_basic() {
         "canonical.web",
         "alice",
         "web",
+        false,
     ));
     assert!(!match_criteria_host(
         "originalhost web",
         "canonical.web",
         "alice",
         "db",
+        false,
     ));
 }
 
@@ -1375,6 +1419,7 @@ fn match_criteria_originalhost_wildcard() {
         "canonical.example.com",
         "alice",
         "web.example.com",
+        false,
     ));
 }
 
@@ -1388,12 +1433,14 @@ fn match_criteria_originalhost_with_host() {
         "canonical.web",
         "alice",
         "web",
+        false,
     ));
     assert!(!match_criteria_host(
         "originalhost web host canonical.web",
         "canonical.web",
         "alice",
         "other",
+        false,
     ));
 }
 
@@ -1404,12 +1451,14 @@ fn match_criteria_originalhost_negation() {
         "canonical",
         "alice",
         "badhost",
+        false,
     ));
     assert!(match_criteria_host(
         "originalhost *,!badhost",
         "canonical",
         "alice",
         "goodhost",
+        false,
     ));
 }
 
@@ -1743,7 +1792,7 @@ fn resolve_pass_default_canonicalized_false() {
     // A resolved host from resolve_pass should have canonicalized = false.
     use super::ast;
     let ast = ast::parse("Host example\n  HostName example.com\n");
-    let resolved = resolve_pass(&ast, "example", "example", "user");
+    let resolved = resolve_pass(&ast, "example", "example", "user", false);
     assert!(!resolved.canonicalized);
     assert_eq!(resolved.host_name.as_deref(), Some("example.com"));
 }
@@ -2681,7 +2730,7 @@ fn glob_paths_double_star_conf_recursive() {
 
 #[test]
 fn glob_paths_double_star_at_start() {
-    // **/*.conf with no prefix — treats current dir ("." is not used; empty
+    // **/*.conf with no prefix: treats current dir ("." is not used; empty
     // prefix means empty base).  Using an explicit base directory.
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path();
@@ -2703,7 +2752,7 @@ fn glob_paths_double_star_at_start() {
 
 #[test]
 fn glob_paths_double_star_in_middle() {
-    // config.d/**/*.conf — prefix is config.d, suffix is *.conf.
+    // config.d/**/*.conf: prefix is config.d, suffix is *.conf.
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path();
     let config_d = base.join("config.d");
@@ -2755,7 +2804,7 @@ fn glob_paths_double_star_no_matches() {
 
 #[test]
 fn glob_paths_double_star_with_subdir_in_suffix() {
-    // **/sub/*.conf — matches any "sub" directory at any depth, then *.conf
+    // **/sub/*.conf: matches any "sub" directory at any depth, then *.conf
     // inside it.
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path();
@@ -2773,7 +2822,7 @@ fn glob_paths_double_star_with_subdir_in_suffix() {
     std::fs::create_dir(&sub2).unwrap();
     std::fs::write(sub2.join("b.conf"), "").unwrap();
 
-    // base/other/c.conf (should NOT match — not inside a "sub" dir)
+    // base/other/c.conf (should NOT match: not inside a "sub" dir)
     std::fs::write(other.join("c.conf"), "").unwrap();
 
     let pattern = format!("{}/**/sub/*.conf", base.display());
@@ -2851,7 +2900,7 @@ fn glob_paths_double_star_zero_levels() {
     let dir = tempfile::tempdir().unwrap();
     let base = dir.path();
 
-    // Only a file at the root — no subdirectories at all.
+    // Only a file at the root: no subdirectories at all.
     std::fs::write(base.join("solo.conf"), "").unwrap();
 
     let pattern = format!("{}/**/*.conf", base.display());
@@ -2996,4 +3045,251 @@ Host myhost
         2,
         "GSSAPI directives should appear in the directives list"
     );
+}
+
+#[tokio::test]
+async fn resolve_diamond_include_is_not_a_cycle() {
+    // main includes both left and right; both include shared. OpenSSH
+    // processes repeated includes without error, so this must resolve.
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("shared.conf"),
+        "Host shared\n    HostName shared.example.com\n",
+    )
+    .unwrap();
+    std::fs::write(
+        ssh_dir.join("left.conf"),
+        "Include shared.conf\nHost left\n    User leftuser\n",
+    )
+    .unwrap();
+    std::fs::write(
+        ssh_dir.join("right.conf"),
+        "Include shared.conf\nHost right\n    User rightuser\n",
+    )
+    .unwrap();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Include left.conf\nInclude right.conf\n",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "shared", None).await.unwrap();
+    assert_eq!(
+        resolved.host_name.as_deref(),
+        Some("shared.example.com"),
+        "diamond include must resolve, not error as a cycle"
+    );
+}
+
+#[tokio::test]
+async fn resolve_same_include_listed_twice_is_not_a_cycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("extra.conf"),
+        "Host extra\n    HostName extra.example.com\n",
+    )
+    .unwrap();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Include extra.conf\nInclude extra.conf\n",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "extra", None).await.unwrap();
+    assert_eq!(resolved.host_name.as_deref(), Some("extra.example.com"));
+}
+
+#[tokio::test]
+async fn resolve_direct_include_cycle_still_detected() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(ssh_dir.join("config"), "Include config\n").unwrap();
+
+    let err = resolve(ssh_dir, "any", None).await.unwrap_err();
+    assert!(matches!(err, toride_ssh_core::Error::ConfigIncludeCycle(_)));
+}
+
+#[tokio::test]
+async fn resolve_top_level_directives_apply_globally() {
+    // ssh_config(5): directives before any Host/Match block apply to every
+    // host, first-obtained-wins.
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Port 2222
+IdentityFile ~/.ssh/global_key
+
+Host specific
+    HostName specific.example.com
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "specific", None).await.unwrap();
+    assert_eq!(resolved.port, Some(2222), "top-level Port must apply");
+    let home = dirs::home_dir().unwrap();
+    assert_eq!(
+        resolved.identity_files,
+        vec![home.join(".ssh/global_key").display().to_string()],
+        "top-level IdentityFile must accumulate (tilde expanded)"
+    );
+    assert_eq!(resolved.host_name.as_deref(), Some("specific.example.com"));
+
+    let other = resolve(ssh_dir, "unrelated", None).await.unwrap();
+    assert_eq!(other.port, Some(2222));
+}
+
+#[tokio::test]
+async fn resolve_match_all_block_applies() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Match all
+    HashKnownHosts yes
+    ServerAliveInterval 60
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "anything", None).await.unwrap();
+    assert_eq!(
+        resolved
+            .directives
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("ServerAliveInterval"))
+            .count(),
+        1,
+        "Match all block directives must apply"
+    );
+}
+
+#[tokio::test]
+async fn resolve_match_final_applies_only_on_canonical_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Match final
+    ServerAliveInterval 60
+",
+    )
+    .unwrap();
+
+    // Without CanonicalizeHostname there is no second pass, so Match final
+    // must not apply.
+    let resolved = resolve(ssh_dir, "anything", None).await.unwrap();
+    assert!(
+        !resolved
+            .directives
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("ServerAliveInterval")),
+        "Match final must not apply on the first pass"
+    );
+
+    let canon_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        canon_dir.path().join("config"),
+        "\
+CanonicalizeHostname yes
+Match final
+    ServerAliveInterval 60
+",
+    )
+    .unwrap();
+    let canon = resolve(canon_dir.path(), "anything", None).await.unwrap();
+    assert!(
+        canon
+            .directives
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("ServerAliveInterval")),
+        "Match final must apply on the canonical (second) pass"
+    );
+}
+
+#[tokio::test]
+async fn resolve_match_final_all_applies_on_canonical_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+CanonicalizeHostname yes
+Match final all
+    ServerAliveInterval 90
+",
+    )
+    .unwrap();
+    let resolved = resolve(dir.path(), "anything", None).await.unwrap();
+    assert!(
+        resolved
+            .directives
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("ServerAliveInterval"))
+    );
+}
+
+#[tokio::test]
+async fn resolve_match_all_combined_with_value_criterion_never_applies() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+Match all user alice
+    ServerAliveInterval 120
+",
+    )
+    .unwrap();
+    let resolved = resolve(dir.path(), "anything", Some("alice"))
+        .await
+        .unwrap();
+    assert!(
+        !resolved
+            .directives
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("ServerAliveInterval")),
+        "'all' cannot combine with value-carrying criteria (ssh_config(5))"
+    );
+}
+
+#[tokio::test]
+async fn resolve_match_unknown_criterion_does_not_eat_following_keyword() {
+    // `address` is unsupported; its value must not be mistaken for a
+    // keyword, so the following `user` criterion still applies.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+Match address 192.0.2.1 user alice
+    ServerAliveInterval 45
+",
+    )
+    .unwrap();
+    let resolved = resolve(dir.path(), "anything", Some("alice"))
+        .await
+        .unwrap();
+    assert!(
+        resolved
+            .directives
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("ServerAliveInterval")),
+        "user criterion after an unknown criterion must still be honored"
+    );
+}
+
+#[tokio::test]
+async fn resolve_host_patterns_with_commas_match() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host foo,bar\n    HostName comma.example.com\n",
+    )
+    .unwrap();
+    let resolved = resolve(dir.path(), "bar", None).await.unwrap();
+    assert_eq!(resolved.host_name.as_deref(), Some("comma.example.com"));
 }

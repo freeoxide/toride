@@ -172,7 +172,7 @@ mod tests {
     /// Regression for the config/serde feature wiring gap: the `config`
     /// feature previously did NOT imply `serde`, so `UsersConfig::from_json`
     /// and `to_json` compiled but failed at runtime with "serde feature is
-    /// required". Now `config` implies `serde`, so a build with just
+    /// required". Now `config` implies `serde`, so a build with only
     /// `--features config` must round-trip JSON end to end.
     #[test]
     fn config_feature_round_trips_json() {

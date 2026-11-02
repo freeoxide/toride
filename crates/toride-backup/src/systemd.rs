@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::Error;
-use crate::spec::{Backend, BackupSpec, Schedule};
+use crate::spec::Schedule;
 use toride_runner::CommandSpec;
 
 use std::fmt::Write as _;
@@ -160,44 +160,46 @@ const BACKUP_TIMER_PREFIXES: &[&str] = &[
     "borgmatic",
 ];
 
-/// Enumerate backup-related timers: fixed vendor unit names plus prefix
-/// matches from `systemctl list-timers --all`, de-duplicated in first-seen
-/// order, each probed for installed/active status.
+/// Enumerate backup-related timers from a single `systemctl list-timers
+/// --all --no-pager --plain` listing: exactly one spawn answers every
+/// question this enumeration asks.
+///
+/// A timer that appears in the listing is loaded (installed) by definition;
+/// its `NEXT` column (an `n/a` first column marks a loaded-but-inactive
+/// timer) decides `active`. Vendor timer unit files that sit on disk but were
+/// never loaded by systemd are not enumerated: the previous per-unit
+/// `systemctl cat` fan-out (one spawn per fixed vendor name plus a re-probe
+/// per match) cost around ten spawns on every dashboard refresh tick.
 pub fn enumerate_backup_timers() -> Vec<TimerProbe> {
-    let mut seen: Vec<String> = Vec::new();
-    let mut probes: Vec<TimerProbe> = Vec::new();
+    let Ok(out) = run_systemctl(&["list-timers", "--all", "--no-pager", "--plain"]) else {
+        return Vec::new();
+    };
+    if !out.status.success() && out.stdout.is_empty() {
+        return Vec::new();
+    }
+    parse_backup_timers(&String::from_utf8_lossy(&out.stdout))
+}
 
-    for unit in BASE_BACKUP_TIMER_UNITS {
-        if seen.iter().any(|u| u == unit) {
+/// Parse `systemctl list-timers --all --plain` rows into probes for the
+/// fixed vendor unit names and managed prefixes, de-duplicated in first-seen
+/// order.
+fn parse_backup_timers(text: &str) -> Vec<TimerProbe> {
+    let mut probes: Vec<TimerProbe> = Vec::new();
+    for line in text.lines() {
+        let Some(unit) = extract_timer_unit(line) else {
+            continue;
+        };
+        let known = BASE_BACKUP_TIMER_UNITS.contains(&unit.as_str())
+            || BACKUP_TIMER_PREFIXES.iter().any(|p| unit.starts_with(p));
+        if !known || probes.iter().any(|p| p.unit == unit) {
             continue;
         }
-        let probe = probe_timer(unit);
-        if probe.installed {
-            seen.push(probe.unit.clone());
-            probes.push(probe);
-        }
+        probes.push(TimerProbe {
+            unit,
+            installed: true,
+            active: !line.trim_start().starts_with("n/a"),
+        });
     }
-
-    if let Ok(out) = run_systemctl(&["list-timers", "--all", "--no-pager", "--plain"])
-        && (out.status.success() || !out.stdout.is_empty())
-    {
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines() {
-            if let Some(unit) = extract_timer_unit(line) {
-                let matches_prefix = BACKUP_TIMER_PREFIXES.iter().any(|p| unit.starts_with(p));
-                if !matches_prefix {
-                    continue;
-                }
-                if seen.contains(&unit) {
-                    continue;
-                }
-                let probe = probe_timer(&unit);
-                seen.push(probe.unit.clone());
-                probes.push(probe);
-            }
-        }
-    }
-
     probes
 }
 
@@ -253,9 +255,35 @@ fn sanitize_unit_name(name: &str) -> String {
     out
 }
 
+/// Parse a single cron numeric field, enforcing its value range so a
+/// syntactically numeric but out-of-range field (`99` minutes) can never
+/// render a broken `OnCalendar=` value that lexical-only schedule validation
+/// would accept.
+fn parse_ranged(
+    field: &str,
+    range: std::ops::RangeInclusive<u8>,
+    label: &str,
+) -> crate::Result<u8> {
+    let n: u8 = field.parse().map_err(|_| {
+        Error::ScheduleError(format!(
+            "cron->OnCalendar: {label} {field:?} must be a single number in range {}-{}",
+            range.start(),
+            range.end()
+        ))
+    })?;
+    if !range.contains(&n) {
+        return Err(Error::ScheduleError(format!(
+            "cron->OnCalendar: {label} value {n} out of range ({}-{})",
+            range.start(),
+            range.end()
+        )));
+    }
+    Ok(n)
+}
+
 /// Convert a 5-field cron expression into a systemd `OnCalendar=` value
 /// (systemd.time(7)); cron DOW 0/7=Sun maps to weekday abbreviations.
-/// # Errors: expressions not losslessly representable (months, dom+dow, DOW lists).
+/// # Errors: expressions not losslessly representable (months, dom+dow, DOW lists) or numeric fields outside their cron ranges.
 pub fn cron_to_oncalendar(cron: &str) -> crate::Result<String> {
     let fields: Vec<&str> = cron.split_whitespace().collect();
     if fields.len() != 5 {
@@ -286,16 +314,8 @@ pub fn cron_to_oncalendar(cron: &str) -> crate::Result<String> {
 
     let time = format!(
         "{:02}:{:02}:00",
-        hour.parse::<u8>().map_err(|_| {
-            Error::ScheduleError(format!(
-                "cron->OnCalendar: hour {hour:?} must be a number 0-23"
-            ))
-        })?,
-        minute.parse::<u8>().map_err(|_| {
-            Error::ScheduleError(format!(
-                "cron->OnCalendar: minute {minute:?} must be a number 0-59"
-            ))
-        })?,
+        parse_ranged(hour, 0..=23, "hour")?,
+        parse_ranged(minute, 0..=59, "minute")?,
     );
 
     let weekday = if dow == "*" {
@@ -318,139 +338,15 @@ pub fn cron_to_oncalendar(cron: &str) -> crate::Result<String> {
 
     let date_part: String = if dom == "*" {
         "*-*-*".to_owned()
-    } else if dom.parse::<u8>().is_ok() {
-        format!("*-*-{dom}")
     } else {
-        return Err(Error::ScheduleError(format!(
-            "cron->OnCalendar: dom {dom:?} must be '*' or a single number"
-        )));
+        let n = parse_ranged(dom, 1..=31, "day-of-month")?;
+        format!("*-*-{n:02}")
     };
 
     Ok(match weekday {
         Some(wd) => format!("{wd} {date_part} {time}"),
         None => format!("{date_part} {time}"),
     })
-}
-
-/// Render a `.service` unit running the restic/borg backup command with
-/// `Type=oneshot`, the passphrase delivered via `RESTIC_PASSWORD_FILE` /
-/// `BORG_PASSCOMMAND` from a root-owned file — never as a CLI flag.
-pub fn render_service_unit(spec: &BackupSpec) -> String {
-    let mut s = String::new();
-    s.push_str("[Unit]\n");
-    let _ = writeln!(s, "Description=toride backup job: {}", spec.name);
-    s.push_str("Documentation=https://restic.readthedocs.io\n");
-    s.push_str("Wants=network-online.target\n");
-    s.push_str("After=network-online.target\n\n");
-
-    s.push_str("[Service]\n");
-    s.push_str("Type=oneshot\n");
-
-    let exec = exec_start(spec);
-    let _ = writeln!(s, "ExecStart={exec}");
-
-    s.push_str("PrivateTmp=true\n");
-
-    if spec.password_command.is_some() {
-        let pw_file = password_file_path(&spec.name);
-        match spec.backend {
-            Backend::Restic => {
-                let val = quote_env_value(&pw_file.display().to_string());
-                let _ = writeln!(s, "Environment=RESTIC_PASSWORD_FILE={val}");
-            }
-            Backend::Borg => {
-                let val = quote_env_value(&format!("cat {}", pw_file.display()));
-                let _ = writeln!(s, "Environment=BORG_PASSCOMMAND={val}");
-            }
-        }
-    }
-
-    for (k, v) in &spec.extra_env {
-        if !is_valid_env_key(k) {
-            tracing::warn!(key = %k, "skipping extra_env with invalid name");
-            continue;
-        }
-        let _ = writeln!(s, "Environment={}={}", k, quote_env_value(v));
-    }
-
-    s
-}
-
-/// Directory under which per-job password files (root-owned, 0600) are
-/// materialized at install time by running the spec's `password_command`.
-pub const PASSWORD_FILE_DIR: &str = "/etc/toride-backup";
-
-/// On-disk password-file path for a job; the name is sanitized (see
-/// [`unit_names`]) so it cannot leave [`PASSWORD_FILE_DIR`].
-pub fn password_file_path(name: &str) -> PathBuf {
-    Path::new(PASSWORD_FILE_DIR).join(format!("{}.pw", sanitize_unit_name(name)))
-}
-
-fn is_valid_env_key(key: &str) -> bool {
-    let mut chars = key.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return false;
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-fn quote_env_value(value: &str) -> String {
-    if value.contains('\n') {
-        tracing::warn!("extra_env value contains a newline; replaced with placeholder");
-        return "<<invalid-newline>>".to_owned();
-    }
-    let needs_quote = value.is_empty()
-        || value
-            .chars()
-            .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\' | '='));
-    if needs_quote {
-        // systemd.syntax(7): only `\'`/`\\` escapes apply in single quotes — the
-        // POSIX `'\''` splice misparses. https://www.freedesktop.org/software/systemd/man/systemd.syntax.html
-        let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
-        format!("'{escaped}'")
-    } else {
-        value.to_owned()
-    }
-}
-
-fn exec_start(spec: &BackupSpec) -> String {
-    let repo = spec.repository.display().to_string();
-    let mut tokens: Vec<String> = Vec::new();
-    match spec.backend {
-        Backend::Restic => {
-            tokens.push("restic".into());
-            tokens.push("-r".into());
-            tokens.push(repo);
-            tokens.push("backup".into());
-            for src in &spec.sources {
-                tokens.push(src.display().to_string());
-            }
-            for tag in &spec.tags {
-                tokens.push("--tag".into());
-                tokens.push(tag.clone());
-            }
-            for pat in &spec.exclude_patterns {
-                tokens.push("--exclude".into());
-                tokens.push(pat.clone());
-            }
-        }
-        Backend::Borg => {
-            tokens.push("borg".into());
-            tokens.push("create".into());
-            tokens.push(format!("{repo}::{{now}}"));
-            for src in &spec.sources {
-                tokens.push(src.display().to_string());
-            }
-            for pat in &spec.exclude_patterns {
-                tokens.push("--exclude".into());
-                tokens.push(pat.clone());
-            }
-        }
-    }
-    shell_join(&tokens)
 }
 
 /// Render a `.timer` unit translating the cron expression to `OnCalendar=`
@@ -469,29 +365,6 @@ pub fn render_timer_unit(name: &str, schedule: &Schedule) -> crate::Result<Strin
     s.push_str("[Install]\n");
     s.push_str("WantedBy=timers.target\n");
     Ok(s)
-}
-
-fn shell_join(tokens: &[String]) -> String {
-    tokens
-        .iter()
-        .map(|t| {
-            let needs_quote = t.is_empty()
-                || t.chars()
-                    .any(|c| c.is_whitespace() || matches!(c, '"' | '\\' | '$' | '`' | '\''));
-            if needs_quote {
-                let escaped = t
-                    .replace('\\', "\\\\")
-                    .replace('"', "\\\"")
-                    .replace('%', "%%");
-                format!("\"{escaped}\"")
-            } else if t.contains('%') {
-                t.replace('%', "%%")
-            } else {
-                t.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// Resolve the on-disk path for a unit file under [`SYSTEMD_UNIT_DIR`].
@@ -598,7 +471,7 @@ mod tests {
         let spawns = SYSTEMCTL_SPAWNS.with(std::cell::Cell::get);
         assert_eq!(
             spawns, 1,
-            "absent unit: `cat` only — is-active must be skipped"
+            "absent unit: `cat` only: is-active must be skipped"
         );
         assert!(!probe.installed);
         assert!(
@@ -607,41 +480,63 @@ mod tests {
         );
     }
 
+    /// Enumerate must issue exactly one spawn: the single `list-timers --all`
+    /// query (the previous fan-out probed eight fixed vendor units with one
+    /// `systemctl cat` each, plus a re-probe per match).
     #[test]
-    fn enumerate_backup_timers_spawn_ceiling() {
+    fn enumerate_backup_timers_spawns_exactly_one_list_timers() {
         SYSTEMCTL_SPAWNS.with(|c| c.set(0));
-        let probes = enumerate_backup_timers();
+        let _probes = enumerate_backup_timers();
         let spawns = SYSTEMCTL_SPAWNS.with(std::cell::Cell::get);
-        let base = BASE_BACKUP_TIMER_UNITS.len();
-        let installed = probes.iter().filter(|p| p.installed).count();
-        let ceiling = 1 + base + probes.len() + installed;
-        assert!(
-            spawns <= ceiling,
-            "enumerate spawned {spawns} times, over the structural ceiling {ceiling}"
+        assert_eq!(
+            spawns, 1,
+            "enumeration must be answered by one list-timers spawn"
         );
     }
 
-    use std::collections::HashMap;
-    use std::path::PathBuf;
+    /// The list-timers parser derives installed/active from the table rows:
+    /// an `n/a` NEXT column means loaded but inactive; unrelated timers are
+    /// skipped.
+    #[test]
+    fn parse_backup_timers_reads_rows_and_na_activity() {
+        let table = concat!(
+            "NEXT                        LEFT          LAST       PASSED UNIT                    ACTIVATES\n",
+            "Sun 2025-01-05 00:00:00 UTC 1h 20m left  Sat 2025-01-04 00:00:00 UTC 22h ago restic-backup.timer restic-backup.service\n",
+            "n/a                         n/a           Sun 2024-12-01 00:00:00 UTC -       borg.timer               borg.service\n",
+            "Mon 2025-01-06 00:00:00 UTC 2d left       n/a                         -       unrelated.timer          unrelated.service\n",
+            "Sun 2025-01-05 00:00:00 UTC 1h left       n/a                         -       toride-backup-nightly.timer toride-backup-nightly.service\n",
+            "\n1 timers listed.\n",
+        );
+        let probes = parse_backup_timers(table);
+        let restic = probes
+            .iter()
+            .find(|p| p.unit == "restic-backup.timer")
+            .expect("vendor timer found");
+        assert!(restic.installed);
+        assert!(restic.active, "a populated NEXT column means active");
 
-    use crate::spec::{Backend, BackupSpec, Encryption, RetentionPolicy};
+        let borg = probes
+            .iter()
+            .find(|p| p.unit == "borg.timer")
+            .expect("vendor timer found");
+        assert!(borg.installed);
+        assert!(!borg.active, "an n/a NEXT column means inactive");
 
-    fn sample_restic_spec() -> BackupSpec {
-        BackupSpec {
-            name: "nightly".into(),
-            backend: Backend::Restic,
-            repository: PathBuf::from("/srv/restic-repo"),
-            sources: vec![PathBuf::from("/home/user/work")],
-            schedule: Schedule::new("0 2 * * *"),
-            retention: RetentionPolicy::default_policy(),
-            encryption: Encryption::RepoKey,
-            password_command: Some("cat /etc/restic/password".into()),
-            exclude_patterns: vec!["*.tmp".into()],
-            tags: vec!["auto".into()],
-            extra_env: HashMap::new(),
-        }
+        assert!(
+            probes.iter().all(|p| p.unit != "unrelated.timer"),
+            "non-backup timers must be skipped: {probes:?}"
+        );
+        assert!(
+            probes
+                .iter()
+                .any(|p| p.unit == "toride-backup-nightly.timer"),
+            "managed toride timers must be found: {probes:?}"
+        );
     }
 
+    use std::path::PathBuf;
+
+    use crate::spec::Schedule;
     #[test]
     fn cron_to_oncalendar_daily_at_2am() {
         let oncal = cron_to_oncalendar("0 2 * * *").unwrap();
@@ -658,6 +553,33 @@ mod tests {
     fn cron_to_oncalendar_dow_7_is_sunday() {
         let oncal = cron_to_oncalendar("0 0 * * 7").unwrap();
         assert_eq!(oncal, "Sun *-*-* 00:00:00");
+    }
+
+    #[test]
+    fn cron_to_oncalendar_dom_is_zero_padded() {
+        let oncal = cron_to_oncalendar("0 2 5 * *").unwrap();
+        assert_eq!(oncal, "*-*-05 02:00:00");
+    }
+
+    /// Out-of-range numeric fields must be rejected: `0 99 * * *` previously
+    /// rendered the broken `OnCalendar=*-*-* 99:00:00` and passed every
+    /// lexical check the installer runs.
+    #[test]
+    fn cron_to_oncalendar_rejects_out_of_range_fields() {
+        for cron in [
+            "0 99 * * *",
+            "99 0 * * *",
+            "0 24 * * *",
+            "60 0 * * *",
+            "0 0 32 * *",
+            "0 0 0 * *",
+        ] {
+            let err = cron_to_oncalendar(cron).unwrap_err();
+            assert!(
+                matches!(err, Error::ScheduleError(_)),
+                "cron {cron:?}: expected ScheduleError, got {err:?}"
+            );
+        }
     }
 
     #[test]
@@ -700,151 +622,6 @@ mod tests {
     }
 
     #[test]
-    fn render_service_unit_has_execstart_without_password_on_cli() {
-        let spec = sample_restic_spec();
-        let unit = render_service_unit(&spec);
-        assert!(unit.contains("ExecStart=restic -r /srv/restic-repo backup"));
-        assert!(unit.contains("/home/user/work"));
-        assert!(unit.contains("--tag auto"));
-        assert!(unit.contains("--exclude *.tmp"));
-        assert!(
-            !unit.contains("--password"),
-            "password must not be a CLI flag: {unit}"
-        );
-        assert!(
-            unit.contains("RESTIC_PASSWORD_FILE=/etc/toride-backup/nightly.pw"),
-            "expected RESTIC_PASSWORD_FILE pointing at the materialized file: {unit}"
-        );
-        assert!(
-            !unit.contains("RESTIC_PASSWORD=$(cat"),
-            "must not emit the un-expanded $(...) shell form: {unit}"
-        );
-        assert!(unit.contains("Type=oneshot"));
-    }
-
-    #[test]
-    fn render_service_unit_borg_uses_create_and_passphrase_env() {
-        let mut spec = sample_restic_spec();
-        spec.backend = Backend::Borg;
-        spec.repository = PathBuf::from("/mnt/borg/repo");
-        let unit = render_service_unit(&spec);
-        assert!(unit.contains("ExecStart=borg create /mnt/borg/repo::{now}"));
-        assert!(
-            unit.contains("BORG_PASSCOMMAND='cat /etc/toride-backup/nightly.pw'"),
-            "expected quoted BORG_PASSCOMMAND pointing at the materialized file: {unit}"
-        );
-        assert!(
-            !unit.contains("BORG_PASSCOMMAND=cat /etc/toride-backup/nightly.pw"),
-            "BORG_PASSCOMMAND value must be quoted, not bare: {unit}"
-        );
-        assert!(
-            !unit.contains("BORG_PASSPHRASE=$(cat"),
-            "must not emit the un-expanded $(...) shell form: {unit}"
-        );
-    }
-
-    fn parse_systemd_env_value(line: &str) -> Option<String> {
-        let rest = line.strip_prefix("Environment=")?;
-        let eq = rest.find('=')?;
-        let mut value = &rest[eq + 1..];
-
-        if value.starts_with('\'') {
-            let mut out = String::new();
-            let bytes = value.as_bytes();
-            let mut i = 1;
-            let mut closed = false;
-            while i < bytes.len() {
-                let c = bytes[i];
-                if c == b'\\' && i + 1 < bytes.len() {
-                    out.push(bytes[i + 1] as char);
-                    i += 2;
-                    continue;
-                }
-                if c == b'\'' {
-                    closed = true;
-                    break;
-                }
-                out.push(c as char);
-                i += 1;
-            }
-            return if closed { Some(out) } else { None };
-        }
-
-        let trimmed = value.trim_start();
-        let end = trimmed
-            .find(|c: char| c.is_whitespace())
-            .unwrap_or(trimmed.len());
-        value = &trimmed[..end];
-        Some(value.to_owned())
-    }
-
-    #[test]
-    fn borg_passcommand_value_is_quoted_and_round_trips() {
-        let mut spec = sample_restic_spec();
-        spec.backend = Backend::Borg;
-        spec.repository = PathBuf::from("/mnt/borg/repo");
-        let unit = render_service_unit(&spec);
-
-        let line = unit
-            .lines()
-            .find(|l| l.starts_with("Environment=BORG_PASSCOMMAND="))
-            .expect("rendered unit must contain a BORG_PASSCOMMAND Environment= line");
-
-        let expected_value = format!("cat {}", password_file_path(&spec.name).display());
-        let parsed = parse_systemd_env_value(line)
-            .expect("BORG_PASSCOMMAND line must be parseable as Environment=KEY=VALUE");
-
-        assert_eq!(
-            parsed, expected_value,
-            "BORG_PASSCOMMAND value must round-trip to the full `cat <pwfile>`; \
-             got {parsed:?} from line {line:?}. \
-             An unquoted value would have been split to just `cat`.",
-        );
-    }
-
-    #[test]
-    fn unquoted_passcommand_would_be_split_by_systemd_parser() {
-        let parsed =
-            parse_systemd_env_value("Environment=BORG_PASSCOMMAND=cat /etc/toride-backup/x.pw")
-                .unwrap();
-        assert_eq!(
-            parsed, "cat",
-            "an unquoted space-bearing value must collapse to its first token"
-        );
-    }
-
-    #[test]
-    fn render_service_unit_quotes_and_validates_extra_env() {
-        let mut spec = sample_restic_spec();
-        spec.extra_env = std::collections::HashMap::from([
-            (
-                "RESTIC_REPOSITORY".to_owned(),
-                "s3:https://host/bkt".to_owned(),
-            ),
-            ("GOOD_VAR".to_owned(), "has spaces".to_owned()),
-            ("bad name".to_owned(), "rejected".to_owned()),
-        ]);
-        let unit = render_service_unit(&spec);
-        assert!(unit.contains("Environment=RESTIC_REPOSITORY=s3:https://host/bkt"));
-        assert!(unit.contains("Environment=GOOD_VAR='has spaces'"));
-        assert!(
-            !unit.contains("bad name"),
-            "invalid extra_env key must be skipped: {unit}"
-        );
-    }
-
-    #[test]
-    fn password_file_path_sanitizes_name() {
-        assert_eq!(
-            password_file_path("nightly"),
-            PathBuf::from("/etc/toride-backup/nightly.pw")
-        );
-        let p = password_file_path("../etc/passwd");
-        assert!(p.starts_with("/etc/toride-backup/"));
-        assert!(!p.to_string_lossy().contains("/etc/passwd"));
-    }
-
-    #[test]
     fn render_timer_unit_has_oncalendar_and_persistent() {
         let unit = render_timer_unit("nightly", &Schedule::new("0 2 * * *")).unwrap();
         assert!(unit.contains("OnCalendar=*-*-* 02:00:00"));
@@ -859,57 +636,6 @@ mod tests {
         assert!(unit.contains("Type=oneshot"));
         assert!(!unit.contains("password"));
         assert!(!unit.contains("passphrase"));
-    }
-
-    fn restic_backup_command_spec(spec: &BackupSpec, passphrase: &str) -> CommandSpec {
-        let mut cmd = CommandSpec::new("restic")
-            .arg("-r")
-            .arg(spec.repository.display().to_string())
-            .arg("backup");
-        for src in &spec.sources {
-            cmd = cmd.arg(src.display().to_string());
-        }
-        for tag in &spec.tags {
-            cmd = cmd.arg("--tag").arg(tag);
-        }
-        cmd.env("RESTIC_PASSWORD", passphrase).redact(true)
-    }
-
-    #[test]
-    fn passphrase_bearing_command_has_redact_true_and_secret_in_env() {
-        let spec = sample_restic_spec();
-        let cmd = restic_backup_command_spec(&spec, "correct-horse-battery-staple");
-
-        assert!(
-            cmd.redact,
-            "passphrase-bearing command must set redact(true)"
-        );
-        assert!(
-            cmd.args.iter().all(|a| !a.contains("correct-horse")),
-            "passphrase leaked into args: {:?}",
-            cmd.args
-        );
-        assert_eq!(
-            cmd.env.iter().find(|(k, _)| k == "RESTIC_PASSWORD"),
-            Some(&(
-                "RESTIC_PASSWORD".to_owned(),
-                "correct-horse-battery-staple".to_owned()
-            ))
-        );
-        assert!(
-            !cmd.args
-                .iter()
-                .any(|a| a == "--password" || a.starts_with("--password=")),
-            "--password flag must not appear on the CLI"
-        );
-    }
-
-    #[test]
-    fn exec_start_quotes_paths_with_spaces() {
-        let mut spec = sample_restic_spec();
-        spec.sources = vec![PathBuf::from("/home/user/my files")];
-        let line = exec_start(&spec);
-        assert!(line.contains("\"/home/user/my files\""));
     }
 
     #[test]

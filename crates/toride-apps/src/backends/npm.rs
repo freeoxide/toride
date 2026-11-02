@@ -3,9 +3,9 @@
 //! [`NpmBackend`] executes the planner's [`Operation::NpmInstall`] /
 //! [`Operation::NpmUninstall`] / [`Operation::NpmUpdate`] operations through
 //! the shared [`CommandRunner`] seam and answers list/version queries from
-//! npm's own JSON output. The backend manages the **global** scope (`-g`) —
+//! npm's own JSON output. The backend manages the **global** scope (`-g`),
 //! project-local dependencies belong to a project's package manager runs,
-//! not to an app layer — while the operation's `global` flag stays the
+//! not to an app layer: while the operation's `global` flag stays the
 //! caller's decision per operation.
 //!
 //! [`Operation::NpmInstall`]: crate::Operation::NpmInstall
@@ -32,7 +32,7 @@ pub struct NpmBackend {
 }
 
 impl NpmBackend {
-    /// Create the backend over an explicit seam, with no host assumptions —
+    /// Create the backend over an explicit seam, with no host assumptions:
     /// the test-friendly constructor.
     #[must_use]
     pub fn new(runner: CommandRunner) -> Self {

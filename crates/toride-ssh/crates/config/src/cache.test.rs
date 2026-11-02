@@ -180,3 +180,69 @@ fn changed_file_invalidates_content_too() {
     );
     assert_eq!(second.as_str(), "Host bravo\n");
 }
+
+#[test]
+fn cache_entries_are_capped() {
+    crate::cache::clear_all_cache_for_tests();
+    let dir = tempfile::tempdir().expect("tempdir");
+    for i in 0..300 {
+        let path = dir.path().join(format!("config-{i}"));
+        std::fs::write(&path, format!("Host h{i}\n    Port {i}\n")).unwrap();
+        crate::cache::load_cached_ast(&path).unwrap();
+    }
+    assert!(
+        crate::cache::cache_len_for_tests() <= 256,
+        "cache must stay bounded, got {}",
+        crate::cache::cache_len_for_tests()
+    );
+}
+
+#[test]
+fn eviction_removes_the_oldest_entry_not_the_newest() {
+    crate::cache::clear_all_cache_for_tests();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fill_count = super::CONFIG_CACHE_CAP;
+    for i in 0..fill_count {
+        let path = dir.path().join(format!("fill-{i}"));
+        std::fs::write(&path, "Host fill\n").expect("write fixture");
+        crate::cache::load_cached_ast(&path).expect("fill insert");
+    }
+
+    let fresh = dir.path().join("fresh-entry");
+    std::fs::write(&fresh, "Host fresh\n").expect("write fixture");
+    let fresh_ast = crate::cache::load_cached_ast(&fresh).expect("fresh insert");
+
+    let extra = dir.path().join("extra");
+    std::fs::write(&extra, "Host extra\n").expect("write fixture");
+    crate::cache::load_cached_ast(&extra).expect("insert past the cap");
+
+    assert!(
+        crate::cache::cache_contains_for_tests(&fresh),
+        "the newest entry must survive an eviction at the cap"
+    );
+    assert!(
+        !crate::cache::cache_contains_for_tests(&dir.path().join("fill-0")),
+        "the oldest entry must be the eviction victim"
+    );
+    let again = crate::cache::load_cached_ast(&fresh).expect("fresh reload");
+    assert!(
+        Arc::ptr_eq(&fresh_ast, &again),
+        "a surviving entry must serve the memoized Arc"
+    );
+}
+
+#[test]
+fn deleting_a_file_drops_its_stale_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config");
+    std::fs::write(&path, "Host h\n    Port 22\n").unwrap();
+    crate::cache::load_cached_ast(&path).unwrap();
+    assert!(crate::cache::cache_contains_for_tests(&path));
+
+    std::fs::remove_file(&path).unwrap();
+    assert!(crate::cache::load_cached_ast(&path).is_err());
+    assert!(
+        !crate::cache::cache_contains_for_tests(&path),
+        "a NotFound probe must evict the stale entry"
+    );
+}

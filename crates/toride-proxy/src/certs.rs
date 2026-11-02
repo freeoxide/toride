@@ -120,7 +120,7 @@ impl<'a> CertManager<'a> {
     /// Routes the certbot invocation through [`Runner::run_checked`], so a
     /// failure surfaces scrubbed stderr (via the runner error's `Display`)
     /// instead of interpolating raw `output.stderr` into [`Error::CertRenewal`]
-    /// — consistent with [`obtain_certificate`](Self::obtain_certificate) and
+    ///: consistent with [`obtain_certificate`](Self::obtain_certificate) and
     /// [`renew_all`](Self::renew_all).
     ///
     /// # Errors
@@ -216,7 +216,7 @@ mod tests {
     /// because `--email` carries a registration/recovery contact address (PII).
     ///
     /// The exact arg shape comes from the certbot(1) man page
-    /// (<https://man.archlinux.org/man/certbot.1>): `-m EMAIL, --email EMAIL` —
+    /// (<https://man.archlinux.org/man/certbot.1>): `-m EMAIL, --email EMAIL`:
     /// "Email used for registration and recovery contact." Non-interactive
     /// certificate issuance requires `--agree-tos` + `--non-interactive`
     /// alongside the webroot authenticator (`--webroot -w PATH -d DOMAIN`),
@@ -284,14 +284,14 @@ mod tests {
     /// occurred during registration for webmaster@example.com" or
     /// "There were too many requests of a given type for <email>"). Because
     /// `--email` carries PII, `obtain_certificate` builds the spec with
-    /// `redact(true)` — and that redaction is only applied on the
+    /// `redact(true)`, and that redaction is only applied on the
     /// `run_checked` path (`Runner::run_checked` runs stderr through
     /// `display::scrub_stderr`, which replaces the `--email` value with
     /// `***` since `--email` is in `REDACT_FLAGS`).
     ///
     /// Previously `obtain_certificate` called the plain `run` path, which
     /// returns raw unscrubbed stderr, and then interpolated it straight into
-    /// `Error::CertRenewal` — leaking the email that `redact(true)` promised
+    /// `Error::CertRenewal`: leaking the email that `redact(true)` promised
     /// to scrub. This test proves the fix: the PII email value must be absent
     /// from the surfaced failure message.
     #[test]
@@ -352,7 +352,7 @@ mod tests {
     /// We pin two facts: (1) the message carries the runner error's
     /// `"command failed"` prefix, proving it came from `run_checked` rather
     /// than a raw stderr paste; and (2) a spec with `redact(true)` actually
-    /// scrubs a secret value out of that message — the property the old code
+    /// scrubs a secret value out of that message: the property the old code
     /// could never guarantee because it never let the spec reach the scrubber.
     #[test]
     fn renew_all_failure_routes_through_run_checked() {
@@ -376,7 +376,7 @@ mod tests {
             msg.starts_with("certificate renewal failed:"),
             "unexpected CertRenewal message shape: {msg}"
         );
-        // The runner's CommandFailed Display prefix must be present — this is
+        // The runner's CommandFailed Display prefix must be present: this is
         // the marker that the error flowed through run_checked (and thus
         // scrub_stderr) rather than being a direct stderr paste.
         assert!(

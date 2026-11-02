@@ -163,7 +163,7 @@ mod tests {
     fn diff_empty_when_no_existing_config() {
         let paths = WireguardPaths::with_root(PathBuf::from("/tmp/no-such-dir"));
         let mgr = ConfigManager::new(&paths);
-        let spec = WireguardSpec::new("wg0".to_owned(), "10.0.0.1/24".to_owned());
+        let spec = WireguardSpec::new("wg0".to_owned(), vec!["10.0.0.1/24".to_owned()]);
         let diff = mgr.diff(&spec).unwrap();
         assert!(!diff.is_empty()); // everything is new
     }

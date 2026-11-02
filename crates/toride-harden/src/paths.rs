@@ -8,17 +8,17 @@ use std::path::{Path, PathBuf};
 /// Filesystem paths used by toride-harden.
 #[derive(Debug, Clone)]
 pub struct HardenPaths {
-    /// `/etc/sysctl.d/` — drop-in directory for sysctl configuration.
+    /// `/etc/sysctl.d/`: drop-in directory for sysctl configuration.
     pub sysctl_d: PathBuf,
-    /// `/etc/sysctl.conf` — main sysctl configuration file.
+    /// `/etc/sysctl.conf`: main sysctl configuration file.
     pub sysctl_conf: PathBuf,
-    /// `/proc/sys/` — runtime kernel parameter tree.
+    /// `/proc/sys/`: runtime kernel parameter tree.
     pub proc_sys: PathBuf,
-    /// `/etc/fstab` — filesystem table (for shm mount entries).
+    /// `/etc/fstab`: filesystem table (for shm mount entries).
     pub fstab: PathBuf,
-    /// `/run/sysctl.d/` — runtime sysctl drop-in directory.
+    /// `/run/sysctl.d/`: runtime sysctl drop-in directory.
     pub run_sysctl_d: PathBuf,
-    /// `/usr/lib/sysctl.d/` — vendor-provided sysctl drop-ins.
+    /// `/usr/lib/sysctl.d/`: vendor-provided sysctl drop-ins.
     pub usr_sysctl_d: PathBuf,
     /// Backup directory for pre-mutation snapshots.
     pub backup_dir: PathBuf,

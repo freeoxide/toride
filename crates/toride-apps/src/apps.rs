@@ -1,29 +1,29 @@
 //! # Apps facade
 //!
 //! [`Apps`] is the front door of the execution layer: one call per user
-//! intent — ensure an app is installed (at a version, when asked), update
+//! intent: ensure an app is installed (at a version, when asked), update
 //! it, uninstall it, adopt an install someone else made, ask where it
 //! stands, search the registries, list the versions its backend offers,
-//! pin and unpin — composing every lower layer this crate built:
+//! pin and unpin, composing every lower layer this crate built:
 //!
 //! 1. **Detect before resolve** (the toride-installer
 //!    `Detector`/`EnsureOutcome` rule): [`Apps::ensure_installed`] answers
-//!    from purely local state first — the install manifest plus the
-//!    backends' kind-aware probes — with **zero registry adapter calls**
+//!    from purely local state first (the install manifest plus the
+//!    backends' kind-aware probes) with **zero registry adapter calls**
 //!    when the manifest already records the app and its backend still
 //!    confirms it. Only a true miss resolves through the registry
 //!    [`Adapter`]s, plans via [`plan_install`], and executes through the
 //!    routed [`Backend`].
 //! 2. **Record what actually ran**: after a successful install the manifest
-//!    record is built from the **executed** plan operation — the flatpak
+//!    record is built from the **executed** plan operation: the flatpak
 //!    ref the backend ran (never re-derived from the registry app), the
-//!    brew token + cask kind, the distro package + family — plus the
+//!    brew token + cask kind, the distro package + family, plus the
 //!    verified version, and saved atomically. Uninstalls read the
 //!    **record's** identifiers back as the source of truth, never
 //!    re-planning (an app installed under one arch must uninstall even
 //!    when re-planning would spell a different ref).
 //! 3. **Honest outcomes**: [`EnsureAppOutcome`] mirrors toride-installer's
-//!    `EnsureOutcome` — `AlreadyPresent(AppStatus)` (the manifest+backend
+//!    `EnsureOutcome`: `AlreadyPresent(AppStatus)` (the manifest+backend
 //!    answer, including `Foreign`: an app someone else installed is kept
 //!    as-is, like an on-`$PATH` copy) or `Installed { .. }` carrying the
 //!    recorded identifiers, the version, and whether the facade's own
@@ -40,7 +40,7 @@
 //! manifest at the resolved path. It loads once at [`AppsBuilder::build`]
 //! and is held in memory (a single-process CLI assumption; concurrent
 //! writers are last-rename-wins per the manifest's contract). A corrupt
-//! document — above all one written by a newer toride — is **quarantined
+//! document (above all one written by a newer toride) is **quarantined
 //! aside, never a fatal stop and never saved over**: the facade starts
 //! from empty, [`Apps::quarantined`] names the moved file, and the next
 //! successful mutation writes a fresh document.
@@ -57,14 +57,14 @@
 //! - Uninstalling an app toride has no record for (a `Foreign` install)
 //!   is refused by default with [`AppsError::ForeignNotManaged`]; pass
 //!   `force` on [`AppUninstallOptions`] to remove it anyway, or
-//!   [`Apps::adopt`] it first to claim the install — both explicit, typed
+//!   [`Apps::adopt`] it first to claim the install: both explicit, typed
 //!   decisions, never silent ones.
 //!
 //! ## The blocking twin
 //!
 //! [`AppsBlocking`] (via [`Apps::blocking`]) exposes the same lifecycle
-//! verbs synchronously — every command on the calling thread, every
-//! manifest save in-line — for embedders without an async runtime. The
+//! verbs synchronously: every command on the calling thread, every
+//! manifest save in-line: for embedders without an async runtime. The
 //! registry's adapter trait is async, so the blocking surface takes
 //! resolved registry apps where this facade resolves ids, its
 //! registry-dependent arms answer
@@ -111,15 +111,16 @@ use crate::backends::{
     SnapBackend, UvBackend,
 };
 use crate::error::Error as BackendError;
-use crate::manifest::{
-    InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds, RecordSnapshot,
-};
+use crate::manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
 use crate::plan::{
     FlatpakInstallation, InstallOptions, InstallPlan, Operation, PackageManager, Target,
     UninstallOptions, UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
 };
 use crate::runner::CommandRunner;
-use crate::status::{AppStatus, BackendSet, app_status, app_status_sync};
+use crate::status::{
+    AppStatus, BackendSet, ForeignListings, app_status, app_status_sync, foreign_status_shared,
+    foreign_status_shared_sync,
+};
 use crate::store::{JsonRecordStore, RecordStore, StoreLoad};
 
 // ---------------------------------------------------------------------------
@@ -132,8 +133,8 @@ pub type AppsResult<T> = std::result::Result<T, AppsError>;
 /// Failures of the [`Apps`] facade. Deliberately a facade-local enum (the
 /// same pattern as [`ManifestError`], not variants on the crate's
 /// execution [`Error`](crate::Error)): the facade fails in ways no single
-/// lower layer does — unresolved ids, refused Foreign removals, absent
-/// backends — and it *wraps* each layer's own error via `#[from]`.
+/// lower layer does: unresolved ids, refused Foreign removals, absent
+/// backends, and it *wraps* each layer's own error via `#[from]`.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum AppsError {
@@ -151,7 +152,7 @@ pub enum AppsError {
     /// absorb, or to persist after a mutation. A corrupt prior document
     /// is not a load failure: the default JSON store quarantines it
     /// aside and the facade starts from empty
-    /// ([`Apps::quarantined`] names the moved file) — only a quarantine
+    /// ([`Apps::quarantined`] names the moved file), only a quarantine
     /// that cannot happen, or a store that cannot be read at all, errors
     /// here. Post-mutation persist failures surface per verb: as outcome
     /// warnings where the mutation itself already succeeded, as this
@@ -168,10 +169,10 @@ pub enum AppsError {
         id: String,
     },
 
-    /// The uninstall target is installed but carries no toride record —
+    /// The uninstall target is installed but carries no toride record:
     /// someone else installed it. Refused unless the caller passes
     /// `force` (an explicit, typed decision).
-    #[error("`{id}` is installed but not by toride — {detail}; pass force to remove it anyway")]
+    #[error("`{id}` is installed but not by toride: {detail}; pass force to remove it anyway")]
     ForeignNotManaged {
         /// Canonical toride id of the refused app.
         id: String,
@@ -179,7 +180,7 @@ pub enum AppsError {
         detail: String,
     },
 
-    /// The plan routes to a backend this facade instance does not hold —
+    /// The plan routes to a backend this facade instance does not hold:
     /// e.g. a cask install on a facade built without the homebrew backend
     /// attached.
     #[error("the plan routes to {backend}, which is not attached to this facade")]
@@ -231,19 +232,17 @@ pub enum AppsError {
     /// The update target carries no toride install record: update replays
     /// the record's own identifiers, so an app toride never recorded
     /// cannot be updated through this verb.
-    #[error(
-        "cannot update `{id}`: toride has no install record for it — ensure_installed it first"
-    )]
+    #[error("cannot update `{id}`: toride has no install record for it: ensure_installed it first")]
     UnrecordedUpdate {
         /// Canonical toride id of the app.
         id: String,
     },
 
-    /// The options name a target version this toride cannot pin to —
+    /// The options name a target version this toride cannot pin to:
     /// install-time version selection and brew pinning exist, but the
     /// update verb itself always moves to the manager's current.
     #[error(
-        "cannot update `{id}` to {target}: target pinning is not implemented — updates move to the manager's current version"
+        "cannot update `{id}` to {target}: target pinning is not implemented: updates move to the manager's current version"
     )]
     UpdateTargetNotPinnable {
         /// Canonical toride id of the app.
@@ -254,15 +253,15 @@ pub enum AppsError {
 
     /// The pin target carries no toride install record: pin operates on
     /// what the manifest knows toride installed, exactly like update.
-    #[error("cannot pin `{id}`: toride has no install record for it — ensure_installed it first")]
+    #[error("cannot pin `{id}`: toride has no install record for it: ensure_installed it first")]
     UnrecordedPin {
         /// Canonical toride id of the app.
         id: String,
     },
 
-    /// The unpin target carries no toride install record — the mirror of
+    /// The unpin target carries no toride install record: the mirror of
     /// [`AppsError::UnrecordedPin`].
-    #[error("cannot unpin `{id}`: toride has no install record for it — ensure_installed it first")]
+    #[error("cannot unpin `{id}`: toride has no install record for it: ensure_installed it first")]
     UnrecordedUnpin {
         /// Canonical toride id of the app.
         id: String,
@@ -273,7 +272,7 @@ pub enum AppsError {
     /// pass the resolved registry app (`AppsBlocking::ensure_installed` /
     /// `AppsBlocking::uninstall_app`) or use the async facade.
     #[error(
-        "cannot resolve `{id}` on the blocking facade: registry adapters are async — pass the resolved app or use the async facade"
+        "cannot resolve `{id}` on the blocking facade: registry adapters are async: pass the resolved app or use the async facade"
     )]
     BlockingResolveRequired {
         /// Canonical toride id of the app.
@@ -290,11 +289,11 @@ pub enum AppsError {
 pub struct AppInstallOptions {
     /// Elevation grant: `true` only when the caller has arranged root
     /// privileges. Distro plans require it; the facade never acquires
-    /// elevation itself (the no-auto-sudo contract — a requiring plan
+    /// elevation itself (the no-auto-sudo contract: a requiring plan
     /// without the grant is refused before any dispatch).
     pub elevated: bool,
     /// The exact thing to install (`None` = whatever the manager considers
-    /// current). Spelled into the plan's native addressing — see
+    /// current). Spelled into the plan's native addressing: see
     /// [`InstallOptions::version`]. Presence at another version does not
     /// satisfy a request carrying one: the facade installs at the
     /// requested version instead of answering
@@ -314,7 +313,7 @@ impl AppInstallOptions {
         }
     }
 
-    /// Assert that elevation has been arranged — consume-and-return, the
+    /// Assert that elevation has been arranged: consume-and-return, the
     /// same fluent spelling [`InstallRequest::elevated`] uses.
     ///
     /// [`InstallRequest::elevated`]: crate::InstallRequest::elevated
@@ -324,7 +323,7 @@ impl AppInstallOptions {
         self
     }
 
-    /// Select an exact version to install — consume-and-return; `None`
+    /// Select an exact version to install: consume-and-return; `None`
     /// takes whatever the manager considers current.
     #[must_use]
     pub fn version(mut self, version: Option<Version>) -> Self {
@@ -338,9 +337,9 @@ impl AppInstallOptions {
 pub struct AppUninstallOptions {
     /// Casks only: also remove shared preferences and caches
     /// (`brew uninstall --zap`). Ignored for formulae and non-homebrew
-    /// methods — the same rule the planner applies.
+    /// methods, the same rule the planner applies.
     pub zap: bool,
-    /// Elevation grant — see [`AppInstallOptions::elevated`]; distro
+    /// Elevation grant: see [`AppInstallOptions::elevated`]; distro
     /// uninstalls require it.
     pub elevated: bool,
     /// Allow removing a **Foreign** install (present, but no toride
@@ -361,21 +360,21 @@ impl AppUninstallOptions {
         }
     }
 
-    /// Toggle the cask zap flag — consume-and-return.
+    /// Toggle the cask zap flag: consume-and-return.
     #[must_use]
     pub const fn zap(mut self, zap: bool) -> Self {
         self.zap = zap;
         self
     }
 
-    /// Assert that elevation has been arranged — consume-and-return.
+    /// Assert that elevation has been arranged: consume-and-return.
     #[must_use]
     pub const fn elevated(mut self, elevated: bool) -> Self {
         self.elevated = elevated;
         self
     }
 
-    /// Allow removing a Foreign install — consume-and-return.
+    /// Allow removing a Foreign install: consume-and-return.
     #[must_use]
     pub const fn force(mut self, force: bool) -> Self {
         self.force = force;
@@ -386,7 +385,7 @@ impl AppUninstallOptions {
 /// Options for [`Apps::update`].
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct AppUpdateOptions {
-    /// Elevation grant — see [`AppInstallOptions::elevated`]; distro
+    /// Elevation grant: see [`AppInstallOptions::elevated`]; distro
     /// updates require it.
     pub elevated: bool,
     /// Preview the update instead of executing it: no command runs, the
@@ -411,21 +410,21 @@ impl AppUpdateOptions {
         }
     }
 
-    /// Assert that elevation has been arranged — consume-and-return.
+    /// Assert that elevation has been arranged: consume-and-return.
     #[must_use]
     pub const fn elevated(mut self, elevated: bool) -> Self {
         self.elevated = elevated;
         self
     }
 
-    /// Preview instead of executing — consume-and-return.
+    /// Preview instead of executing: consume-and-return.
     #[must_use]
     pub const fn dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }
 
-    /// Pin the update to a target version — consume-and-return.
+    /// Pin the update to a target version: consume-and-return.
     #[must_use]
     pub fn target(mut self, target: Option<Version>) -> Self {
         self.target = target;
@@ -448,12 +447,12 @@ pub enum UpdateOutcome {
         /// Version after the upgrade, when a probe reported one.
         to: Option<Version>,
     },
-    /// A dry run: nothing executed, nothing recorded — the argv that would
-    /// run plus the resolved versions.
+    /// A dry run (nothing executed, nothing recorded): the argv that
+    /// would run plus the resolved versions.
     Preview(UpdatePreview),
 }
 
-/// What a dry-run [`Apps::update`] would run — a thin render over the
+/// What a dry-run [`Apps::update`] would run: a thin render over the
 /// [`UpdatePlan`] plus the two resolved versions.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UpdatePreview {
@@ -470,7 +469,7 @@ pub struct UpdatePreview {
 /// (the adoption moment otherwise).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AdoptProvenance {
-    /// The detected install's backend-native identifiers — the identity
+    /// The detected install's backend-native identifiers: the identity
     /// every later uninstall/update replays, exactly like an executed
     /// record's.
     pub ids: NativeIds,
@@ -490,24 +489,24 @@ impl AdoptProvenance {
     }
 }
 
-/// Outcome of [`Apps::ensure_installed`] — the toride-installer
+/// Outcome of [`Apps::ensure_installed`]: the toride-installer
 /// `EnsureOutcome` semantics on this crate's seams: an already-satisfying
 /// state is kept with zero resolve/plan/execute work; a true miss is
 /// installed, recorded, and post-verified.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EnsureAppOutcome {
-    /// The app already satisfies the request and nothing ran — no adapter
+    /// The app already satisfies the request and nothing ran: no adapter
     /// was consulted, no plan built, no command dispatched. The carried
     /// [`AppStatus`] says which case held:
     /// [`AppStatus::Installed`] (the manifest record's backend confirmed
     /// the recorded identifiers, reporting the *current* version), or
     /// [`AppStatus::Foreign`] (a backend reports the app's native
-    /// identifiers present, but toride never recorded installing it — the
+    /// identifiers present, but toride never recorded installing it: the
     /// copy is kept as-is, exactly like toride-installer keeps a
     /// satisfying on-`$PATH` copy). When the options requested an exact
     /// [`version`](AppInstallOptions::version), this arm fires only when
     /// the record answers at exactly that version (brew's probed version
-    /// equals it; the recorded flatpak ref's branch equals it) — presence
+    /// equals it; the recorded flatpak ref's branch equals it), presence
     /// at another version falls through and installs at the requested
     /// one, and a Foreign copy never vouches for a version it did not
     /// report.
@@ -516,7 +515,7 @@ pub enum EnsureAppOutcome {
     /// Installed now. The identifiers are the **executed** ones (the
     /// manifest record's payload), the version is what the post-verify
     /// probe reported (falling back to the backend's own post-install
-    /// report), and `warning` carries every degraded-but-real condition —
+    /// report), and `warning` carries every degraded-but-real condition:
     /// the install succeeded even when one is present.
     Installed {
         /// Backend that performed the install.
@@ -524,8 +523,8 @@ pub enum EnsureAppOutcome {
         /// The actually-installed identifiers, recorded in the manifest.
         ids: NativeIds,
         /// Verified version when the probes report one (`None` = installed
-        /// without an observable version — legitimate for flatpak apps
-        /// without appdata metadata — or unverified, see `warning`).
+        /// without an observable version: legitimate for flatpak apps
+        /// without appdata metadata, or unverified, see `warning`).
         version: Option<String>,
         /// Whether the facade's own post-install probe confirmed presence.
         verified: bool,
@@ -545,12 +544,12 @@ pub enum UninstallAppOutcome {
 
     /// Removed. Carries a `warning` when execution succeeded but the
     /// facade's post-uninstall probe could not confirm absence (or the
-    /// manifest failed to save — the record was removed in memory either
+    /// manifest failed to save: the record was removed in memory either
     /// way).
     Removed {
         /// Backend that performed the uninstall.
         backend: BackendId,
-        /// The identifiers the removal ran against — the manifest record's
+        /// The identifiers the removal ran against: the manifest record's
         /// own for toride installs, the registry-derived ones for a forced
         /// Foreign removal.
         ids: NativeIds,
@@ -563,8 +562,8 @@ pub enum UninstallAppOutcome {
 /// One item's outcome from a batch verb
 /// ([`Apps::ensure_installed_many`] / [`Apps::uninstall_many`] and their
 /// blocking twins): the id, paired with exactly what running the
-/// single-item verb on it produced. Batch verbs attempt **every** item —
-/// one item's failure lives in its own `result` and never stops the rest —
+/// single-item verb on it produced. Batch verbs attempt **every** item:
+/// one item's failure lives in its own `result` and never stops the rest:
 /// so a batch's full effect is always this list, never a truncated
 /// prefix plus an outer error.
 #[derive(Debug)]
@@ -581,7 +580,7 @@ pub struct BatchOutcome<T> {
 // The facade
 // ---------------------------------------------------------------------------
 
-/// The backends this facade instance holds — one optional slot per install
+/// The backends this facade instance holds: one optional slot per install
 /// technology, long-lived (detected once, reused per query). The borrowed
 /// [`BackendSet`] the status layer consumes is built from these per query.
 #[derive(Default)]
@@ -616,7 +615,7 @@ struct AttachedBackends {
 /// default is the crate's JSON manifest).
 ///
 /// Build one with [`Apps::builder`]; mutating operations take `&mut self`
-/// (the in-memory records are single-owner by design — see the module
+/// (the in-memory records are single-owner by design: see the module
 /// docs), while [`Apps::status`] and [`Apps::search`] take `&self`.
 pub struct Apps {
     /// The seam every attached backend executes through (each backend
@@ -627,7 +626,7 @@ pub struct Apps {
     target: Target,
     /// The long-lived backends, one optional slot per technology.
     backends: AttachedBackends,
-    /// The durable ledger persistence — loaded once at build, saved after
+    /// The durable ledger persistence: loaded once at build, saved after
     /// each successful mutation.
     store: Arc<dyn RecordStore>,
     /// The working records, loaded from the store at build (missing
@@ -641,13 +640,13 @@ pub struct Apps {
 }
 
 impl Apps {
-    /// Start building a facade — see [`AppsBuilder`].
+    /// Start building a facade: see [`AppsBuilder`].
     #[must_use]
     pub fn builder() -> AppsBuilder {
         AppsBuilder::new()
     }
 
-    /// Wrap this facade in its blocking spelling — [`AppsBlocking`], the
+    /// Wrap this facade in its blocking spelling: [`AppsBlocking`], the
     /// sync twin sharing this instance's records, store, and backends.
     #[must_use]
     pub fn blocking(self) -> AppsBlocking {
@@ -678,7 +677,7 @@ impl Apps {
     }
 
     /// Where a corrupt prior store document was quarantined at build, when
-    /// recovery moved one aside — `None` when the store loaded cleanly.
+    /// recovery moved one aside: `None` when the store loaded cleanly.
     #[must_use]
     pub fn quarantined(&self) -> Option<&Utf8PathBuf> {
         self.quarantined.as_ref()
@@ -688,43 +687,49 @@ impl Apps {
     ///
     /// The pipeline, in order:
     ///
-    /// 1. **Detect before resolve** — with zero adapter calls: when the
+    /// 1. **Detect before resolve** (zero adapter calls): when the
     ///    manifest records the app and the recorded backend still confirms
     ///    the recorded identifiers, return
     ///    [`EnsureAppOutcome::AlreadyPresent`] with the current-version
     ///    [`AppStatus::Installed`] (one confirming probe, no plan, no
-    ///    execution — a stale record whose backend no longer reports the
+    ///    execution: a stale record whose backend no longer reports the
     ///    app falls through and re-installs). A requested version gates
     ///    this arm: only a record answering at exactly that version
     ///    (brew's probed version, the recorded flatpak ref's branch)
     ///    satisfies; anything else falls through and installs at the
     ///    requested version.
-    /// 2. **Resolve** — ask each adapter, in registration order, to look
+    /// 2. **Resolve**: ask each adapter, in registration order, to look
     ///    up its source-native id equal to the canonical slug; the first
     ///    hit wins ([`AppsError::Unresolved`] otherwise).
-    /// 3. **Foreign check** — when toride has no record, a backend
+    /// 3. **Foreign check**: when toride has no record, a backend
     ///    reporting the app's native identifiers present means someone
     ///    else installed it: keep it and return
     ///    [`EnsureAppOutcome::AlreadyPresent`] with
     ///    [`AppStatus::Foreign`], exactly like toride-installer keeps a
-    ///    satisfying on-`$PATH` copy — but only for a version-less
+    ///    satisfying on-`$PATH` copy, but only for a version-less
     ///    request: a Foreign copy reports no version to vouch with, so an
     ///    exact-version request falls through and installs.
-    /// 4. **Plan and execute** — [`plan_install`] derives the exact
+    /// 4. **Plan and execute**: [`plan_install`] derives the exact
     ///    operation for [`Apps::target`], spelling a requested
     ///    [`AppInstallOptions::version`] into the method's native
     ///    addressing; whenever the backend's own offering equals the
-    ///    request — present arm or not — the manager's current installs
+    ///    request (present arm or not) the manager's current installs
     ///    instead (it lands exactly the requested thing where a pin could
     ///    address a spelling the manager does not resolve); the routed
     ///    backend executes it with the caller's elevation grant (distro
     ///    plans without one are refused before any dispatch).
-    /// 5. **Post-verify and record** — the facade's own kind-aware probe
-    ///    (brew `list <kind> --versions`, the flatpak scoped listing, the
-    ///    distro package query) confirms presence and reads the version;
-    ///    the manifest record is built from the **executed** operation and
-    ///    saved atomically. A probe that cannot confirm, or a failed save,
-    ///    lands in the outcome's `warning` — the install itself succeeded.
+    /// 5. **Post-verify and record**: the backend's own post-install
+    ///    version evidence stands in for the facade's probe when it
+    ///    reports one (exactly one presence probe per install); the
+    ///    facade's kind-aware probe (brew `list <kind> --versions`, the
+    ///    flatpak scoped listing, the distro package query) runs only when
+    ///    the backend reported no version, to tell present-without-a-
+    ///    version from absent. The manifest record is built from the
+    ///    **executed** operation and keyed under the **caller's requested
+    ///    id**, which is what [`Apps::status`] and [`Apps::uninstall`]
+    ///    later read, even when resolution remapped it to a different app
+    ///    id. A probe that cannot confirm, or a failed save, lands in the
+    ///    outcome's `warning`: the install itself succeeded.
     ///
     /// # Errors
     ///
@@ -740,9 +745,20 @@ impl Apps {
         id: &TorideId,
         options: AppInstallOptions,
     ) -> AppsResult<EnsureAppOutcome> {
-        // 1. Detect before resolve: the manifest record plus one
-        //    confirming backend probe, zero adapter calls — gated on the
-        //    requested version when one is named.
+        let mut listings = ForeignListings::default();
+        self.ensure_installed_listed(id, options, &mut listings)
+            .await
+    }
+
+    /// The body of [`Apps::ensure_installed`] over one verb-scoped
+    /// [`ForeignListings`] share: the single-item verb owns a fresh share,
+    /// `ensure_installed_many` threads one across its whole loop.
+    async fn ensure_installed_listed(
+        &mut self,
+        id: &TorideId,
+        options: AppInstallOptions,
+        listings: &mut ForeignListings,
+    ) -> AppsResult<EnsureAppOutcome> {
         let recorded = app_status(self.records.get(id), None, &self.backend_set()).await?;
         if matches!(recorded, AppStatus::Installed { .. }) {
             let satisfies = self.records.get(id).is_some_and(|record| {
@@ -752,23 +768,21 @@ impl Apps {
                 return Ok(EnsureAppOutcome::AlreadyPresent(recorded));
             }
         }
-        // 2. Resolve through the registry adapters.
         let app = self.resolve(id).await?;
-        // 3. Foreign presence (only meaningful without a record — a record
-        //    that failed confirmation in step 1 re-installs below); a
-        //    Foreign copy satisfies only a version-less request.
         if !self.records.contains_key(id) {
             let native = self.native_ids_for(&app);
-            let status = app_status(None, native.as_ref(), &self.backend_set()).await?;
+            let status = match native.as_ref() {
+                Some(native) => {
+                    foreign_status_shared(native, &self.backend_set(), listings).await?
+                }
+                None => AppStatus::NotInstalled,
+            };
             if let AppStatus::Foreign { .. } = status
                 && options.version.is_none()
             {
                 return Ok(EnsureAppOutcome::AlreadyPresent(status));
             }
         }
-        // 4. Plan, then derive the record identity from the EXECUTED
-        //    operation (before any mutation, so a malformed plan fails
-        //    with nothing dispatched).
         let version = self.version_for_plan(&app, options.version.clone()).await;
         let plan = plan_install(&app, &self.target, &InstallOptions { version })?;
         let backend = self.backend_for(plan.backend)?;
@@ -776,17 +790,19 @@ impl Apps {
         let outcome = backend
             .install(InstallRequest::new(&plan, &self.target).elevated(options.elevated))
             .await?;
-        // 5. Post-verify through the kind-aware probes, then record.
-        let verification = self.verify_presence(&ids).await;
+        let verification = match outcome.version.clone() {
+            Some(version) => Ok(Presence::Present(Some(version))),
+            None => self.verify_presence(&ids).await,
+        };
         let verified = matches!(verification, Ok(Presence::Present(_)));
         let subject = native_subject(&ids);
         let mut warning = match &verification {
             Ok(Presence::Present(_)) => None,
             Ok(Presence::Absent) => Some(format!(
-                "installed, but the post-install verify no longer reports {subject} — recorded unverified"
+                "installed, but the post-install verify no longer reports {subject}: recorded unverified"
             )),
             Err(error) => Some(format!(
-                "installed, but the post-install verify probe failed: {error} — recorded unverified"
+                "installed, but the post-install verify probe failed: {error}: recorded unverified"
             )),
         };
         let verified_version = match verification {
@@ -794,9 +810,8 @@ impl Apps {
             _ => None,
         };
         let recorded_version = verified_version.or(outcome.version);
-        let record_key = plan.app.clone();
         self.records.insert(
-            record_key,
+            id.clone(),
             InstallRecord::new(plan, ids.clone(), recorded_version.clone()),
         );
         if let Err(error) = self.save_records().await {
@@ -814,19 +829,31 @@ impl Apps {
         })
     }
 
-    /// Ensure every id in `ids` is installed — the batch spelling of
+    /// Ensure every id in `ids` is installed: the batch spelling of
     /// [`Apps::ensure_installed`]: one shared options set, one
     /// [`BatchOutcome`] per item in input order.
     ///
     /// Partial-failure contract: **every item is attempted**. One item's
     /// failure is reported inside its own `BatchOutcome::result` and never
     /// stops the items after it, so the returned list always has one entry
-    /// per input item and is the batch's complete effect — never a
+    /// per input item and is the batch's complete effect, never a
     /// truncated prefix plus an outer error. Items run sequentially in
     /// input order, so a duplicated id observes the earlier occurrence's
     /// effect (the second answers
     /// [`EnsureAppOutcome::AlreadyPresent`]). An empty input dispatches
     /// nothing and returns an empty list.
+    ///
+    /// Foreign presence rides one shared listing per listing-backed
+    /// backend (flatpak, npm, cargo, pipx, uv, mise): the first
+    /// unrecorded item's check takes the backend's full listing, later
+    /// checks filter it in memory, so N items pay one full listing
+    /// instead of N. Backends with cheaper per-id probes (homebrew's
+    /// kind-scoped `brew list --versions`, snap's per-snap listing,
+    /// distro's single-package query) keep those probes per item. A later
+    /// item therefore reads its backend's listing as of that backend's
+    /// first check in the batch: an app an earlier item's install pulled
+    /// in as a dependency installs and records rather than answering
+    /// `Foreign`.
     pub async fn ensure_installed_many<I>(
         &mut self,
         ids: I,
@@ -836,17 +863,20 @@ impl Apps {
         I: IntoIterator,
         I::Item: Into<TorideId>,
     {
+        let mut listings = ForeignListings::default();
         let mut outcomes = Vec::new();
         for item in ids {
             let id = item.into();
-            let result = self.ensure_installed(&id, options.clone()).await;
+            let result = self
+                .ensure_installed_listed(&id, options.clone(), &mut listings)
+                .await;
             outcomes.push(BatchOutcome { id, result });
         }
         outcomes
     }
 
     /// Uninstall `id`: read the manifest record back, plan the removal
-    /// from the **record's own identifiers** (the source of truth — never
+    /// from the **record's own identifiers** (the source of truth: never
     /// re-planned), execute it (zap plumbed for casks), post-verify the
     /// app is gone, and remove the record.
     ///
@@ -864,8 +894,8 @@ impl Apps {
     /// [`AppsError::Unresolved`] / [`AppsError::Registry`] when no record
     /// exists and resolution fails; [`AppsError::Backend`] for guard
     /// refusals and command failures (an absent-target uninstall diverges
-    /// by backend — brew errors, flatpak answers idempotently, distro
-    /// errors — so this facade always post-verifies and trusts no single
+    /// by backend: brew errors, flatpak answers idempotently, distro
+    /// errors, so this facade always post-verifies and trusts no single
     /// classification); verification and save failures degrade to
     /// warnings.
     pub async fn uninstall(
@@ -876,7 +906,7 @@ impl Apps {
         let Some(record) = self.records.get(id).cloned() else {
             return self.uninstall_unrecorded(id, options).await;
         };
-        // Plan from the record's ids — the executed install's own
+        // Plan from the record's ids: the executed install's own
         // identifiers, replayed verbatim.
         let plan = uninstall_plan_from_record(id, &record, options.zap)?;
         let backend = self.backend_for(plan.backend)?;
@@ -901,7 +931,7 @@ impl Apps {
         })
     }
 
-    /// The Foreign/absent arm of [`Apps::uninstall`] — no manifest record.
+    /// The Foreign/absent arm of [`Apps::uninstall`]: no manifest record.
     async fn uninstall_unrecorded(
         &mut self,
         id: &TorideId,
@@ -925,7 +955,7 @@ impl Apps {
             AppStatus::NotInstalled => return Ok(UninstallAppOutcome::AlreadyAbsent),
             AppStatus::Foreign { detail, .. } => detail,
             // Defensive: `Installed` requires a manifest record and there
-            // is none — refuse through the same gate rather than act on a
+            // is none: refuse through the same gate rather than act on a
             // contradictory answer.
             AppStatus::Installed { backend, .. } => format!(
                 "a {backend} probe reports the app present, though toride has no record for it"
@@ -949,7 +979,7 @@ impl Apps {
         })
     }
 
-    /// Uninstall every id in `ids` — the batch spelling of
+    /// Uninstall every id in `ids`: the batch spelling of
     /// [`Apps::uninstall`] with [`Apps::ensure_installed_many`]'s
     /// partial-failure contract: every item is attempted, one entry per
     /// input item in input order, a failing item's error lives in its own
@@ -977,20 +1007,23 @@ impl Apps {
 
     /// Update `id` to its manager's current version: read the manifest
     /// record, plan the upgrade from the **record's own identifiers**
-    /// (never re-resolved through the adapters — zero registry round
-    /// trips), resolve installed versus available, and — unless the
-    /// manager already reports the app current — execute, re-probe the
+    /// (never re-resolved through the adapters: zero registry round
+    /// trips), resolve installed versus available, and: unless the
+    /// manager already reports the app current: execute, re-probe the
     /// installed version, and rewrite it into the record.
     ///
     /// The currency decision is the manager's own stale signal where one
-    /// exists — brew's kind-scoped `outdated` verdict alone, with an
-    /// absent token never counting as current — and falls back to
-    /// installed-equals-available (opaque strings, never semver) for
-    /// backends without a signal. A dry run executes nothing and touches
-    /// no state: it answers [`UpdateOutcome::Preview`] with the argv that
-    /// would run. A post-upgrade probe that fails degrades to
-    /// `to: None` (the upgrade itself succeeded), matching the
-    /// post-verify degradation of [`Apps::ensure_installed`].
+    /// exists: brew's kind-scoped `outdated` verdict and snap's
+    /// `refresh --list` verdict each answer alone (an absent token never
+    /// counts as current). Every signal-less backend (flatpak, distro,
+    /// npm, cargo, pipx, uv) falls back to installed-equals-available
+    /// (opaque strings, never semver), and distro's availability probe
+    /// reports nothing, so distro records always refresh. A dry run
+    /// executes nothing and touches no state: it answers
+    /// [`UpdateOutcome::Preview`] with the argv that would run. A
+    /// post-upgrade probe that fails degrades to `to: None` (the upgrade
+    /// itself succeeded), matching the post-verify degradation of
+    /// [`Apps::ensure_installed`].
     ///
     /// # Errors
     ///
@@ -1053,7 +1086,7 @@ impl Apps {
     /// Claim a detected-but-unrecorded install: record `id` as
     /// toride-managed under the backend-native identifiers `provenance`
     /// asserts, after one confirming presence probe supplies the version.
-    /// Zero adapter calls and zero mutating commands run — adoption is
+    /// Zero adapter calls and zero mutating commands run: adoption is
     /// bookkeeping over a detection, so the record carries no source
     /// plan, and later uninstalls/updates replay the adopted identifiers
     /// exactly like executed ones.
@@ -1065,7 +1098,7 @@ impl Apps {
     /// confirm the asserted identifiers; [`AppsError::BackendUnavailable`]
     /// when their backend is not attached; [`AppsError::Backend`] when
     /// the confirming probe itself fails; [`AppsError::Manifest`] when
-    /// persisting the record fails — the claim is rolled back, so nothing
+    /// persisting the record fails: the claim is rolled back, so nothing
     /// stays recorded and a retry starts clean.
     pub async fn adopt(
         &mut self,
@@ -1099,9 +1132,10 @@ impl Apps {
         Ok(record)
     }
 
-    /// Whether the record's manager already reports it current — brew's
-    /// kind-scoped stale signal answers alone (an absent token is never
-    /// current); signal-less backends compare installed against available.
+    /// Whether the record's manager already reports it current: brew's
+    /// kind-scoped stale signal and snap's `refresh --list` signal answer
+    /// alone (an absent token is never current); signal-less backends
+    /// compare installed against available.
     async fn record_is_current(
         &self,
         ids: &NativeIds,
@@ -1122,6 +1156,14 @@ impl Apps {
                     .await?
                     .iter()
                     .any(|entry| entry.id == token.as_str()))
+        } else if let NativeIds::Snap { name } = ids {
+            Ok(from.is_some()
+                && !self
+                    .snap_backend()?
+                    .outdated()
+                    .await?
+                    .iter()
+                    .any(|entry| entry.id == *name))
         } else {
             let to = backend.available_version(native).await?;
             Ok(from.is_some() && from == to.as_ref())
@@ -1139,7 +1181,7 @@ impl Apps {
         })
     }
 
-    /// The version the record's backend offers today — the brew ask
+    /// The version the record's backend offers today: the brew ask
     /// carries the recorded kind, so a dual-kind token answers for the
     /// kind the record upgrades; kind-less backends keep the trait default.
     async fn record_available_version(&self, ids: &NativeIds) -> AppsResult<Option<Version>> {
@@ -1162,7 +1204,7 @@ impl Apps {
         }
     }
 
-    /// The versions the record's backend can install today — the same
+    /// The versions the record's backend can install today: the same
     /// kind- and scope-aware routing as [`Apps::record_available_version`]
     /// over the listing probe: brew answers per recorded kind, flatpak per
     /// recorded installation against the flathub remote, distro keeps the
@@ -1216,7 +1258,7 @@ impl Apps {
     /// The version to pin into an install plan for a requested one, on
     /// every fall-through path (nothing present, a record at another
     /// version, or a Foreign copy): `None` while the backend's own
-    /// offering already equals the request — installing the manager's
+    /// offering already equals the request: installing the manager's
     /// current lands exactly the requested thing, where a pin would
     /// address a spelling the manager may not resolve (brew only resolves
     /// `token@<v>` for separately versioned tokens). The requested
@@ -1235,7 +1277,7 @@ impl Apps {
 
     /// The versions `id` can be installed at: record-first (the recorded
     /// backend's listing probe, zero adapter calls), resolved through the
-    /// registry otherwise — the same shape as [`Apps::status`].
+    /// registry otherwise, the same shape as [`Apps::status`].
     ///
     /// # Errors
     ///
@@ -1266,7 +1308,7 @@ impl Apps {
 
     /// Hold `id` back from upgrades (`brew pin`): the record's backend
     /// runs its own pin against the recorded identifiers. The manifest is
-    /// untouched — pinned state lives with the manager and surfaces
+    /// untouched: pinned state lives with the manager and surfaces
     /// through the outdated probe's `pinned` flag.
     ///
     /// # Errors
@@ -1280,7 +1322,7 @@ impl Apps {
         self.set_pin_state(id, true).await
     }
 
-    /// Release a pin — the mirror of [`Apps::pin`] on the same record.
+    /// Release a pin: the mirror of [`Apps::pin`] on the same record.
     ///
     /// # Errors
     ///
@@ -1332,15 +1374,15 @@ impl Apps {
         }
     }
 
-    /// Where `id` stands on this host — the A5 status layer, delegated to.
+    /// Where `id` stands on this host: the A5 status layer, delegated to.
     ///
     /// Manifest-first, per this facade's detect-before-resolve principle:
     /// a record hit is answered entirely from local state (the record's
-    /// own identifiers against its backend) — the registry is never
+    /// own identifiers against its backend), the registry is never
     /// consulted, so a record hit costs no adapter round trip whose
     /// result would only be discarded. Only without a record does a
     /// best-effort registry resolve supply the native identifiers for
-    /// `Foreign` detection — and a resolve failure degrades to the
+    /// `Foreign` detection, and a resolve failure degrades to the
     /// record-based answer instead of failing the query (a registry
     /// outage says nothing about the host).
     ///
@@ -1373,8 +1415,8 @@ impl Apps {
     /// order, is asked to look up its source-native id equal to the
     /// canonical slug (the ref is built with the adapter's own
     /// [`Adapter::source`], so no adapter ever sees a foreign ref). The
-    /// first `Some` wins; the resolved app's own id becomes the manifest
-    /// key downstream.
+    /// first `Some` wins; install records stay keyed under the caller's
+    /// requested id even when the resolved app carries a different one.
     async fn resolve(&self, id: &TorideId) -> AppsResult<App> {
         for adapter in self.registry.adapters() {
             let reference = SourceRef {
@@ -1454,7 +1496,7 @@ impl Apps {
         routed.ok_or(AppsError::BackendUnavailable { backend })
     }
 
-    /// The attached direct backend's install dir, when one is attached —
+    /// The attached direct backend's install dir, when one is attached:
     /// the base direct records resolve their binary paths against.
     #[cfg(feature = "direct")]
     fn direct_install_dir(&self) -> Option<&Utf8PathBuf> {
@@ -1484,7 +1526,17 @@ impl Apps {
             })
     }
 
-    /// Confirm presence through the kind-aware probes the A2–A4 interface
+    /// The attached snap backend, for its refresh-list stale signal.
+    fn snap_backend(&self) -> AppsResult<&SnapBackend> {
+        self.backends
+            .snap
+            .as_ref()
+            .ok_or(AppsError::BackendUnavailable {
+                backend: BackendId::Snap,
+            })
+    }
+
+    /// Confirm presence through the kind-aware probes the A2-A4 interface
     /// notes bind this facade to: brew's kind-scoped `list --versions`
     /// (a present item always carries a version), the flatpak **scoped
     /// listing** (an app without appdata metadata reports an empty version
@@ -1524,14 +1576,14 @@ impl Apps {
             }
             NativeIds::Distro { package, family } => {
                 let Some(backend) = self.backends.distro.as_ref() else {
-                    // Unreachable in practice — presence is verified right
-                    // after executing through this very backend — but a
+                    // Unreachable in practice: presence is verified right
+                    // after executing through this very backend, but a
                     // probe without its backend is an error, not a guess.
                     return Err(AppsError::BackendUnavailable {
                         backend: BackendId::Distro(*family),
                     });
                 };
-                // A foreign-family backend cannot have the package — the
+                // A foreign-family backend cannot have the package: the
                 // same gate the A5 status layer applies.
                 if backend.family() != *family {
                     return Ok(Presence::Absent);
@@ -1597,38 +1649,35 @@ impl Apps {
     ///
     /// [`RecordStore::save`] is synchronous IO (the JSON store's create
     /// parent dirs, write temp, rename) and must not run on an async
-    /// worker — the standing don't-block rule; under the `tokio` feature
+    /// worker: the standing don't-block rule; under the `tokio` feature
     /// the save is dispatched through
     /// `tokio::task::spawn_blocking` (the crate-family precedent:
-    /// toride-installer's extraction and detect) with the snapshot and
+    /// toride-installer's extraction and detect) with the records and
     /// the store's `Arc` cloned into the task, so no borrow is held
     /// across the await and a join failure (the blocking task was
     /// cancelled or panicked) maps to [`ManifestError::Io`] so callers'
     /// warning paths stay uniform. Without the feature there is no
     /// runtime to offload to: the save runs in-line (see `persist`),
-    /// exactly the path `save_records_sync` always takes. Error
-    /// semantics are the store's own.
+    /// serializing straight from the borrowed working ledger, exactly
+    /// the path `save_records_sync` always takes. Error semantics are
+    /// the store's own.
     async fn save_records(&self) -> ManifestResult<()> {
-        let snapshot = RecordSnapshot {
-            records: self.records.clone(),
-        };
-        self.persist(snapshot).await
+        self.persist().await
     }
 
     /// Persist the working records through the store, in-line on the
-    /// calling thread — the path [`AppsBlocking`] mutations take after
-    /// every successful operation.
+    /// calling thread, serializing straight from the borrowed working
+    /// ledger (no snapshot clone): the path [`AppsBlocking`] mutations
+    /// take after every successful operation.
     fn save_records_sync(&self) -> ManifestResult<()> {
-        let snapshot = RecordSnapshot {
-            records: self.records.clone(),
-        };
-        self.store.save(&snapshot)
+        self.store.save(&self.records)
     }
 
     #[cfg(feature = "tokio")]
-    async fn persist(&self, snapshot: RecordSnapshot) -> ManifestResult<()> {
+    async fn persist(&self) -> ManifestResult<()> {
+        let records = self.records.clone();
         let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || store.save(&snapshot))
+        tokio::task::spawn_blocking(move || store.save(&records))
             .await
             .map_err(|error| {
                 ManifestError::Io(std::io::Error::other(format!(
@@ -1639,13 +1688,13 @@ impl Apps {
 
     #[cfg(not(feature = "tokio"))]
     #[expect(clippy::unused_async, clippy::unused_async_trait_impl)]
-    async fn persist(&self, snapshot: RecordSnapshot) -> ManifestResult<()> {
-        self.store.save(&snapshot)
+    async fn persist(&self) -> ManifestResult<()> {
+        self.store.save(&self.records)
     }
 
     /// The sync twin of [`Apps::record_is_current`]: brew's kind-scoped
-    /// stale signal answers alone; signal-less backends compare installed
-    /// against available.
+    /// stale signal and snap's `refresh --list` signal answer alone;
+    /// signal-less backends compare installed against available.
     fn record_is_current_sync(
         &self,
         ids: &NativeIds,
@@ -1665,6 +1714,13 @@ impl Apps {
                     .outdated_sync(scope)?
                     .iter()
                     .any(|entry| entry.id == token.as_str()))
+        } else if let NativeIds::Snap { name } = ids {
+            Ok(from.is_some()
+                && !self
+                    .snap_backend()?
+                    .outdated_sync()?
+                    .iter()
+                    .any(|entry| entry.id == *name))
         } else {
             let to = backend.available_version_sync(native)?;
             Ok(from.is_some() && from == to.as_ref())
@@ -1901,7 +1957,7 @@ enum Presence {
 ///
 /// Backends are attached pre-built so both sanctioned constructions work:
 /// `detect()` in production (PATH checks), `new()` under a fake runner in
-/// tests — [`AppsBuilder::detect_backends`] wires the production arm in
+/// tests: [`AppsBuilder::detect_backends`] wires the production arm in
 /// one call.
 #[derive(Default)]
 pub struct AppsBuilder {
@@ -1909,7 +1965,7 @@ pub struct AppsBuilder {
     /// fresh [`DuctRunner`](toride_runner::DuctRunner)-backed seam when
     /// unset.
     runner: Option<CommandRunner>,
-    /// Host target; defaults to the host bootstrap —
+    /// Host target; defaults to the host bootstrap:
     /// `Target::host()` with the distro family filled in from the
     /// os-release(5) locations when detection succeeds (an unknown family
     /// stays `None` and distro plans fail loudly at plan time).
@@ -1953,35 +2009,35 @@ impl AppsBuilder {
         Self::default()
     }
 
-    /// Set the command-execution seam — consume-and-return.
+    /// Set the command-execution seam: consume-and-return.
     #[must_use]
     pub fn runner(mut self, runner: CommandRunner) -> Self {
         self.runner = Some(runner);
         self
     }
 
-    /// Set the host target plans derive for — consume-and-return.
+    /// Set the host target plans derive for: consume-and-return.
     #[must_use]
     pub fn target(mut self, target: Target) -> Self {
         self.target = Some(target);
         self
     }
 
-    /// Attach the homebrew backend — consume-and-return.
+    /// Attach the homebrew backend: consume-and-return.
     #[must_use]
     pub fn homebrew(mut self, backend: HomebrewBackend) -> Self {
         self.homebrew = Some(backend);
         self
     }
 
-    /// Attach the flatpak backend — consume-and-return.
+    /// Attach the flatpak backend: consume-and-return.
     #[must_use]
     pub fn flatpak(mut self, backend: FlatpakBackend) -> Self {
         self.flatpak = Some(backend);
         self
     }
 
-    /// Attach the snap backend — consume-and-return; unattached, snap
+    /// Attach the snap backend: consume-and-return; unattached, snap
     /// installs answer [`AppsError::BackendUnavailable`] and status never
     /// probes them.
     #[must_use]
@@ -1990,23 +2046,23 @@ impl AppsBuilder {
         self
     }
 
-    /// Attach the distro backend — consume-and-return.
+    /// Attach the distro backend: consume-and-return.
     #[must_use]
     pub fn distro(mut self, backend: DistroBackend) -> Self {
         self.distro = Some(backend);
         self
     }
 
-    /// Attach the direct-download backend — consume-and-return (the
+    /// Attach the direct-download backend: consume-and-return (the
     /// `direct` feature). Without one attached, direct methods still
     /// plan, but installs and the record-replaying uninstalls of direct
     /// records answer [`AppsError::BackendUnavailable`]; an unrecorded
     /// direct app's uninstall never consults a backend at all (a direct
-    /// removal replays a record, so it refuses at plan time — or earlier
+    /// removal replays a record, so it refuses at plan time, or earlier
     /// with [`AppsError::Unresolved`] / [`AppsError::Registry`] when the
     /// id does not resolve), a direct record's update refuses with
     /// [`AppsError::UnrecordableOperation`], and `status` degrades to
-    /// [`AppStatus::NotInstalled`] — no backend, no probe.
+    /// [`AppStatus::NotInstalled`]: no backend, no probe.
     #[cfg(feature = "direct")]
     #[must_use]
     pub fn direct(mut self, backend: DirectBackend) -> Self {
@@ -2014,7 +2070,7 @@ impl AppsBuilder {
         self
     }
 
-    /// Attach the npm backend — consume-and-return; unattached, npm
+    /// Attach the npm backend: consume-and-return; unattached, npm
     /// methods still plan but installs answer
     /// [`AppsError::BackendUnavailable`] and status never probes them.
     #[must_use]
@@ -2023,7 +2079,7 @@ impl AppsBuilder {
         self
     }
 
-    /// Attach the cargo backend — consume-and-return (see
+    /// Attach the cargo backend: consume-and-return (see
     /// [`AppsBuilder::npm`] for the unattached behavior).
     #[must_use]
     pub fn cargo(mut self, backend: CargoBackend) -> Self {
@@ -2031,7 +2087,7 @@ impl AppsBuilder {
         self
     }
 
-    /// Attach the pipx backend — consume-and-return (see
+    /// Attach the pipx backend: consume-and-return (see
     /// [`AppsBuilder::npm`] for the unattached behavior).
     #[must_use]
     pub fn pipx(mut self, backend: PipxBackend) -> Self {
@@ -2039,7 +2095,7 @@ impl AppsBuilder {
         self
     }
 
-    /// Attach the uv backend — consume-and-return (see
+    /// Attach the uv backend: consume-and-return (see
     /// [`AppsBuilder::npm`] for the unattached behavior).
     #[must_use]
     pub fn uv(mut self, backend: UvBackend) -> Self {
@@ -2047,7 +2103,7 @@ impl AppsBuilder {
         self
     }
 
-    /// Attach the mise backend — consume-and-return (the `mise` feature,
+    /// Attach the mise backend: consume-and-return (the `mise` feature,
     /// non-default because its client carries tokio); unattached, mise
     /// installs answer [`AppsError::BackendUnavailable`].
     #[cfg(feature = "mise")]
@@ -2058,7 +2114,7 @@ impl AppsBuilder {
     }
 
     /// Replace the JSON-manifest persistence with a caller-supplied
-    /// record store — consume-and-return. An embedder keeping its own
+    /// record store: consume-and-return. An embedder keeping its own
     /// receipts as source of truth supplies or mirrors them here. Takes
     /// precedence over [`AppsBuilder::manifest_path`]: a custom store
     /// needs no path at all, so
@@ -2070,21 +2126,21 @@ impl AppsBuilder {
     }
 
     /// Set the manifest location the default JSON store loads from and
-    /// saves to (a missing file is an empty store) — consume-and-return.
+    /// saves to (a missing file is an empty store), consume-and-return.
     #[must_use]
     pub fn manifest_path(mut self, path: impl Into<Utf8PathBuf>) -> Self {
         self.manifest_path = Some(path.into());
         self
     }
 
-    /// Register one registry adapter — consume-and-return.
+    /// Register one registry adapter: consume-and-return.
     #[must_use]
     pub fn adapter(mut self, adapter: Arc<dyn Adapter>) -> Self {
         self.adapters.push(adapter);
         self
     }
 
-    /// Register several registry adapters — consume-and-return.
+    /// Register several registry adapters: consume-and-return.
     #[must_use]
     pub fn adapters<I>(mut self, adapters: I) -> Self
     where
@@ -2096,12 +2152,12 @@ impl AppsBuilder {
 
     /// Attach every backend this host supports: homebrew, flatpak, and
     /// snap via their PATH checks, distro via os-release(5) detection
-    /// plus its PATH checks, and the language backends — npm, cargo,
+    /// plus its PATH checks, and the language backends: npm, cargo,
     /// pipx, uv via each manager's own PATH check, mise (under the `mise`
     /// feature) via its offline discovery cascade (`$PATH` plus the
     /// managed, system-wide, and app-bundled fallbacks, file checks
-    /// only) — the same auto-attach Direct gets under the `direct`
-    /// feature. A backend whose binary is simply absent is skipped (no
+    /// only), the same auto-attach Direct gets under the `direct`
+    /// feature. A backend whose binary is absent is skipped (no
     /// brew on a Linux box is normal, not an error); a distro host with
     /// no known family is skipped the same way. No command executes.
     ///
@@ -2120,7 +2176,7 @@ impl AppsBuilder {
         let mut builder = self;
         match HomebrewBackend::detect(runner.clone()) {
             Ok(backend) => builder = builder.homebrew(backend),
-            // Absent binary: this host simply has no brew — skip.
+            // Absent binary: this host has no brew: skip.
             Err(BackendError::Command(toride_runner::Error::BinaryNotFound(_))) => {}
             Err(error) => return Err(error.into()),
         }
@@ -2131,13 +2187,13 @@ impl AppsBuilder {
         }
         match SnapBackend::detect(runner.clone()) {
             Ok(backend) => builder = builder.snap(backend),
-            // Absent binary: this host simply has no snapd CLI — skip.
+            // Absent binary: this host has no snapd CLI: skip.
             Err(BackendError::Command(toride_runner::Error::BinaryNotFound(_))) => {}
             Err(error) => return Err(error.into()),
         }
         match DistroBackend::detect(runner.clone()) {
             Ok(backend) => builder = builder.distro(backend),
-            // Absent binaries or no known family on this host — every mode
+            // Absent binaries or no known family on this host: every mode
             // here is "this host has no distro backend to attach", not a
             // failure worth surfacing.
             Err(BackendError::Command(
@@ -2148,7 +2204,7 @@ impl AppsBuilder {
         #[cfg(feature = "direct")]
         match DirectBackend::detect() {
             Ok(backend) => builder = builder.direct(backend),
-            // No resolvable home dir — this host has no direct install
+            // No resolvable home dir: this host has no direct install
             // dir to write into; the same skip mode as an absent manager
             // binary.
             Err(BackendError::Command(toride_runner::Error::Other(_))) => {}
@@ -2165,7 +2221,7 @@ impl AppsBuilder {
     }
 
     /// Consume the builder and produce the facade. The record store loads
-    /// here — a missing document is an empty ledger, and a corrupt one
+    /// here: a missing document is an empty ledger, and a corrupt one
     /// (including one written by a newer toride) is **quarantined aside,
     /// never a fatal stop**: the facade starts from empty and
     /// [`Apps::quarantined`] names the moved file.
@@ -2235,7 +2291,7 @@ fn attach_language_backend<B>(
 
 /// The host bootstrap target: `Target::host()` with the distro family
 /// filled in from the os-release(5) locations when detection succeeds.
-/// An undetectable family stays `None` — distro plans then fail loudly at
+/// An undetectable family stays `None`: distro plans then fail loudly at
 /// plan time instead of guessing.
 fn default_target() -> Target {
     match detect_host_family() {
@@ -2246,7 +2302,7 @@ fn default_target() -> Target {
 
 /// The sync twin of the [`Apps`] facade: the same verbs, executed on the
 /// calling thread through the backends' sync paths, with **in-line**
-/// manifest persistence (no runtime, no offloading — the default-build
+/// manifest persistence (no runtime, no offloading: the default-build
 /// shape an all-sync embedder drives; the `tokio` feature only adds
 /// offloading for the async facade, never for this one).
 ///
@@ -2261,7 +2317,7 @@ fn default_target() -> Target {
 /// which degrades to [`AppStatus::NotInstalled`] exactly like the async
 /// facade's resolve-failure arm; and there is no `search`.
 pub struct AppsBlocking {
-    /// The wrapped facade — one record store, one target, one backend set.
+    /// The wrapped facade: one record store, one target, one backend set.
     apps: Apps,
 }
 
@@ -2279,7 +2335,7 @@ impl AppsBlocking {
     }
 
     /// Unwrap back to the async facade (records, store, and backends carry
-    /// over — both facades share one state).
+    /// over: both facades share one state).
     #[must_use]
     pub fn into_inner(self) -> Apps {
         self.apps
@@ -2291,13 +2347,13 @@ impl AppsBlocking {
         self.apps.target()
     }
 
-    /// The working records this facade holds — see [`Apps::records`].
+    /// The working records this facade holds: see [`Apps::records`].
     #[must_use]
     pub fn records(&self) -> Vec<(&TorideId, &InstallRecord)> {
         self.apps.records()
     }
 
-    /// Where a corrupt prior store document was quarantined at build —
+    /// Where a corrupt prior store document was quarantined at build:
     /// see [`Apps::quarantined`].
     #[must_use]
     pub fn quarantined(&self) -> Option<&Utf8PathBuf> {
@@ -2305,7 +2361,7 @@ impl AppsBlocking {
     }
 
     /// Ensure the resolved registry `app` is installed, on the calling
-    /// thread — the sync twin of [`Apps::ensure_installed`] with one
+    /// thread: the sync twin of [`Apps::ensure_installed`] with one
     /// contract difference: the app arrives resolved (the registry's
     /// adapter trait is async, so the blocking surface cannot resolve a
     /// bare id itself). The detect-first arm is unchanged: a manifest
@@ -2322,6 +2378,18 @@ impl AppsBlocking {
         app: &App,
         options: AppInstallOptions,
     ) -> AppsResult<EnsureAppOutcome> {
+        let mut listings = ForeignListings::default();
+        self.ensure_installed_listed(app, options, &mut listings)
+    }
+
+    /// The body of [`AppsBlocking::ensure_installed`] over one
+    /// verb-scoped [`ForeignListings`] share.
+    fn ensure_installed_listed(
+        &mut self,
+        app: &App,
+        options: AppInstallOptions,
+        listings: &mut ForeignListings,
+    ) -> AppsResult<EnsureAppOutcome> {
         let AppInstallOptions { elevated, version } = options;
         let id = app.id.clone();
         let recorded = app_status_sync(self.apps.records.get(&id), None, &self.apps.backend_set())?;
@@ -2335,7 +2403,12 @@ impl AppsBlocking {
         }
         if !self.apps.records.contains_key(&id) {
             let native = self.apps.native_ids_for(app);
-            let status = app_status_sync(None, native.as_ref(), &self.apps.backend_set())?;
+            let status = match native.as_ref() {
+                Some(native) => {
+                    foreign_status_shared_sync(native, &self.apps.backend_set(), listings)?
+                }
+                None => AppStatus::NotInstalled,
+            };
             if let AppStatus::Foreign { .. } = status
                 && version.is_none()
             {
@@ -2348,16 +2421,19 @@ impl AppsBlocking {
         let ids = self.apps.native_ids_from_executed(&plan)?;
         let outcome = backend
             .install_sync(InstallRequest::new(&plan, &self.apps.target).elevated(elevated))?;
-        let verification = self.apps.verify_presence_sync(&ids);
+        let verification = match outcome.version.clone() {
+            Some(version) => Ok(Presence::Present(Some(version))),
+            None => self.apps.verify_presence_sync(&ids),
+        };
         let verified = matches!(verification, Ok(Presence::Present(_)));
         let subject = native_subject(&ids);
         let mut warning = match &verification {
             Ok(Presence::Present(_)) => None,
             Ok(Presence::Absent) => Some(format!(
-                "installed, but the post-install verify no longer reports {subject} — recorded unverified"
+                "installed, but the post-install verify no longer reports {subject}: recorded unverified"
             )),
             Err(error) => Some(format!(
-                "installed, but the post-install verify probe failed: {error} — recorded unverified"
+                "installed, but the post-install verify probe failed: {error}: recorded unverified"
             )),
         };
         let verified_version = match verification {
@@ -2385,12 +2461,14 @@ impl AppsBlocking {
         })
     }
 
-    /// Ensure every app in `apps` is installed, on the calling thread —
+    /// Ensure every app in `apps` is installed, on the calling thread:
     /// the sync twin of [`Apps::ensure_installed_many`] with the same
     /// partial-failure contract (every item attempted, one
     /// [`BatchOutcome`] per item in input order, per-item errors never
     /// stop the rest), taking the resolved registry apps this surface
-    /// requires instead of ids.
+    /// requires instead of ids, and sharing foreign presence the same
+    /// way: one listing per listing-backed backend across the whole
+    /// batch.
     pub fn ensure_installed_many<'a, I>(
         &mut self,
         apps: I,
@@ -2399,10 +2477,11 @@ impl AppsBlocking {
     where
         I: IntoIterator<Item = &'a App>,
     {
+        let mut listings = ForeignListings::default();
         apps.into_iter()
             .map(|app| {
                 let id = app.id.clone();
-                let result = self.ensure_installed(app, options.clone());
+                let result = self.ensure_installed_listed(app, options.clone(), &mut listings);
                 BatchOutcome { id, result }
             })
             .collect()
@@ -2413,7 +2492,7 @@ impl AppsBlocking {
     /// identifiers, execute, post-verify, remove the record, save
     /// in-line). Without a record the blocking surface cannot probe for
     /// Foreign presence (that arm resolves through the registry), so it
-    /// answers [`AppsError::BlockingResolveRequired`] — take the resolved
+    /// answers [`AppsError::BlockingResolveRequired`]: take the resolved
     /// app to [`AppsBlocking::uninstall_app`] instead.
     ///
     /// # Errors
@@ -2453,7 +2532,7 @@ impl AppsBlocking {
         })
     }
 
-    /// Remove an unrecorded install, on the calling thread — the sync twin
+    /// Remove an unrecorded install, on the calling thread: the sync twin
     /// of the Foreign arm of [`Apps::uninstall`] over a caller-resolved
     /// app: nothing present answers
     /// [`UninstallAppOutcome::AlreadyAbsent`]; presence without a record
@@ -2507,7 +2586,7 @@ impl AppsBlocking {
         })
     }
 
-    /// Uninstall every id in `ids`, on the calling thread — the sync twin
+    /// Uninstall every id in `ids`, on the calling thread: the sync twin
     /// of [`Apps::uninstall_many`] with the same partial-failure contract
     /// (every item attempted, one [`BatchOutcome`] per item in input
     /// order, per-item errors never stop the rest). An id with no record
@@ -2532,7 +2611,7 @@ impl AppsBlocking {
     }
 
     /// Update `id` to its manager's current version, on the calling
-    /// thread — the exact sync twin of [`Apps::update`]: record-required,
+    /// thread: the exact sync twin of [`Apps::update`]: record-required,
     /// planned from the record's own identifiers with zero registry round
     /// trips, currency decided by the manager's stale signal, dry runs
     /// previewing instead of executing, and the record rewritten in-line
@@ -2590,7 +2669,7 @@ impl AppsBlocking {
         Ok(UpdateOutcome::Updated { from, to })
     }
 
-    /// Claim a detected-but-unrecorded install, on the calling thread —
+    /// Claim a detected-but-unrecorded install, on the calling thread:
     /// the sync twin of [`Apps::adopt`], including the rollback when the
     /// in-line save fails.
     ///
@@ -2629,11 +2708,11 @@ impl AppsBlocking {
         Ok(record)
     }
 
-    /// Where `id` stands on this host, on the calling thread — the sync
+    /// Where `id` stands on this host, on the calling thread: the sync
     /// twin of [`Apps::status`]'s record arm: a record hit is answered
     /// from local state alone. Without a record the blocking surface
     /// cannot resolve native identifiers for `Foreign` detection, so it
-    /// answers [`AppStatus::NotInstalled`] — the same degraded answer the
+    /// answers [`AppStatus::NotInstalled`], the same degraded answer the
     /// async facade gives when a registry resolve fails.
     ///
     /// # Errors
@@ -2650,7 +2729,7 @@ impl AppsBlocking {
         }
     }
 
-    /// The versions `id` can be installed at, on the calling thread — the
+    /// The versions `id` can be installed at, on the calling thread: the
     /// sync twin of [`Apps::available_versions`]'s record-first arm; an
     /// unrecorded id needs the registry and answers
     /// [`AppsError::BlockingResolveRequired`].
@@ -2669,7 +2748,7 @@ impl AppsBlocking {
         })
     }
 
-    /// Hold `id` back from upgrades, on the calling thread — the sync twin
+    /// Hold `id` back from upgrades, on the calling thread: the sync twin
     /// of [`Apps::pin`].
     ///
     /// # Errors
@@ -2679,7 +2758,7 @@ impl AppsBlocking {
         self.apps.set_pin_state_sync(id, true)
     }
 
-    /// Release a pin, on the calling thread — the sync twin of
+    /// Release a pin, on the calling thread: the sync twin of
     /// [`Apps::unpin`].
     ///
     /// # Errors
@@ -2696,7 +2775,7 @@ impl AppsBlocking {
 
 impl Apps {
     /// The backend-native identifiers a registry app's [`InstallMethod`]
-    /// names — the caller-known spelling the status layer probes
+    /// names: the caller-known spelling the status layer probes
     /// `Foreign` presence with (the flatpak arm carries no installed ref:
     /// only a record written at install time knows the ref that landed;
     /// `installation` is toride's planned scope, and the Foreign probe
@@ -2752,7 +2831,7 @@ impl Apps {
     }
 
     /// The record identity for a **successful** install, built from the
-    /// EXECUTED plan — the binding A5 rule: the flatpak `app_ref` is the
+    /// EXECUTED plan: the binding A5 rule: the flatpak `app_ref` is the
     /// ref the backend ran (never re-derived from the registry app), the
     /// brew token + kind and the distro package + family come from the
     /// operation and the plan's backend routing, and a direct install
@@ -2771,7 +2850,7 @@ impl Apps {
                 ..
             } => {
                 // The ref's own id segment is the actually-installed app
-                // id — parsed out of the executed ref, not re-derived.
+                // id: parsed out of the executed ref, not re-derived.
                 let Some(app_id) = app_id_from_ref(app_ref) else {
                     return Err(AppsError::UnrecordableOperation {
                         app: plan.app.as_str().to_owned(),
@@ -2838,10 +2917,10 @@ impl Apps {
 }
 
 /// The uninstall plan for a toride-managed record: built from the
-/// record's OWN identifiers — the source of truth, never re-planned (the
+/// record's OWN identifiers: the source of truth, never re-planned (the
 /// A1 round-1 flatpak finding: a re-planned ref guesses the planning
 /// target's arch, not the installed one). `zap` mirrors the planner's
-/// rule: casks only. The plan's app slot is the caller's `id` — adopted
+/// rule: casks only. The plan's app slot is the caller's `id`: adopted
 /// records carry no plan to read it from.
 fn uninstall_plan_from_record(
     id: &TorideId,
@@ -2907,7 +2986,7 @@ fn uninstall_plan_from_record(
     })
 }
 
-/// The update plan for a toride-managed record — the update-path mirror
+/// The update plan for a toride-managed record: the update-path mirror
 /// of [`uninstall_plan_from_record`]: built from the record's OWN
 /// identifiers, never re-planned through the registry (the update path
 /// makes zero adapter round trips).
@@ -2944,7 +3023,7 @@ fn update_plan_from_record(id: &TorideId, record: &InstallRecord) -> AppsResult<
             return Err(AppsError::UnrecordableOperation {
                 app: id.as_str().to_owned(),
                 operation: format!(
-                    "direct binary `{bin_path}` has no update verb — re-run ensure_installed to re-download"
+                    "direct binary `{bin_path}` has no update verb: re-run ensure_installed to re-download"
                 ),
             });
         }
@@ -2973,7 +3052,7 @@ fn update_plan_from_record(id: &TorideId, record: &InstallRecord) -> AppsResult<
     })
 }
 
-/// The backend-native id a record's identifiers key on — the join key the
+/// The backend-native id a record's identifiers key on: the join key the
 /// trait's version probes take (brew token, flatpak app id, distro
 /// package name).
 fn native_id(ids: &NativeIds) -> &str {
@@ -2994,7 +3073,7 @@ fn native_id(ids: &NativeIds) -> &str {
 }
 
 /// The app id segment of an install ref (`app/<id>/<arch>/<branch>` → the
-/// id) — this facade's mirror of the flatpak backend's private derivation,
+/// id), this facade's mirror of the flatpak backend's private derivation,
 /// used to read the actually-installed id back out of the executed ref.
 /// `None` for refs without the `app/` prefix (runtime refs, bare ids).
 fn app_id_from_ref(app_ref: &str) -> Option<&str> {
@@ -3009,7 +3088,7 @@ fn app_id_from_ref(app_ref: &str) -> Option<&str> {
 /// version. `None` (the default) is satisfied by any presence. A named
 /// version is judged by the record's own kind: brew by the probed version
 /// (the listing always versions a present item), flatpak by the recorded
-/// ref's branch — the version slot a flatpak request selects — never by
+/// ref's branch (the version slot a flatpak request selects) never by
 /// the appdata version the probe reports, and the language ecosystems by
 /// the version their listings report. Distro and direct records never
 /// satisfy one: their methods cannot express a version, and the
@@ -3065,7 +3144,7 @@ fn presence_from_status(status: BackendStatus) -> Presence {
     }
 }
 
-/// A human-readable name for what a set of native identifiers addresses —
+/// A human-readable name for what a set of native identifiers addresses:
 /// the subject of the facade's warnings.
 fn native_subject(ids: &NativeIds) -> String {
     match ids {
@@ -3087,7 +3166,7 @@ fn native_subject(ids: &NativeIds) -> String {
     }
 }
 
-/// Append `text` to the outcome warning, joining any earlier one —
+/// Append `text` to the outcome warning, joining any earlier one:
 /// degraded conditions stack; none is dropped.
 fn push_warning(warning: &mut Option<String>, text: String) {
     match warning {
@@ -3106,6 +3185,7 @@ fn push_warning(warning: &mut Option<String>, text: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::RecordSnapshot;
     use crate::plan::FlatpakInstallation;
     use toride_registry::{DistroFamily, SourceKind};
 
@@ -3702,7 +3782,7 @@ mod tests {
             dry_run: false,
             requires_elevation: false,
         };
-        // The ref, verbatim — never re-derived — and its own id segment.
+        // The ref, verbatim (never re-derived) and its own id segment.
         assert_eq!(
             apps.native_ids_from_executed(&plan).unwrap(),
             NativeIds::Flatpak {
@@ -4404,6 +4484,7 @@ mod tests {
     fn update_refreshes_a_snap_record_and_rewrites_the_version() {
         let list = command("snap", ["list", "firefox"]);
         let refresh = command("snap", ["refresh", "firefox"]);
+        let refresh_list = command("snap", ["refresh", "--list"]);
         let fake = FakeRunner::new()
             .strict()
             .respond(
@@ -4413,6 +4494,13 @@ mod tests {
             .respond(
                 list.clone(),
                 CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+            )
+            .respond(
+                refresh_list.clone(),
+                CommandOutput::from_stdout(concat!(
+                    "Name      Version    Rev    Size     Publisher   Notes\n",
+                    "firefox   140.0-1    4842   130MiB   Mozilla✓    -\n",
+                )),
             )
             .respond(
                 list.clone(),
@@ -4482,19 +4570,24 @@ mod tests {
     }
 
     struct MapStore {
-        snapshot: std::sync::Mutex<RecordSnapshot>,
+        records: std::sync::Mutex<std::collections::BTreeMap<TorideId, InstallRecord>>,
     }
 
     impl crate::store::RecordStore for MapStore {
         fn load(&self) -> ManifestResult<crate::store::StoreLoad> {
             Ok(crate::store::StoreLoad {
-                snapshot: self.snapshot.lock().expect("map store poisoned").clone(),
+                snapshot: RecordSnapshot::from(
+                    self.records.lock().expect("map store poisoned").clone(),
+                ),
                 quarantined: None,
             })
         }
 
-        fn save(&self, snapshot: &RecordSnapshot) -> ManifestResult<()> {
-            *self.snapshot.lock().expect("map store poisoned") = snapshot.clone();
+        fn save(
+            &self,
+            records: &std::collections::BTreeMap<TorideId, InstallRecord>,
+        ) -> ManifestResult<()> {
+            *self.records.lock().expect("map store poisoned") = records.clone();
             Ok(())
         }
     }
@@ -4514,7 +4607,7 @@ mod tests {
             ),
         );
         let store: std::sync::Arc<dyn RecordStore> = std::sync::Arc::new(MapStore {
-            snapshot: std::sync::Mutex::new(RecordSnapshot::from(records)),
+            records: std::sync::Mutex::new(records),
         });
         let apps = Apps::builder()
             .with_record_store(std::sync::Arc::clone(&store))
@@ -4526,7 +4619,7 @@ mod tests {
         assert_eq!(
             listed[0].0,
             &TorideId::slugify("brave"),
-            "an adopted record's id stays recoverable — it carries no plan"
+            "an adopted record's id stays recoverable: it carries no plan"
         );
         assert_eq!(listed[0].1.plan, None);
         assert_eq!(apps.quarantined(), None);

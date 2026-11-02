@@ -8,10 +8,6 @@ use toride_runner::CommandSpec;
 
 use crate::{AuditPaths, Result, report::AuditReport};
 
-// ---------------------------------------------------------------------------
-// DoctorScope
-// ---------------------------------------------------------------------------
-
 /// Scope for doctor diagnostic checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoctorScope {
@@ -26,10 +22,6 @@ pub enum DoctorScope {
     /// Check only configuration files.
     Config,
 }
-
-// ---------------------------------------------------------------------------
-// Doctor
-// ---------------------------------------------------------------------------
 
 /// Diagnostic engine for the audit subsystem.
 ///
@@ -86,13 +78,34 @@ impl<'a> Doctor<'a> {
         Ok(report)
     }
 
-    // -----------------------------------------------------------------------
-    // Individual checks
-    // -----------------------------------------------------------------------
-
     fn check_auditd_binaries(report: &mut AuditReport) {
-        for binary in &["auditctl", "auditd", "aureport", "ausearch"] {
-            if which::which(binary).is_err() {
+        let core = ["auditctl", "auditd"];
+        let reporting = ["aureport", "ausearch"];
+        let present = |binary: &str| which::which(binary).is_ok();
+
+        // A host without the auditd package at all emits one aggregate
+        // finding instead of four near-identical Criticals.
+        if core.iter().chain(reporting.iter()).all(|b| !present(b)) {
+            report.push(
+                crate::report::AuditFinding::new(
+                    "binary.auditd.missing",
+                    crate::report::AuditSeverity::Critical,
+                    "auditd package not installed",
+                )
+                .detail(
+                    "None of auditctl, auditd, aureport, or ausearch was found on $PATH."
+                        .to_owned(),
+                )
+                .fix("Install auditd: apt install auditd".to_owned()),
+            );
+            return;
+        }
+
+        // Partial installs: auditctl/auditd are the enforcement core
+        // (Critical when absent); aureport/ausearch are read-only reporting
+        // tools (Warning when absent).
+        for binary in core {
+            if !present(binary) {
                 report.push(
                     crate::report::AuditFinding::new(
                         format!("binary.{binary}.missing"),
@@ -101,6 +114,22 @@ impl<'a> Doctor<'a> {
                     )
                     .detail(format!(
                         "The {binary} binary could not be located on $PATH."
+                    ))
+                    .fix("Install auditd: apt install auditd".to_owned()),
+                );
+            }
+        }
+        for binary in reporting {
+            if !present(binary) {
+                report.push(
+                    crate::report::AuditFinding::new(
+                        format!("binary.{binary}.missing"),
+                        crate::report::AuditSeverity::Warning,
+                        format!("{binary} not found"),
+                    )
+                    .detail(format!(
+                        "The {binary} binary could not be located on $PATH. It is a \
+                         read-only reporting tool; auditing itself still works without it."
                     ))
                     .fix("Install auditd: apt install auditd".to_owned()),
                 );
@@ -217,10 +246,6 @@ impl<'a> Doctor<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +308,46 @@ mod tests {
         );
     }
 
+    /// A host without the auditd package emits ONE aggregate Critical
+    /// (`binary.auditd.missing`), not four duplicate per-binary Criticals;
+    /// aureport/ausearch alone missing would be a Warning, not Critical.
+    /// Linux-only: the probe set and aggregation follow Linux auditd.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn auditd_package_absence_emits_one_aggregate_finding() {
+        let all_present = ["auditctl", "auditd", "aureport", "ausearch"]
+            .iter()
+            .all(|b| which::which(b).is_ok());
+        if all_present {
+            eprintln!("skipping: full auditd install on host");
+            return;
+        }
+
+        let dir = TempDir::new().expect("tempdir");
+        let paths = paths_under(dir.path());
+        let runner = FakeRunner::new()
+            .push_response(toride_runner::CommandOutput::from_stderr("inactive", 3));
+        let doctor = Doctor::new(&runner, &paths);
+
+        let report = doctor.run(&DoctorScope::Auditd).expect("run succeeds");
+        let binary_findings: Vec<&crate::report::AuditFinding> = report
+            .findings
+            .iter()
+            .filter(|f| f.id.starts_with("binary."))
+            .collect();
+        assert_eq!(
+            binary_findings.len(),
+            1,
+            "the whole-package-absent case must aggregate into one finding: {:?}",
+            binary_findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
+        assert_eq!(binary_findings[0].id, "binary.auditd.missing");
+        assert_eq!(
+            binary_findings[0].severity,
+            crate::report::AuditSeverity::Critical
+        );
+    }
+
     #[test]
     fn auditd_scope_reports_inactive_service() {
         let dir = TempDir::new().expect("tempdir");
@@ -325,7 +390,7 @@ mod tests {
         assert!(runner.calls().is_empty());
         // check_aide ran: with a missing aide.conf it emits either
         // `binary.aide.missing` (no aide installed) or `config.aide.missing`
-        // (aide installed but conf absent). Both are acceptable — assert one.
+        // (aide installed but conf absent). Both are acceptable: assert one.
         let ids = finding_ids(&report);
         let has_aide_finding = ids
             .iter()

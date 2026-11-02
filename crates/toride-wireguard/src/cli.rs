@@ -185,8 +185,10 @@ impl WireguardCli {
 
             WireguardCommand::Genkey => {
                 let (private, public) = crate::key::generate_keypair_with(&runner)?;
-                println!("private: {private}");
-                println!("public:  {public}");
+                eprintln!(
+                    "private key follows on stdout; do not pipe it into logs or shell history"
+                );
+                print!("{}", genkey_lines(&private, &public));
                 Ok(())
             }
 
@@ -247,6 +249,14 @@ impl WireguardCli {
 // ---------------------------------------------------------------------------
 // Dispatch helpers
 // ---------------------------------------------------------------------------
+
+/// Format the `genkey` output lines: the private key in the clear (the
+/// command exists to hand the operator a freshly generated key, so
+/// [`PrivateKey`](crate::key::PrivateKey)'s redacting `Display` must be
+/// bypassed via `as_base64`) followed by the public key.
+fn genkey_lines(private: &crate::key::PrivateKey, public: &crate::key::PublicKey) -> String {
+    format!("private: {}\npublic:  {}\n", private.as_base64(), public)
+}
 
 /// Redact the `PrivateKey` value in `wg showconf` output before printing.
 ///
@@ -423,6 +433,30 @@ mod tests {
             .any(|c| c.program == "wg" && c.args.first().is_some_and(|a| a == "pubkey"));
         assert!(saw_genkey, "dispatch did not run `wg genkey`: {calls:?}");
         assert!(saw_pubkey, "dispatch did not run `wg pubkey`: {calls:?}");
+    }
+
+    /// `genkey` must print the generated private key itself: the pair is
+    /// otherwise never stored anywhere, so a redacted print loses the key.
+    #[test]
+    fn genkey_output_contains_the_private_key_value() {
+        let private =
+            crate::key::PrivateKey::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .unwrap();
+        let public =
+            crate::key::PublicKey::from_base64("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC0=")
+                .unwrap();
+
+        let out = genkey_lines(&private, &public);
+
+        assert!(
+            out.contains("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+            "the private key value must be printed, got: {out}"
+        );
+        assert!(!out.contains("REDACTED"), "got: {out}");
+        assert!(
+            out.contains("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC0="),
+            "got: {out}"
+        );
     }
 
     /// `config show` must redact the live `PrivateKey` value before printing.

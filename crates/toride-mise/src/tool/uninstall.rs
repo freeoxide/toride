@@ -10,10 +10,6 @@ use crate::error::MiseResult;
 
 use super::install::UseScope;
 
-// ---------------------------------------------------------------------------
-// UninstallRequest
-// ---------------------------------------------------------------------------
-
 /// Parameters for a `mise uninstall` invocation.
 ///
 /// Construct with [`UninstallRequest::new`] and chain builder methods.
@@ -56,10 +52,6 @@ impl UninstallRequest {
         self
     }
 }
-
-// ---------------------------------------------------------------------------
-// UnuseRequest
-// ---------------------------------------------------------------------------
 
 /// Parameters for a `mise unset` (unuse) invocation.
 ///
@@ -107,10 +99,6 @@ impl UnuseRequest {
         self
     }
 }
-
-// ---------------------------------------------------------------------------
-// Mise methods
-// ---------------------------------------------------------------------------
 
 impl Mise {
     /// Uninstall a tool version (simple convenience wrapper).
@@ -194,10 +182,6 @@ impl Mise {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -270,10 +254,6 @@ mod tests {
         assert!(calls[0].args.contains(&"--no-prune".to_string()));
         assert!(calls[0].args.contains(&"node".to_string()));
     }
-
-    // -----------------------------------------------------------------------
-    // Strict-mode tests
-    // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn test_uninstall_strict_mode() {

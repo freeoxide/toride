@@ -3,6 +3,25 @@
 use crate::Ufw;
 use crate::error::Result;
 use crate::spec::{DoctorScope, Finding, ParsedRule, Severity};
+use crate::status;
+
+/// Intern a formatted finding id so repeated doctor runs leak each distinct
+/// id string only once.
+fn intern_id(id: String) -> &'static str {
+    static INTERNED: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashSet<&'static str>>,
+    > = std::sync::OnceLock::new();
+    let cache = INTERNED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = guard.get(id.as_str()) {
+        return existing;
+    }
+    let leaked = Box::leak(id.into_boxed_str());
+    guard.insert(leaked);
+    leaked
+}
 
 pub fn doctor(ufw: &Ufw, scope: DoctorScope) -> Result<Vec<Finding>> {
     let mut findings = Vec::new();
@@ -171,7 +190,7 @@ fn check_binaries(ufw: &Ufw) -> Vec<Finding> {
 fn check_service(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    let status_result = ufw.status();
+    let status_result = ufw.status_arc();
 
     match status_result {
         Ok(status) => {
@@ -233,7 +252,7 @@ fn check_service(ufw: &Ufw) -> Vec<Finding> {
                     }
                 }
 
-                check_boot_integration(&mut findings);
+                check_boot_integration(runner, &mut findings);
             }
 
             if let Some(policy) = &status.default_incoming {
@@ -263,6 +282,7 @@ fn check_service(ufw: &Ufw) -> Vec<Finding> {
 #[allow(clippy::too_many_lines)]
 fn check_config(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let runner = ufw.runner();
 
     let config_files = [
         "/etc/default/ufw",
@@ -273,9 +293,9 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
     ];
 
     for path in &config_files {
-        if std::path::Path::new(path).exists() {
+        if runner.file_exists(path) {
             findings.push(Finding {
-                id: Box::leak(format!("cfg:{}:exists", path.replace('/', ":")).into_boxed_str()),
+                id: intern_id(format!("cfg:{}:exists", path.replace('/', ":"))),
                 severity: Severity::Ok,
                 title: format!("{path} exists"),
                 detail: format!("Configuration file {path} is present."),
@@ -283,7 +303,7 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
             });
         } else {
             findings.push(Finding {
-                id: Box::leak(format!("cfg:{}:missing", path.replace('/', ":")).into_boxed_str()),
+                id: intern_id(format!("cfg:{}:missing", path.replace('/', ":"))),
                 severity: Severity::Warning,
                 title: format!("{path} missing"),
                 detail: format!("Configuration file {path} does not exist."),
@@ -292,10 +312,10 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
         }
     }
 
-    let default_ufw_config = read_default_ufw_config();
+    let default_ufw_config = read_default_ufw_config(runner);
     let ipv6_enabled = default_ufw_config.ipv6.unwrap_or(false);
 
-    let ufw_conf = read_ufw_conf();
+    let ufw_conf = read_ufw_conf(runner);
 
     if let (Some(default_enabled), Some(conf_enabled)) =
         (default_ufw_config.enabled, ufw_conf.enabled)
@@ -337,11 +357,9 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
     if ipv6_enabled {
         let ipv6_files = ["/etc/ufw/before6.rules", "/etc/ufw/after6.rules"];
         for path in &ipv6_files {
-            if std::path::Path::new(path).exists() {
+            if runner.file_exists(path) {
                 findings.push(Finding {
-                    id: Box::leak(
-                        format!("cfg:{}:exists", path.replace('/', ":")).into_boxed_str(),
-                    ),
+                    id: intern_id(format!("cfg:{}:exists", path.replace('/', ":"))),
                     severity: Severity::Ok,
                     title: format!("{path} exists"),
                     detail: format!("IPv6 framework file {path} is present."),
@@ -349,9 +367,7 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
                 });
             } else {
                 findings.push(Finding {
-                    id: Box::leak(
-                        format!("cfg:{}:missing", path.replace('/', ":")).into_boxed_str(),
-                    ),
+                    id: intern_id(format!("cfg:{}:missing", path.replace('/', ":"))),
                     severity: Severity::Warning,
                     title: format!("{path} missing"),
                     detail: format!("IPv6 is enabled but {path} does not exist."),
@@ -363,33 +379,26 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
         }
     }
 
-    let app_dir = std::path::Path::new("/etc/ufw/applications.d");
-    if app_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(app_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        let has_section = content
-                            .lines()
-                            .any(|l| l.trim().starts_with('[') && l.trim().ends_with(']'));
-                        if has_section && !content.contains("Managed by ufw-kit") {
-                            findings.push(Finding {
-                                id: Box::leak(format!("cfg:app:{name}:no-managed-header").into_boxed_str()),
-                                severity: Severity::Info,
-                                title: format!("App profile {name} lacks managed header"),
-                                detail: format!("The app profile at {} has a section header but no 'Managed by ufw-kit' header.", path.display()),
-                                fix: None,
-                            });
-                        }
-                    }
-                }
+    let app_dir = "/etc/ufw/applications.d";
+    for name in runner.list_dir(app_dir) {
+        let path = format!("{app_dir}/{name}");
+        if let Ok(content) = runner.read_file(&path) {
+            let has_section = content
+                .lines()
+                .any(|l| l.trim().starts_with('[') && l.trim().ends_with(']'));
+            if has_section && !content.contains("Managed by ufw-kit") {
+                findings.push(Finding {
+                    id: intern_id(format!("cfg:app:{name}:no-managed-header")),
+                    severity: Severity::Info,
+                    title: format!("App profile {name} lacks managed header"),
+                    detail: format!(
+                        "The app profile at {path} has a section header but no 'Managed by ufw-kit' header."
+                    ),
+                    fix: None,
+                });
             }
         }
     }
-
-    let _ = ufw;
 
     findings
 }
@@ -397,7 +406,7 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
 fn check_policy(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    match ufw.status_verbose() {
+    match ufw.status_verbose_arc() {
         Ok(status) => {
             if let Some(policy) = &status.default_incoming {
                 match policy {
@@ -499,18 +508,11 @@ fn check_policy(ufw: &Ufw) -> Vec<Finding> {
 }
 
 fn check_essential_outgoing_rules(ufw: &Ufw, findings: &mut Vec<Finding>) {
-    if let Ok(status) = ufw.status() {
-        let rules_text: String = status
+    if let Ok(status) = ufw.status_arc() {
+        let has_dns = status
             .rules
             .iter()
-            .map(|r| r.raw.to_lowercase())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let has_dns = rules_text.contains("53")
-            && (rules_text.contains("udp")
-                || rules_text.contains("53/udp")
-                || rules_text.contains("domain"));
+            .any(|r| allows_essential(r, 53, "udp", "domain"));
         if !has_dns {
             findings.push(Finding {
                 id: "pol:outgoing:no-dns",
@@ -521,10 +523,10 @@ fn check_essential_outgoing_rules(ufw: &Ufw, findings: &mut Vec<Finding>) {
             });
         }
 
-        let has_ntp = rules_text.contains("123")
-            && (rules_text.contains("udp")
-                || rules_text.contains("123/udp")
-                || rules_text.contains("ntp"));
+        let has_ntp = status
+            .rules
+            .iter()
+            .any(|r| allows_essential(r, 123, "udp", "ntp"));
         if !has_ntp {
             findings.push(Finding {
                 id: "pol:outgoing:no-ntp",
@@ -535,10 +537,10 @@ fn check_essential_outgoing_rules(ufw: &Ufw, findings: &mut Vec<Finding>) {
             });
         }
 
-        let has_https = rules_text.contains("443")
-            && (rules_text.contains("tcp")
-                || rules_text.contains("443/tcp")
-                || rules_text.contains("https"));
+        let has_https = status
+            .rules
+            .iter()
+            .any(|r| allows_essential(r, 443, "tcp", "https"));
         if !has_https {
             findings.push(Finding {
                 id: "pol:outgoing:no-https",
@@ -551,18 +553,52 @@ fn check_essential_outgoing_rules(ufw: &Ufw, findings: &mut Vec<Finding>) {
     }
 }
 
+/// Whether a rule allows the essential outbound service `port/proto`.
+///
+/// Matching is by token equality against the To column, so an mDNS rule
+/// (`5353/udp`) never satisfies the DNS check. Explicitly inbound rules
+/// never count; a rule with no direction token does.
+fn allows_essential(rule: &ParsedRule, port: u16, proto: &str, service: &str) -> bool {
+    if !status::rule_is_allow(rule) || matches!(rule.direction, Some(crate::spec::Direction::In)) {
+        return false;
+    }
+    if let Some(to) = rule.to.as_deref() {
+        return status::column_targets_port_proto(to, port, proto, service);
+    }
+    let raw = rule.raw.to_lowercase();
+    raw.contains(&port.to_string()) && (raw.contains(proto) || raw.contains(service))
+}
+
+#[allow(clippy::too_many_lines)]
 fn check_rules(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    match ufw.status() {
+    match ufw.status_arc() {
         Ok(status) => {
             for rule in &status.rules {
-                let raw = rule.raw.to_lowercase();
+                // Only an inbound allow from an unrestricted source exposes
+                // the port; port 22 stays Info because the ssh checks cover it.
+                if !status::rule_is_allow(rule)
+                    || !status::rule_is_inbound(rule)
+                    || !status::rule_source_unrestricted(rule)
+                {
+                    continue;
+                }
                 for &(port, name) in crate::net::DANGEROUS_PORTS {
-                    if raw.contains(&port.to_string()) && raw.contains("allow") {
+                    let targets = rule
+                        .to
+                        .as_deref()
+                        .is_some_and(|to| status::column_targets_port(to, port))
+                        || rule.to.is_none() && rule.raw.to_lowercase().contains(&port.to_string());
+                    if targets {
+                        let severity = if port == 22 {
+                            Severity::Info
+                        } else {
+                            Severity::Warning
+                        };
                         findings.push(Finding {
-                            id: Box::leak(format!("rule:dangerous:{port}").into_boxed_str()),
-                            severity: Severity::Warning,
+                            id: intern_id(format!("rule:dangerous:{port}")),
+                            severity,
                             title: format!("Port {port} ({name}) is exposed"),
                             detail: format!("Rule exposes port {port} ({name}): {}", rule.raw),
                             fix: Some(format!(
@@ -662,20 +698,21 @@ fn check_ssh(ufw: &Ufw) -> Vec<Finding> {
             severity: Severity::Info,
             title: "Active SSH session detected".into(),
             detail: "An active SSH connection was detected (SSH_CONNECTION env var is set). \
-                     Be careful when modifying firewall rules — an incorrect change could \
+                     Be careful when modifying firewall rules: an incorrect change could \
                      lock you out of this session."
                 .into(),
             fix: None,
         });
     }
 
-    if let Ok(status) = ufw.status() {
+    if let Ok(status) = ufw.status_arc() {
         let ssh_rules: Vec<_> = status
             .rules
             .iter()
             .filter(|rule| {
-                let raw = rule.raw.to_lowercase();
-                raw.contains("22") || raw.contains("ssh")
+                status::rule_is_allow(rule)
+                    && status::rule_is_inbound(rule)
+                    && status::rule_targets_ssh(rule, &[22])
             })
             .collect();
 
@@ -722,10 +759,9 @@ fn analyze_ssh_rule_details(ssh_rules: &[&ParsedRule], findings: &mut Vec<Findin
         });
     }
 
-    let scoped_to_interface = ssh_rules.iter().any(|rule| {
-        let raw = rule.raw.to_lowercase();
-        raw.contains("on ") || raw.contains("in on ") || raw.contains("out on ")
-    });
+    let scoped_to_interface = ssh_rules
+        .iter()
+        .any(|rule| rule.raw.to_lowercase().contains("on "));
     if scoped_to_interface {
         findings.push(Finding {
             id: "ssh:interface-scoped",
@@ -778,7 +814,8 @@ fn analyze_ssh_rule_details(ssh_rules: &[&ParsedRule], findings: &mut Vec<Findin
 fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    let ipv6_enabled = read_ipv6_enabled_from_config();
+    let runner = ufw.runner();
+    let ipv6_enabled = read_ipv6_enabled_from_config(runner);
 
     if ipv6_enabled {
         findings.push(Finding {
@@ -789,7 +826,7 @@ fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
             fix: None,
         });
 
-        if let Ok(status) = ufw.status() {
+        if let Ok(status) = ufw.status_arc() {
             let ipv6_rules: Vec<_> = status.rules.iter().filter(|r| r.ipv6).collect();
             if ipv6_rules.is_empty() {
                 findings.push(Finding {
@@ -810,9 +847,9 @@ fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
             }
         }
 
-        if let Ok(status) = ufw.status_verbose() {
+        if let Ok(status) = ufw.status_verbose_arc() {
             let v4_incoming = status.default_incoming;
-            let config = read_default_ufw_config();
+            let config = read_default_ufw_config(runner);
 
             if let (Some(v4_pol), Some(ipv6_pol_str)) = (&v4_incoming, &config.default_input_policy)
             {
@@ -844,7 +881,7 @@ fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
             }
         }
 
-        if let Ok(status) = ufw.status() {
+        if let Ok(status) = ufw.status_arc() {
             let ipv6_route_rules: Vec<_> = status
                 .rules
                 .iter()
@@ -899,7 +936,7 @@ fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
 fn check_logging(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    if let Ok(status) = ufw.status_verbose() {
+    if let Ok(status) = ufw.status_verbose_arc() {
         if let Some(level) = &status.logging_level {
             match level {
                 crate::spec::LoggingLevel::Off => {
@@ -947,9 +984,8 @@ fn check_logging(ufw: &Ufw) -> Vec<Finding> {
 
     let log_paths = ["/var/log/ufw.log", "/var/log/syslog", "/var/log/kern.log"];
     for log_path in &log_paths {
-        if let Ok(meta) = std::fs::metadata(log_path) {
-            let nbytes = meta.len();
-            check_log_file_size(log_path, nbytes, &mut findings);
+        if let Some(meta) = ufw.runner().file_metadata(log_path) {
+            check_log_file_size(log_path, meta.len, &mut findings);
             break;
         }
     }
@@ -979,17 +1015,13 @@ fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
                     fix: None,
                 });
 
-                for line in list.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with("Available") {
-                        continue;
-                    }
-                    let name = trimmed
-                        .trim_start_matches(|c: char| c.is_whitespace() || c == '*' || c == '-');
-
-                    if let Err(e) = validate_app_name_for_doctor(name) {
+                // Fetch each profile's info exactly once; the validation
+                // loop and the port-conflict pass share the result.
+                let mut profile_ports: Vec<(String, Vec<String>)> = Vec::new();
+                for name in profile_names(&list) {
+                    if let Err(e) = validate_app_name_for_doctor(&name) {
                         findings.push(Finding {
-                            id: Box::leak(format!("app:name-invalid:{name}").into_boxed_str()),
+                            id: intern_id(format!("app:name-invalid:{name}")),
                             severity: Severity::Warning,
                             title: format!("Invalid app profile name: {name}"),
                             detail: format!("App profile name '{name}' is invalid: {e}"),
@@ -998,28 +1030,27 @@ fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
                         continue;
                     }
 
-                    match ufw.app_info(name) {
+                    match ufw.app_info(&name) {
                         Ok(info) => {
-                            if let Some(ports_line) = info.lines().find(|l| l.contains("Port")) {
-                                if let Some(ports_str) = ports_line.split(':').nth(1) {
-                                    for port_spec in ports_str.split(',') {
-                                        let port_spec = port_spec.trim();
-                                        if !port_spec.is_empty() && !is_valid_port_spec(port_spec) {
-                                            findings.push(Finding {
-                                                id: Box::leak(format!("app:port-invalid:{name}:{port_spec}").into_boxed_str()),
-                                                severity: Severity::Warning,
-                                                title: format!("Invalid port spec in profile {name}"),
-                                                detail: format!("Port spec '{port_spec}' in profile '{name}' does not match expected format (port/proto)."),
-                                                fix: Some("Fix the port specification in the profile file.".into()),
-                                            });
-                                        }
-                                    }
+                            let ports = parse_profile_ports(&info);
+                            for port_spec in &ports {
+                                if !is_valid_port_spec(port_spec) {
+                                    findings.push(Finding {
+                                        id: intern_id(format!(
+                                            "app:port-invalid:{name}:{port_spec}"
+                                        )),
+                                        severity: Severity::Warning,
+                                        title: format!("Invalid port spec in profile {name}"),
+                                        detail: format!("Port spec '{port_spec}' in profile '{name}' does not match expected format (port/proto)."),
+                                        fix: Some("Fix the port specification in the profile file.".into()),
+                                    });
                                 }
                             }
+                            profile_ports.push((name, ports));
                         }
                         Err(_) => {
                             findings.push(Finding {
-                                id: Box::leak(format!("app:info-fail:{name}").into_boxed_str()),
+                                id: intern_id(format!("app:info-fail:{name}")),
                                 severity: Severity::Info,
                                 title: format!("Could not read info for profile {name}"),
                                 detail: format!("Failed to parse app profile '{name}'."),
@@ -1028,11 +1059,11 @@ fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
                         }
                     }
                 }
+
+                check_app_profile_references(ufw, &list, &mut findings);
+
+                check_app_profile_port_conflicts(&profile_ports, &mut findings);
             }
-
-            check_app_profile_references(ufw, &list, &mut findings);
-
-            check_app_profile_port_conflicts(ufw, &list, &mut findings);
         }
         Err(e) => findings.push(Finding {
             id: "app:list-fail",
@@ -1046,8 +1077,37 @@ fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
     findings
 }
 
+/// Extract profile names from `ufw app list` output.
+fn profile_names(list: &str) -> Vec<String> {
+    list.lines()
+        .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '*' || c == '-')
+                .to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Parse the port list out of `ufw app info <name>` output.
+fn parse_profile_ports(info: &str) -> Vec<String> {
+    let Some(ports_line) = info.lines().find(|l| l.contains("Port")) else {
+        return Vec::new();
+    };
+    let Some(ports_str) = ports_line.split(':').nth(1) else {
+        return Vec::new();
+    };
+    ports_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 fn check_permissions(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let runner = ufw.runner();
 
     let paths_to_check = [
         "/etc/ufw",
@@ -1060,66 +1120,53 @@ fn check_permissions(ufw: &Ufw) -> Vec<Finding> {
     ];
 
     for path in &paths_to_check {
-        check_path_permissions(path, &mut findings);
+        check_path_permissions(runner, path, &mut findings);
     }
 
-    check_path_permissions("/etc/ufw/applications.d", &mut findings);
-
-    check_file_ownership(&mut findings);
+    check_file_ownership(runner, &mut findings);
 
     check_secrets_in_comments(ufw, &mut findings);
 
     findings
 }
 
-fn check_path_permissions(path: &str, findings: &mut Vec<Finding>) {
-    match std::fs::metadata(path) {
-        #[cfg(unix)]
-        Ok(meta) => {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = meta.permissions().mode();
-            if mode & 0o002 != 0 {
-                findings.push(Finding {
-                    id: Box::leak(
-                        format!("perm:{}:world-writable", path.replace('/', ":")).into_boxed_str(),
-                    ),
-                    severity: Severity::Warning,
-                    title: format!("{path} is world-writable"),
-                    detail: format!(
-                        "{path} has permissions {:o}, which is world-writable.",
-                        mode & 0o777
-                    ),
-                    fix: Some(format!("Fix permissions: sudo chmod o-w {path}")),
-                });
-            } else {
-                findings.push(Finding {
-                    id: Box::leak(format!("perm:{}:ok", path.replace('/', ":")).into_boxed_str()),
-                    severity: Severity::Ok,
-                    title: format!("{path} permissions OK"),
-                    detail: format!("{path} has permissions {:o}.", mode & 0o777),
-                    fix: None,
-                });
-            }
-        }
-        #[cfg(not(unix))]
-        Ok(_) => {
-            findings.push(Finding {
-                id: Box::leak(format!("perm:{}:skip", path.replace('/', ":")).into_boxed_str()),
-                severity: Severity::Info,
-                title: format!("Cannot check {path} permissions"),
-                detail: "Permission checks require Unix.".into(),
-                fix: None,
-            });
-        }
-        Err(_) => {
-            findings.push(Finding {
-                id: Box::leak(format!("perm:{}:missing", path.replace('/', ":")).into_boxed_str()),
-                severity: Severity::Info,
-                title: format!("{path} not found"),
-                detail: format!("{path} does not exist."),
-                fix: None,
-            });
-        }
+fn check_path_permissions(
+    runner: &dyn crate::command::CommandRunner,
+    path: &str,
+    findings: &mut Vec<Finding>,
+) {
+    let Some(meta) = runner.file_metadata(path) else {
+        findings.push(Finding {
+            id: intern_id(format!("perm:{}:missing", path.replace('/', ":"))),
+            severity: Severity::Info,
+            title: format!("{path} not found"),
+            detail: format!("{path} does not exist."),
+            fix: None,
+        });
+        return;
+    };
+    match meta.mode {
+        Some(mode) if mode & 0o002 != 0 => findings.push(Finding {
+            id: intern_id(format!("perm:{}:world-writable", path.replace('/', ":"))),
+            severity: Severity::Warning,
+            title: format!("{path} is world-writable"),
+            detail: format!("{path} has permissions {mode:o}, which is world-writable."),
+            fix: Some(format!("Fix permissions: sudo chmod o-w {path}")),
+        }),
+        Some(mode) => findings.push(Finding {
+            id: intern_id(format!("perm:{}:ok", path.replace('/', ":"))),
+            severity: Severity::Ok,
+            title: format!("{path} permissions OK"),
+            detail: format!("{path} has permissions {mode:o}."),
+            fix: None,
+        }),
+        None => findings.push(Finding {
+            id: intern_id(format!("perm:{}:skip", path.replace('/', ":"))),
+            severity: Severity::Info,
+            title: format!("Cannot check {path} permissions"),
+            detail: "Permission checks are not available through this runner.".into(),
+            fix: None,
+        }),
     }
 }
 
@@ -1132,10 +1179,7 @@ fn check_log_file_size(log_path: &str, nbytes: u64, findings: &mut Vec<Finding>)
 
     if nbytes > HUNDRED_MB {
         findings.push(Finding {
-            id: Box::leak(
-                format!("log:{}:large", log_path.replace('/', ":"))
-                    .into_boxed_str(),
-            ),
+            id: intern_id(format!("log:{}:large", log_path.replace('/', ":"))),
             severity: Severity::Warning,
             title: format!("{log_path} is very large ({megabytes:.1} MB)"),
             detail: format!(
@@ -1146,7 +1190,7 @@ fn check_log_file_size(log_path: &str, nbytes: u64, findings: &mut Vec<Finding>)
         });
     } else {
         findings.push(Finding {
-            id: Box::leak(format!("log:{}:ok", log_path.replace('/', ":")).into_boxed_str()),
+            id: intern_id(format!("log:{}:ok", log_path.replace('/', ":"))),
             severity: Severity::Ok,
             title: format!("{log_path} exists ({kilobytes:.1} KB)"),
             detail: format!("Log file {log_path} is {kilobytes:.1} KB."),
@@ -1155,8 +1199,8 @@ fn check_log_file_size(log_path: &str, nbytes: u64, findings: &mut Vec<Finding>)
     }
 }
 
-fn read_ipv6_enabled_from_config() -> bool {
-    read_default_ufw_config().ipv6.unwrap_or(false)
+fn read_ipv6_enabled_from_config(runner: &dyn crate::command::CommandRunner) -> bool {
+    read_default_ufw_config(runner).ipv6.unwrap_or(false)
 }
 
 fn is_active_ssh_session() -> bool {
@@ -1196,15 +1240,17 @@ fn detect_ssh_ports(runner: &dyn crate::command::CommandRunner) -> Vec<u16> {
     ports
 }
 
-fn read_default_ufw_config() -> crate::spec::UfwConfig {
-    std::fs::read_to_string("/etc/default/ufw")
+fn read_default_ufw_config(runner: &dyn crate::command::CommandRunner) -> crate::spec::UfwConfig {
+    runner
+        .read_file("/etc/default/ufw")
         .ok()
         .map(|content| crate::config::parse_default_ufw(&content))
         .unwrap_or_default()
 }
 
-fn read_ufw_conf() -> crate::spec::UfwConf {
-    std::fs::read_to_string("/etc/ufw/ufw.conf")
+fn read_ufw_conf(runner: &dyn crate::command::CommandRunner) -> crate::spec::UfwConf {
+    runner
+        .read_file("/etc/ufw/ufw.conf")
         .ok()
         .map(|content| crate::config::parse_ufw_conf(&content))
         .unwrap_or_default()
@@ -1263,16 +1309,14 @@ fn is_valid_port_spec(spec: &str) -> bool {
     true
 }
 
-fn check_boot_integration(findings: &mut Vec<Finding>) {
+fn check_boot_integration(runner: &dyn crate::command::CommandRunner, findings: &mut Vec<Finding>) {
     let systemd_paths = [
         "/etc/systemd/system/ufw.service",
         "/lib/systemd/system/ufw.service",
         "/etc/systemd/system/multi-user.target.wants/ufw.service",
     ];
 
-    let found = systemd_paths
-        .iter()
-        .any(|p| std::path::Path::new(p).exists());
+    let found = systemd_paths.iter().any(|p| runner.file_exists(p));
 
     if found {
         findings.push(Finding {
@@ -1402,41 +1446,29 @@ fn check_dual_stack_coverage(rules: &[crate::spec::ParsedRule], findings: &mut V
     }
 }
 
-fn check_file_ownership(findings: &mut Vec<Finding>) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-
-        let paths = ["/etc/ufw", "/etc/default/ufw", "/etc/ufw/ufw.conf"];
-        for path in &paths {
-            if let Ok(meta) = std::fs::metadata(path) {
-                let uid = meta.uid();
-                if uid != 0 {
-                    findings.push(Finding {
-                        id: Box::leak(
-                            format!("perm:{}:not-root-owned", path.replace('/', ":"))
-                                .into_boxed_str(),
-                        ),
-                        severity: Severity::Warning,
-                        title: format!("{path} is not owned by root"),
-                        detail: format!(
-                            "{path} is owned by UID {uid} instead of root (UID 0). \
-                             UFW config files should be owned by root to prevent tampering.",
-                        ),
-                        fix: Some(format!("Fix ownership: sudo chown root:root {path}")),
-                    });
-                }
-            }
+fn check_file_ownership(runner: &dyn crate::command::CommandRunner, findings: &mut Vec<Finding>) {
+    let paths = ["/etc/ufw", "/etc/default/ufw", "/etc/ufw/ufw.conf"];
+    for path in &paths {
+        if let Some(meta) = runner.file_metadata(path)
+            && let Some(uid) = meta.uid
+            && uid != 0
+        {
+            findings.push(Finding {
+                id: intern_id(format!("perm:{}:not-root-owned", path.replace('/', ":"))),
+                severity: Severity::Warning,
+                title: format!("{path} is not owned by root"),
+                detail: format!(
+                    "{path} is owned by UID {uid} instead of root (UID 0). \
+                     UFW config files should be owned by root to prevent tampering.",
+                ),
+                fix: Some(format!("Fix ownership: sudo chown root:root {path}")),
+            });
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = findings;
     }
 }
 
 fn check_secrets_in_comments(ufw: &Ufw, findings: &mut Vec<Finding>) {
-    if let Ok(status) = ufw.status() {
+    if let Ok(status) = ufw.status_arc() {
         for rule in &status.rules {
             if let Some(comment) = &rule.comment {
                 if crate::spec::validate_comment_for_secrets_doctor(comment) {
@@ -1462,97 +1494,74 @@ fn check_secrets_in_comments(ufw: &Ufw, findings: &mut Vec<Finding>) {
 }
 
 fn check_app_profile_references(ufw: &Ufw, list: &str, findings: &mut Vec<Finding>) {
-    let known_profiles: Vec<String> = list
-        .lines()
-        .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
-        .map(|l| {
-            l.trim()
-                .trim_start_matches(|c: char| c.is_whitespace() || c == '*')
-                .to_string()
-        })
-        .filter(|l| !l.is_empty())
-        .collect();
+    let known_profiles = profile_names(list);
 
-    if let Ok(status) = ufw.status() {
+    if let Ok(status) = ufw.status_arc() {
         for rule in &status.rules {
-            let raw_lower = rule.raw.to_lowercase();
-
-            if raw_lower
-                .split_whitespace()
-                .take(2)
-                .any(|t| t.parse::<u16>().is_ok())
-            {
+            if !status::rule_is_allow(rule) {
                 continue;
             }
-
-            let first_token = raw_lower.split_whitespace().next().unwrap_or("");
-            if first_token.is_empty() {
+            let Some(to) = rule.to.as_deref() else {
+                continue;
+            };
+            if !column_could_be_profile_name(to) {
                 continue;
             }
-
-            let is_keyword = matches!(
-                first_token,
-                "allow" | "deny" | "reject" | "limit" | "anywhere"
-            );
-            if !is_keyword
-                && first_token.parse::<u16>().is_err()
-                && !known_profiles
-                    .iter()
-                    .any(|p| p.to_lowercase() == first_token)
-            {
-                let found_in_raw = known_profiles
-                    .iter()
-                    .any(|p| raw_lower.contains(&p.to_lowercase()));
-                if !found_in_raw && raw_lower.contains("allow") {
-                    findings.push(Finding {
-                        id: "app:rule:unknown-profile-ref",
-                        severity: Severity::Info,
-                        title: "Rule may reference unknown app profile".into(),
-                        detail: format!(
-                            "Rule '{}' references '{}' which is not a known app profile.",
-                            rule.raw, first_token
-                        ),
-                        fix: Some("Check the rule and profile name. Install the missing profile or fix the rule.".into()),
-                    });
-                }
+            if known_profiles.iter().any(|p| p.eq_ignore_ascii_case(to)) {
+                continue;
             }
+            findings.push(Finding {
+                id: "app:rule:unknown-profile-ref",
+                severity: Severity::Info,
+                title: "Rule may reference unknown app profile".into(),
+                detail: format!(
+                    "Rule '{}' references '{}' which is not a known app profile.",
+                    rule.raw, to
+                ),
+                fix: Some(
+                    "Check the rule and profile name. Install the missing profile or fix the rule."
+                        .into(),
+                ),
+            });
         }
     }
 }
 
-fn check_app_profile_port_conflicts(ufw: &Ufw, list: &str, findings: &mut Vec<Finding>) {
-    let profiles = list
-        .lines()
-        .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
-        .map(|l| {
-            l.trim()
-                .trim_start_matches(|c: char| c.is_whitespace() || c == '*')
-                .to_string()
-        })
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>();
+/// Whether a To column can be an application profile name at all.
+///
+/// Port targets (with `/proto` suffixes, comma lists, ranges), addresses,
+/// and the `Anywhere` / `on <iface>` keywords rule a profile name out.
+fn column_could_be_profile_name(to: &str) -> bool {
+    !to.split_whitespace().any(|t| {
+        t.eq_ignore_ascii_case("anywhere")
+            || t.eq_ignore_ascii_case("on")
+            || t.parse::<std::net::IpAddr>().is_ok()
+            || is_port_target_token(t)
+    })
+}
 
-    let mut profile_ports: Vec<(String, Vec<String>)> = Vec::new();
-
-    for name in &profiles {
-        if let Ok(info) = ufw.app_info(name) {
-            if let Some(ports_line) = info.lines().find(|l| l.contains("Port")) {
-                if let Some(ports_str) = ports_line.split(':').nth(1) {
-                    let ports: Vec<String> = ports_str
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    profile_ports.push((name.clone(), ports));
-                }
-            }
+/// Whether a token is a numeric port target (`22`, `22/tcp`, `15,16/tcp`,
+/// `1000:2000/tcp`).
+fn is_port_target_token(token: &str) -> bool {
+    let (ports, _proto) = token.split_once('/').unwrap_or((token, ""));
+    ports.split(',').all(|part| {
+        part.parse::<u16>().is_ok() || {
+            let Some((s, e)) = part.split_once(':') else {
+                return false;
+            };
+            s.parse::<u16>().is_ok() && e.parse::<u16>().is_ok()
         }
-    }
+    })
+}
 
+fn check_app_profile_port_conflicts(
+    profile_ports: &[(String, Vec<String>)],
+    findings: &mut Vec<Finding>,
+) {
     for i in 0..profile_ports.len() {
         for j in (i + 1)..profile_ports.len() {
-            let (ref name_a, ref ports_a) = profile_ports[i];
-            let (ref name_b, ref ports_b) = profile_ports[j];
+            let (name_a, ports_a) = &profile_ports[i];
+            let (name_b, ports_b) = &profile_ports[j];
 
             let conflicts: Vec<_> = ports_a.iter().filter(|p| ports_b.contains(p)).collect();
 
@@ -1563,7 +1572,7 @@ fn check_app_profile_port_conflicts(ufw: &Ufw, list: &str, findings: &mut Vec<Fi
                     .collect::<Vec<_>>()
                     .join(", ");
                 findings.push(Finding {
-                    id: Box::leak(format!("app:conflict:{name_a}:{name_b}").into_boxed_str()),
+                    id: intern_id(format!("app:conflict:{name_a}:{name_b}")),
                     severity: Severity::Info,
                     title: format!("App profiles {name_a} and {name_b} share ports"),
                     detail: format!(
@@ -1596,33 +1605,69 @@ fn check_routing(ufw: &Ufw) -> Vec<Finding> {
 #[cfg(feature = "framework")]
 fn check_framework(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let runner = ufw.runner();
     let paths = crate::paths::UfwPaths::default();
 
-    check_framework_file(&paths.before_rules, "before.rules", false, &mut findings);
-    check_framework_file(&paths.after_rules, "after.rules", false, &mut findings);
+    check_framework_file(
+        runner,
+        &paths.before_rules,
+        "before.rules",
+        false,
+        &mut findings,
+    );
+    check_framework_file(
+        runner,
+        &paths.after_rules,
+        "after.rules",
+        false,
+        &mut findings,
+    );
 
-    let ipv6_enabled = read_ipv6_enabled_from_config();
+    let ipv6_enabled = read_ipv6_enabled_from_config(runner);
     if ipv6_enabled {
-        check_framework_file(&paths.before6_rules, "before6.rules", true, &mut findings);
-        check_framework_file(&paths.after6_rules, "after6.rules", true, &mut findings);
+        check_framework_file(
+            runner,
+            &paths.before6_rules,
+            "before6.rules",
+            true,
+            &mut findings,
+        );
+        check_framework_file(
+            runner,
+            &paths.after6_rules,
+            "after6.rules",
+            true,
+            &mut findings,
+        );
     }
 
-    let _ = ufw;
     findings
 }
 
 #[cfg(feature = "framework")]
 #[allow(clippy::too_many_lines)]
 fn check_framework_file(
+    runner: &dyn crate::command::CommandRunner,
     path: &std::path::Path,
     name: &str,
     is_ipv6: bool,
     findings: &mut Vec<Finding>,
 ) {
-    let content = match crate::framework::read_framework_file(path) {
-        Ok(c) if c.is_empty() => {
+    let path_str = path.display().to_string();
+    if !runner.file_exists(&path_str) {
+        findings.push(Finding {
+            id: intern_id(format!("fw:{name}:empty")),
+            severity: Severity::Warning,
+            title: format!("{name} is empty or missing"),
+            detail: format!("Framework file {name} is empty or does not exist."),
+            fix: Some(format!("Restore {name} from a backup or reinstall ufw.")),
+        });
+        return;
+    }
+    let content = match runner.read_file(&path_str) {
+        Ok(content) if content.is_empty() => {
             findings.push(Finding {
-                id: Box::leak(format!("fw:{name}:empty").into_boxed_str()),
+                id: intern_id(format!("fw:{name}:empty")),
                 severity: Severity::Warning,
                 title: format!("{name} is empty or missing"),
                 detail: format!("Framework file {name} is empty or does not exist."),
@@ -1630,10 +1675,10 @@ fn check_framework_file(
             });
             return;
         }
-        Ok(c) => c,
+        Ok(content) => content,
         Err(e) => {
             findings.push(Finding {
-                id: Box::leak(format!("fw:{name}:read-error").into_boxed_str()),
+                id: intern_id(format!("fw:{name}:read-error")),
                 severity: Severity::Warning,
                 title: format!("Cannot read {name}"),
                 detail: format!("Failed to read {name}: {e}"),
@@ -1645,7 +1690,7 @@ fn check_framework_file(
 
     if content.contains("*filter") && !content.contains("COMMIT") {
         findings.push(Finding {
-            id: Box::leak(format!("fw:{name}:no-commit-filter").into_boxed_str()),
+            id: intern_id(format!("fw:{name}:no-commit-filter")),
             severity: Severity::Important,
             title: format!("{name} filter table missing COMMIT"),
             detail: format!(
@@ -1665,7 +1710,7 @@ fn check_framework_file(
             .is_some_and(|after_nat| after_nat.contains("COMMIT"));
         if !has_nat_commit {
             findings.push(Finding {
-                id: Box::leak(format!("fw:{name}:no-commit-nat").into_boxed_str()),
+                id: intern_id(format!("fw:{name}:no-commit-nat")),
                 severity: Severity::Important,
                 title: format!("{name} NAT table missing COMMIT"),
                 detail: format!(
@@ -1682,7 +1727,7 @@ fn check_framework_file(
     let blocks = crate::framework::list_blocks(&content);
     if !blocks.is_empty() {
         findings.push(Finding {
-            id: Box::leak(format!("fw:{name}:managed-blocks").into_boxed_str()),
+            id: intern_id(format!("fw:{name}:managed-blocks")),
             severity: Severity::Info,
             title: format!("{name} has {} managed block(s)", blocks.len()),
             detail: format!("Found managed blocks in {name}: {}", blocks.join(", ")),
@@ -1693,7 +1738,7 @@ fn check_framework_file(
         for block_id in &blocks {
             if !seen.insert(block_id.clone()) {
                 findings.push(Finding {
-                    id: Box::leak(format!("fw:{name}:duplicate-block").into_boxed_str()),
+                    id: intern_id(format!("fw:{name}:duplicate-block")),
                     severity: Severity::Important,
                     title: format!("Duplicate managed block '{block_id}' in {name}"),
                     detail: format!(
@@ -1708,7 +1753,7 @@ fn check_framework_file(
 
     if !is_ipv6 && content.contains("ip6tables") {
         findings.push(Finding {
-            id: Box::leak(format!("fw:{name}:ipv6-in-ipv4").into_boxed_str()),
+            id: intern_id(format!("fw:{name}:ipv6-in-ipv4")),
             severity: Severity::Warning,
             title: format!("{name} contains ip6tables rules but is an IPv4 file"),
             detail: format!(
@@ -1727,7 +1772,7 @@ fn check_framework_file(
 
         if commit_after_nat {
             findings.push(Finding {
-                id: Box::leak(format!("fw:{name}:nat-block").into_boxed_str()),
+                id: intern_id(format!("fw:{name}:nat-block")),
                 severity: Severity::Info,
                 title: format!("{name} has a NAT table"),
                 detail: format!(
@@ -1744,7 +1789,7 @@ fn check_framework_file(
         .any(|f| f.id.starts_with("fw:") && f.severity >= Severity::Warning)
     {
         findings.push(Finding {
-            id: Box::leak(format!("fw:{name}:ok").into_boxed_str()),
+            id: intern_id(format!("fw:{name}:ok")),
             severity: Severity::Ok,
             title: format!("{name} looks valid"),
             detail: format!("Framework file {name} passed all validation checks."),

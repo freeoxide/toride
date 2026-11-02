@@ -4,7 +4,7 @@ expression: out
 ---
 "╭ TOOLS · 2/4 installed · 2 missing ───────────────────────────────────────────────────────────────────────────────────╮"
 "│ ! some tools missing  2 / 4 tools                                                                                    │"
-"│   2 expected tool(s) missing — see findings                                                                          │"
+"│   2 expected tool(s) missing: see findings                                                                           │"
 "│                                                                                                                      │"
 "│ Editors                                                                                                              │"
 "│ ✓ vim              VIM 9.0                  /usr/bin/vim                                                             │"

@@ -248,7 +248,7 @@ impl<'a> Doctor<'a> {
     /// Check that the `tailscale` binary is on `$PATH`.
     ///
     /// The PATH scan (`which::which`) is a synchronous, blocking filesystem walk. It is wrapped
-    /// in `spawn_blocking` so the tokio worker thread is never stalled — matching the invariant
+    /// in `spawn_blocking` so the tokio worker thread is never stalled: matching the invariant
     /// documented by the toride data layer (cloud/fail2ban/tailscale collectors wrap *all*
     /// shell-out / PATH lookups in `spawn_blocking`). On a cold cache or a networked filesystem
     /// the scan can take tens of milliseconds; offloading it keeps the runtime responsive.
@@ -460,7 +460,7 @@ mod tests {
     /// When a runner is attached, `check_service` must really probe
     /// `systemctl is-active tailscaled` rather than returning a hardcoded ok.
     ///
-    /// We cannot easily construct a `TailscaleClient` without a network, but
+    /// We cannot construct a `TailscaleClient` without a network, but
     /// the runner-injected path never touches the client, so we can drive it
     /// directly through a minimal stand-in. This test exercises the real
     /// ServiceManager plumbing by invoking it the same way `check_service`

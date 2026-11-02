@@ -1,7 +1,7 @@
 //! Editable text input widget for modal forms.
 //!
 //! A bordered single-line text field with cursor, selection placeholder, and
-//! optional secret mode (renders dots instead of characters — used for
+//! optional secret mode (renders dots instead of characters: used for
 //! passphrases). Key events are handled via [`TextInput::handle_key`] which
 //! returns an [`InputAction`] when the user submits or cancels.
 
@@ -298,7 +298,6 @@ impl TextInput {
             Span::styled(visible, Style::new().fg(p.text))
         };
 
-        // Cursor indicator — a block character at the cursor position.
         let cursor_col = if self.value.is_empty() && self.placeholder.is_some() {
             0
         } else {
@@ -343,13 +342,11 @@ impl TextInput {
             if cursor_x < inner.right() {
                 let cell = &mut frame.buffer_mut()[(cursor_x, cursor_y)];
                 if cursor_col < self.value.chars().count().saturating_sub(self.scroll) {
-                    // Cursor is over an existing character — invert it.
                     let fg = cell.fg;
                     let bg = cell.bg;
                     cell.set_fg(bg);
                     cell.set_bg(fg);
                 } else {
-                    // Cursor is at the end — show a thin bar.
                     cell.set_char('▎');
                     cell.set_fg(p.text);
                     cell.set_bg(p.bg_inset);
