@@ -118,6 +118,7 @@ pub async fn add_to_known_hosts(known_hosts_path: &Path, keys: &[ScannedHostKey]
             std::fs::create_dir_all(parent)?;
         }
 
+        #[cfg(unix)]
         let newly_created = !path.exists();
 
         let mut file = std::fs::OpenOptions::new()

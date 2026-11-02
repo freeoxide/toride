@@ -1,12 +1,15 @@
 use std::hint::black_box;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use sysinfo::Components;
+#[cfg(target_os = "linux")]
 use tempfile::TempDir;
 use toride_status::system::{SensorSnapshot, SensorStatus, StaticInfo, SystemStatus};
 use toride_status::{Collector, Preset, TorideStatus};
 
+#[cfg(target_os = "linux")]
 const HWMON_CHIPS: usize = 6;
 
 fn bench_status_collect_snapshot(c: &mut Criterion) {
@@ -85,7 +88,10 @@ fn sensor_pass_fused() -> (Vec<SensorStatus>, SensorSnapshot) {
     let readings: Vec<SensorStatus> = components.iter().map(component_reading).collect();
     let snapshot = snapshot_from_readings(&readings);
 
+    #[cfg(target_os = "linux")]
     let mut sensors = readings;
+    #[cfg(not(target_os = "linux"))]
+    let sensors = readings;
     #[cfg(target_os = "linux")]
     {
         let root = Path::new("/sys/class/hwmon");
@@ -130,6 +136,7 @@ fn bench_sensor_read_once(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(target_os = "linux")]
 fn hwmon_fixture_tree() -> TempDir {
     let dir = TempDir::new().expect("tempdir for hwmon tree");
     let chip_names = [

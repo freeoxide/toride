@@ -427,14 +427,12 @@ mod tests {
         collector.start();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
-        if bundle.is_some_and(|b| b.available) {
-            assert!(collector.cached_bundle.is_some());
-            assert!(collector.bundle_fresh_at.is_some());
-        } else {
+        if bundle.is_some() {
             assert!(
-                collector.cached_bundle.is_none(),
-                "a degraded bundle must not be cached"
+                collector.cached_bundle.is_some(),
+                "a completed derivation is cached whether available or degraded, so ticks stop re-polling"
             );
+            assert!(collector.bundle_fresh_at.is_some());
         }
     }
 
@@ -795,17 +793,9 @@ mod cadence_oracle {
             bundle.tools.iter().all(|t| t.name != SENTINEL_TOOL),
             "an expired cache must not serve the sentinel tool row"
         );
-        if bundle.available {
-            assert!(
-                collector.bundle_fresh_at.is_some_and(|t| t > primed),
-                "an expired cache must be re-derived and the freshness clock advanced"
-            );
-        } else {
-            assert_eq!(
-                collector.bundle_fresh_at,
-                Some(primed),
-                "a degraded re-derivation must leave the primed clock untouched"
-            );
-        }
+        assert!(
+            collector.bundle_fresh_at.is_some_and(|t| t > primed),
+            "an expired cache is re-derived and the clock advanced, degraded or not"
+        );
     }
 }

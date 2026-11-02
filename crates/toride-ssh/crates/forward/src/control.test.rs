@@ -105,6 +105,7 @@ fn install_fake_ssh(script: &str) -> (tempfile::TempDir, String) {
     (dir, modified)
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn cancel_known_forward_invalid_control_path() {
     use std::ffi::OsStr;

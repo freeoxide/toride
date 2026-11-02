@@ -311,9 +311,8 @@ mod tests {
     /// A host without the auditd package emits ONE aggregate Critical
     /// (`binary.auditd.missing`), not four duplicate per-binary Criticals;
     /// aureport/ausearch alone missing would be a Warning, not Critical.
-    /// Host-independent via the live $PATH: the aggregate only asserts on a
-    /// host (or container) where none of the four binaries exist, which is
-    /// the common CI/dev case.
+    /// Linux-only: the probe set and aggregation follow Linux auditd.
+    #[cfg(target_os = "linux")]
     #[test]
     fn auditd_package_absence_emits_one_aggregate_finding() {
         let all_present = ["auditctl", "auditd", "aureport", "ausearch"]
