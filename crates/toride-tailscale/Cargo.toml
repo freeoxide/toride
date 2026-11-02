@@ -29,7 +29,7 @@ bench = false
 
 [features]
 default = ["client", "doctor"]
-client = ["dep:duct", "dep:reqwest", "dep:tokio", "toride-runner/duct-runner"]
+client = ["dep:duct", "dep:reqwest", "dep:tokio", "dep:serde", "toride-runner/duct-runner"]
 doctor = ["service"]
 service = ["client", "dep:toride-service"]
 # `cli` implies `client`, `doctor`, and `service`: the dispatch in
@@ -47,7 +47,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
 duct = { version = "1", features = ["timeout"], optional = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
