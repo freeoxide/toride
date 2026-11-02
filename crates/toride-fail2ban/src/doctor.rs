@@ -92,6 +92,7 @@ impl RunCache {
 pub struct Doctor<'a> {
     runner: &'a dyn Runner,
     paths: crate::SystemPaths,
+    pinned_client_bin: Option<PathBuf>,
     run_cache: RefCell<RunCache>,
 }
 
@@ -117,21 +118,26 @@ impl<'a> Doctor<'a> {
         Self {
             runner,
             paths,
+            pinned_client_bin: None,
             run_cache: RefCell::new(RunCache::default()),
         }
     }
 
     /// Create a diagnostic engine with `fail2ban-client` pinned to `path`,
-    /// skipping PATH discovery; tests use this to stay hermetic on hosts
-    /// without a Fail2Ban install.
+    /// bypassing PATH discovery on every run; tests use this to stay hermetic
+    /// on hosts without a Fail2Ban install.
     #[must_use]
     pub fn with_client_bin(runner: &'a dyn Runner, path: PathBuf) -> Self {
-        let doctor = Self::new(runner);
-        doctor.run_cache.borrow_mut().client_bin = ClientBin::Found(path);
-        doctor
+        Self {
+            pinned_client_bin: Some(path),
+            ..Self::new(runner)
+        }
     }
 
     fn client_bin(&self) -> Result<PathBuf> {
+        if let Some(path) = &self.pinned_client_bin {
+            return Ok(path.clone());
+        }
         let mut cache = self.run_cache.borrow_mut();
         if matches!(cache.client_bin, ClientBin::Unfetched) {
             cache.client_bin = match find_binary("fail2ban-client") {
@@ -244,8 +250,15 @@ impl<'a> Doctor<'a> {
     #[cfg_attr(
         not(unix),
         expect(
+            unused_variables,
+            reason = "non-unix returns the conservative false without walking metadata"
+        )
+    )]
+    #[cfg_attr(
+        not(unix),
+        expect(
             clippy::unused_self,
-            reason = "the uid walk is unix-only; non-unix uses metadata alone"
+            reason = "the uid walk is unix-only; non-unix uses the constant fallback"
         )
     )]
     fn rollback_writable(&self, dir: &std::path::Path) -> Result<bool> {

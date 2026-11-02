@@ -1198,6 +1198,7 @@ x home/user/src/main.rs
     /// subtree into the count: identical trees containing the same link still
     /// compare equal instead of double-counting (the pre-fix walk followed the
     /// link and counted `/tmp`'s contents).
+    #[cfg(unix)]
     #[test]
     fn verify_skips_absolute_symlinks_instead_of_following_them() {
         use std::fs;
@@ -1223,6 +1224,7 @@ x home/user/src/main.rs
     }
 
     /// A cyclic symlink (`loop -> .`) must not recurse until stack overflow.
+    #[cfg(unix)]
     #[test]
     fn verify_terminates_on_cyclic_symlink() {
         use std::fs;
